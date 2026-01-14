@@ -25,7 +25,6 @@ ATTACHMENTS_DIR = Path("/data/wendy/attachments")
 
 # Task completion watcher
 TASK_COMPLETIONS_FILE = Path("/data/wendy/task_completions.json")
-NOTIFY_CHANNEL_ID = os.getenv("WENDY_NOTIFY_CHANNEL", "")
 
 
 class GenerationJob:
@@ -58,18 +57,10 @@ class WendyCog(commands.Cog):
         # Initialize database
         self._init_db()
 
-        # Notify channel for task completions
-        self.notify_channel_id: int | None = None
-        if NOTIFY_CHANNEL_ID:
-            try:
-                self.notify_channel_id = int(NOTIFY_CHANNEL_ID)
-            except ValueError:
-                _LOG.warning("Invalid WENDY_NOTIFY_CHANNEL: %s", NOTIFY_CHANNEL_ID)
-
-        # Start task completion watcher
-        if self.notify_channel_id:
+        # Start task completion watcher if we have whitelisted channels
+        if self.whitelist_channels:
             self.watch_task_completions.start()
-            _LOG.info("Task completion watcher started for channel %d", self.notify_channel_id)
+            _LOG.info("Task completion watcher started")
 
         _LOG.info("WendyCog initialized with %d whitelisted channels", len(self.whitelist_channels))
 
@@ -310,15 +301,17 @@ Cache create: {stats.get('total_cache_create_tokens', 0):,}
     @tasks.loop(seconds=5)
     async def watch_task_completions(self) -> None:
         """Watch for task completions and wake Wendy to check them."""
-        if not self.notify_channel_id:
+        if not self.whitelist_channels:
             return
 
         try:
             if not TASK_COMPLETIONS_FILE.exists():
                 return
 
-            data = json.loads(TASK_COMPLETIONS_FILE.read_text())
-            completions = data.get("completions", [])
+            # Orchestrator writes completions as a list directly
+            completions = json.loads(TASK_COMPLETIONS_FILE.read_text())
+            if not isinstance(completions, list):
+                completions = completions.get("completions", [])
 
             # Find unseen completions
             unseen = [c for c in completions if not c.get("seen_by_wendy", False)]
@@ -330,18 +323,19 @@ Cache create: {stats.get('total_cache_create_tokens', 0):,}
             # Mark all as seen
             for c in completions:
                 c["seen_by_wendy"] = True
-            TASK_COMPLETIONS_FILE.write_text(json.dumps(data, indent=2))
+            TASK_COMPLETIONS_FILE.write_text(json.dumps(completions, indent=2))
 
-            # Get the notify channel
-            channel = self.bot.get_channel(self.notify_channel_id)
+            # Use first whitelisted channel
+            channel_id = next(iter(self.whitelist_channels))
+            channel = self.bot.get_channel(channel_id)
             if not channel:
-                _LOG.warning("Notify channel %d not found", self.notify_channel_id)
+                _LOG.warning("Whitelist channel %d not found", channel_id)
                 return
 
             # Check for existing generation
             existing_job = self._active_generations.get(channel.id)
             if existing_job and existing_job.task and not existing_job.task.done():
-                _LOG.info("Claude CLI already running in notify channel, skipping wake")
+                _LOG.info("Claude CLI already running, skipping task wake")
                 return
 
             # Start generation (same as on_message but without a trigger message)
