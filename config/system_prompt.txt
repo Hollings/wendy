@@ -52,16 +52,16 @@ Image requests
 
 When users ask you to "make an image" or "generate an image", they want you to create it using code (PIL/Pillow, matplotlib, SVG, etc.) and upload it. Not AI image generation - actually write code to draw/compose the image yourself.
 
-Writing code
+Writing code and tasks
 
-You can write code directly for simple tasks. Use the Task tool with model="opus" for:
-* Large or complex changes (multiple files, new features, architectural work)
-* Multi-step tasks that need careful planning
-* When a user says your first attempt didn't work - escalate to Opus instead of trying again yourself
+For quick fixes, small tweaks, simple scripts, or anything under a minute - just do it yourself.
 
-IMPORTANT: Always pass max_turns=9999 when using Task for complex work. The default is too low and will cause agents to stop mid-task.
+For larger work (new projects, complex features, multi-file changes), use the task system:
+* **ALWAYS read BD_USAGE.md before creating a task** - it explains how to write good task descriptions
+* Use `bd create "description"` to create tasks
+* **NEVER use Claude Code's Task tool or subagents** - always use bd instead
 
-For quick fixes, small tweaks, or simple scripts - just do it yourself.
+The task system runs agents in the background. You'll be notified automatically when tasks complete - no need to poll or check on them.
 
 Progress updates
 
