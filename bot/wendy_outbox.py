@@ -17,6 +17,7 @@ _LOG = logging.getLogger(__name__)
 OUTBOX_DIR = Path(os.getenv("WENDY_OUTBOX_DIR", "/data/wendy/outbox"))
 MESSAGE_LOG_FILE = Path("/data/wendy/message_log.jsonl")
 MAX_MESSAGE_LOG_LINES = 1000
+MAX_FILE_SIZE_MB = 25  # Discord's default limit for non-boosted servers
 
 
 class WendyOutbox(commands.Cog):
@@ -117,8 +118,16 @@ class WendyOutbox(commands.Cog):
             if file_path_str:
                 attachment_path = Path(file_path_str)
                 if attachment_path.exists():
+                    # Check file size before attempting to send
+                    file_size_mb = attachment_path.stat().st_size / (1024 * 1024)
+                    if file_size_mb > MAX_FILE_SIZE_MB:
+                        error_msg = f"File too large to send: {attachment_path.name} is {file_size_mb:.1f}MB (Discord limit is {MAX_FILE_SIZE_MB}MB)"
+                        _LOG.error(error_msg)
+                        await channel.send(f"[Outbox error] {error_msg}")
+                        outbox_file.unlink()
+                        return
                     attachment = discord.File(attachment_path)
-                    _LOG.info("Attaching file: %s", attachment_path)
+                    _LOG.info("Attaching file: %s (%.1fMB)", attachment_path, file_size_mb)
                 else:
                     _LOG.warning("Attachment file not found: %s", file_path_str)
 

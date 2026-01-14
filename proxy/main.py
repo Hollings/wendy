@@ -23,6 +23,7 @@ DB_PATH = os.getenv("WENDY_DB_PATH", "/data/wendy.db")
 OUTBOX_DIR = Path("/data/wendy/outbox")
 STATE_FILE = Path("/data/wendy/message_check_state.json")
 ATTACHMENTS_DIR = Path("/data/wendy/attachments")
+TASK_COMPLETIONS_FILE = Path("/data/wendy/task_completions.json")
 
 
 class SendMessageRequest(BaseModel):
@@ -49,6 +50,19 @@ class MessageInfo(BaseModel):
     content: str
     timestamp: int | str
     attachments: Optional[list[str]] = None
+
+
+class TaskUpdate(BaseModel):
+    task_id: str
+    title: str
+    status: str  # "completed" or "failed"
+    duration: str
+    completed_at: str
+
+
+class CheckMessagesResponse(BaseModel):
+    messages: list[MessageInfo]
+    task_updates: list[TaskUpdate]
 
 
 # ==================== State Management ====================
@@ -233,71 +247,101 @@ async def check_messages(
     channel_id: int,
     limit: int = 10,
     all_messages: bool = False
-) -> list[MessageInfo]:
-    """Check for new messages in a channel."""
+) -> CheckMessagesResponse:
+    """Check for new messages and task updates in a channel."""
+    messages = []
+    task_updates = []
+
+    # Get messages from database
     try:
         db_path = Path(DB_PATH)
-        if not db_path.exists():
-            return []
+        if db_path.exists():
+            since_id = None if all_messages else get_last_seen(channel_id)
 
-        since_id = None if all_messages else get_last_seen(channel_id)
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
 
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
+            try:
+                if since_id:
+                    query = """
+                        SELECT message_id, channel_id, author_name, content, timestamp, has_images
+                        FROM cached_messages
+                        WHERE channel_id = ? AND message_id > ?
+                        AND LOWER(author_name) NOT LIKE '%wendy%'
+                        AND content NOT LIKE '!%'
+                        AND content NOT LIKE '-%'
+                        ORDER BY message_id DESC
+                        LIMIT ?
+                    """
+                    rows = conn.execute(query, (channel_id, since_id, limit)).fetchall()
+                else:
+                    query = """
+                        SELECT message_id, channel_id, author_name, content, timestamp, has_images
+                        FROM cached_messages
+                        WHERE channel_id = ?
+                        AND LOWER(author_name) NOT LIKE '%wendy%'
+                        AND content NOT LIKE '!%'
+                        AND content NOT LIKE '-%'
+                        ORDER BY message_id DESC
+                        LIMIT ?
+                    """
+                    rows = conn.execute(query, (channel_id, limit)).fetchall()
 
-        try:
-            if since_id:
-                query = """
-                    SELECT message_id, channel_id, author_name, content, timestamp, has_images
-                    FROM cached_messages
-                    WHERE channel_id = ? AND message_id > ?
-                    AND LOWER(author_name) NOT LIKE '%wendy%'
-                    AND content NOT LIKE '!%'
-                    AND content NOT LIKE '-%'
-                    ORDER BY message_id DESC
-                    LIMIT ?
-                """
-                rows = conn.execute(query, (channel_id, since_id, limit)).fetchall()
-            else:
-                query = """
-                    SELECT message_id, channel_id, author_name, content, timestamp, has_images
-                    FROM cached_messages
-                    WHERE channel_id = ?
-                    AND LOWER(author_name) NOT LIKE '%wendy%'
-                    AND content NOT LIKE '!%'
-                    AND content NOT LIKE '-%'
-                    ORDER BY message_id DESC
-                    LIMIT ?
-                """
-                rows = conn.execute(query, (channel_id, limit)).fetchall()
+                for row in rows:
+                    attachments = find_attachments_for_message(row["message_id"])
+                    msg = MessageInfo(
+                        message_id=row["message_id"],
+                        author=row["author_name"],
+                        content=row["content"],
+                        timestamp=row["timestamp"],
+                        attachments=attachments if attachments else None,
+                    )
+                    messages.append(msg)
 
-            messages = []
-            for row in rows:
-                attachments = find_attachments_for_message(row["message_id"])
-                msg = MessageInfo(
-                    message_id=row["message_id"],
-                    author=row["author_name"],
-                    content=row["content"],
-                    timestamp=row["timestamp"],
-                    attachments=attachments if attachments else None,
-                )
-                messages.append(msg)
+                # Return in chronological order (oldest first)
+                messages = list(reversed(messages))
 
-            # Return in chronological order (oldest first)
-            messages = list(reversed(messages))
+                # Update last_seen with the newest message_id
+                if messages:
+                    newest_id = max(m.message_id for m in messages)
+                    update_last_seen(channel_id, newest_id)
 
-            # Update last_seen with the newest message_id
-            if messages:
-                newest_id = max(m.message_id for m in messages)
-                update_last_seen(channel_id, newest_id)
-
-            return messages
-
-        finally:
-            conn.close()
+            finally:
+                conn.close()
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Log but don't fail - still return task updates
+        print(f"Error reading messages: {e}")
+
+    # Get task completions
+    try:
+        if TASK_COMPLETIONS_FILE.exists():
+            completions = json.loads(TASK_COMPLETIONS_FILE.read_text())
+            if not isinstance(completions, list):
+                completions = completions.get("completions", [])
+
+            # Find unseen completions
+            unseen = [c for c in completions if not c.get("seen_by_proxy", False)]
+
+            for c in unseen:
+                task_updates.append(TaskUpdate(
+                    task_id=c.get("task_id", "unknown"),
+                    title=c.get("title", "Unknown task"),
+                    status="completed" if c.get("success", False) else "failed",
+                    duration=c.get("duration", "unknown"),
+                    completed_at=c.get("completed_at", ""),
+                ))
+
+            # Mark as seen by proxy
+            if unseen:
+                for c in completions:
+                    c["seen_by_proxy"] = True
+                TASK_COMPLETIONS_FILE.write_text(json.dumps(completions, indent=2))
+
+    except Exception as e:
+        print(f"Error reading task completions: {e}")
+
+    return CheckMessagesResponse(messages=messages, task_updates=task_updates)
 
 
 @app.get("/health")
