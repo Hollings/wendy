@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  bot:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: wendy-bot
+    restart: unless-stopped
+    command: ["python", "-m", "bot"]
+    network_mode: host
+    volumes:
+      - wendy_data:/data/wendy
+      - claude_config:/root/.claude
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - WENDY_WHITELIST_CHANNELS=${WENDY_WHITELIST_CHANNELS}
+      - WENDY_DB_PATH=/data/wendy/wendy.db
+      - SYSTEM_PROMPT_FILE=/app/config/system_prompt.txt
+      - CLAUDE_CLI_TIMEOUT=300
+    depends_on:
+      - proxy
+
+  proxy:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: wendy-proxy
+    restart: unless-stopped
+    command: ["uvicorn", "proxy.main:app", "--host", "0.0.0.0", "--port", "8945"]
+    network_mode: host
+    volumes:
+      - wendy_data:/data/wendy
+    environment:
+      - WENDY_DB_PATH=/data/wendy/wendy.db
+      - WENDY_DEPLOY_TOKEN=${WENDY_DEPLOY_TOKEN}
+      - WENDY_GAMES_TOKEN=${WENDY_GAMES_TOKEN}
+      - WENDY_SITES_URL=${WENDY_SITES_URL:-http://127.0.0.1:8910}
+      - WENDY_GAMES_URL=${WENDY_GAMES_URL:-http://127.0.0.1:8920}
+
+volumes:
+  wendy_data:
+    name: wendy_data
+  claude_config:
+    name: claude_config
