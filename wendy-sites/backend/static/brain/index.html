@@ -1,0 +1,1335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wendy's Brain</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background: #0a0a0a;
+            color: #e0e0e0;
+            font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+            font-size: 14px;
+            line-height: 1.5;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        /* Auth Screen */
+        .auth-screen {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .auth-screen h1 { font-size: 24px; font-weight: normal; margin-bottom: 8px; }
+        .auth-screen p { color: #666; margin-bottom: 24px; }
+        .auth-form { display: flex; gap: 8px; }
+        .auth-form input {
+            background: #111; border: 1px solid #333; border-radius: 6px;
+            color: #fff; font-family: inherit; font-size: 14px;
+            padding: 10px 14px; width: 200px;
+        }
+        .auth-form input:focus { outline: none; border-color: #555; }
+        .auth-form button {
+            background: #222; border: 1px solid #333; border-radius: 6px;
+            color: #fff; cursor: pointer; font-family: inherit;
+            font-size: 14px; padding: 10px 20px;
+        }
+        .auth-form button:hover { background: #333; }
+        .auth-error { color: #f87171; margin-top: 12px; font-size: 13px; }
+
+        /* Feed Screen */
+        .feed-screen { display: none; }
+        .feed-screen.active { display: block; }
+
+        header {
+            text-align: center; padding: 40px 0;
+            border-bottom: 1px solid #222; margin-bottom: 20px;
+        }
+        header h1 { font-size: 24px; font-weight: normal; color: #fff; }
+        header p { color: #666; margin-top: 8px; }
+
+        .status {
+            display: inline-block; padding: 4px 12px;
+            border-radius: 12px; font-size: 12px; margin-top: 12px;
+        }
+        .status.connected { background: #1a3a1a; color: #4ade80; }
+        .status.connecting { background: #3a3a1a; color: #facc15; }
+        .status.disconnected { background: #3a1a1a; color: #f87171; }
+
+        #feed {
+            display: flex; flex-direction: column;
+            gap: 8px; padding-bottom: 40px;
+        }
+
+        /* Event Cards */
+        .event {
+            padding: 12px 16px; border-radius: 8px;
+            background: #111; border-left: 3px solid #333;
+            animation: fadeIn 0.2s ease-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .event-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 8px; font-size: 12px; color: #666;
+        }
+        .event-label {
+            display: flex; align-items: center; gap: 8px;
+        }
+        .event-icon {
+            font-size: 14px; width: 20px; text-align: center;
+        }
+        .event-type { text-transform: uppercase; font-weight: 600; }
+
+        /* Tool-specific colors */
+        .event.thinking { border-left-color: #60a5fa; }
+        .event.thinking .event-type { color: #60a5fa; }
+
+        .event.read { border-left-color: #a78bfa; }
+        .event.read .event-type { color: #a78bfa; }
+        .event.read .event-icon { color: #a78bfa; }
+
+        .event.write { border-left-color: #f472b6; }
+        .event.write .event-type { color: #f472b6; }
+        .event.write .event-icon { color: #f472b6; }
+
+        .event.edit { border-left-color: #fb923c; }
+        .event.edit .event-type { color: #fb923c; }
+        .event.edit .event-icon { color: #fb923c; }
+
+        .event.bash { border-left-color: #4ade80; }
+        .event.bash .event-type { color: #4ade80; }
+        .event.bash .event-icon { color: #4ade80; }
+
+        .event.grep, .event.glob { border-left-color: #fbbf24; }
+        .event.grep .event-type, .event.glob .event-type { color: #fbbf24; }
+        .event.grep .event-icon, .event.glob .event-icon { color: #fbbf24; }
+
+        .event.task { border-left-color: #22d3ee; }
+        .event.task .event-type { color: #22d3ee; }
+        .event.task .event-icon { color: #22d3ee; }
+
+        .event.todo { border-left-color: #a3e635; }
+        .event.todo .event-type { color: #a3e635; }
+        .event.todo .event-icon { color: #a3e635; }
+
+        .event.result { border-left-color: #10b981; }
+        .event.result .event-type { color: #10b981; }
+
+        .event.system { border-left-color: #8b5cf6; opacity: 0.7; }
+        .event.system .event-type { color: #8b5cf6; }
+
+        .event.generic-tool { border-left-color: #f59e0b; }
+        .event.generic-tool .event-type { color: #f59e0b; }
+
+        /* Content styling */
+        .event-content {
+            font-size: 13px;
+        }
+
+        .file-path {
+            color: #888;
+        }
+        .file-name {
+            color: #fff;
+            font-weight: 500;
+        }
+        .line-range {
+            color: #666;
+            font-size: 11px;
+            margin-left: 8px;
+        }
+
+        .command-block {
+            background: #0d1117;
+            border: 1px solid #21262d;
+            border-radius: 6px;
+            padding: 8px 12px;
+            margin-top: 4px;
+            overflow-x: auto;
+        }
+        .command-text {
+            color: #7ee787;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .command-desc {
+            color: #666;
+            font-size: 11px;
+            margin-top: 4px;
+        }
+
+        .search-pattern {
+            background: #1a1a2e;
+            color: #fbbf24;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: inherit;
+        }
+        .search-path {
+            color: #888;
+            margin-left: 8px;
+        }
+
+        .task-agent {
+            background: #0d2a3a;
+            color: #22d3ee;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            margin-right: 8px;
+        }
+        .task-prompt {
+            color: #aaa;
+            font-style: italic;
+        }
+
+        .todo-list {
+            margin-top: 4px;
+        }
+        .todo-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 2px 0;
+            font-size: 12px;
+        }
+        .todo-status {
+            font-size: 10px;
+        }
+        .todo-status.completed { color: #4ade80; }
+        .todo-status.in_progress { color: #fbbf24; }
+        .todo-status.pending { color: #666; }
+
+        .result-content {
+            color: #888;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+
+        .thinking-text {
+            color: #c4c4c4;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .idle-notice {
+            text-align: center;
+            color: #444;
+            padding: 40px;
+            font-style: italic;
+        }
+
+        .bytes-info {
+            color: #666;
+            font-size: 11px;
+            margin-left: 8px;
+        }
+
+        /* Sidebar - Desktop */
+        .sidebar {
+            position: fixed;
+            left: 0;
+            top: 0;
+            height: 100vh;
+            width: 200px;
+            background: #0d0d0d;
+            border-right: 1px solid #222;
+            padding: 20px 16px;
+            z-index: 100;
+            overflow-y: auto;
+        }
+
+        /* Shift main content to make room for sidebar */
+        .feed-screen .container {
+            margin-left: 200px;
+            max-width: 800px;
+        }
+
+        /* Hide toggle button on desktop */
+        .sidebar-toggle {
+            display: none;
+        }
+
+        /* Mobile: closeable stats bar */
+        @media (max-width: 640px) {
+            .sidebar {
+                position: fixed;
+                left: 0;
+                top: 0;
+                right: 0;
+                bottom: auto;
+                height: auto;
+                width: 100%;
+                border-right: none;
+                border-bottom: 1px solid #222;
+                padding: 12px 16px;
+                display: none;
+                flex-direction: column;
+                gap: 12px;
+                transform: none;
+            }
+
+            .sidebar.mobile-open {
+                display: flex;
+            }
+
+            .sidebar h3:first-child {
+                margin: 0;
+                padding: 0;
+                border: none;
+            }
+
+            .stats-panel {
+                display: flex;
+                flex-direction: row;
+                flex-wrap: wrap;
+                gap: 12px;
+                margin: 0;
+            }
+
+            .stat-row {
+                flex-direction: row;
+                gap: 4px;
+                padding: 0;
+            }
+
+            .stat-label { font-size: 10px; }
+            .stat-value { font-size: 11px; }
+
+            /* Hide toggle inside sidebar on mobile */
+            .sidebar .sidebar-toggle { display: none; }
+
+            /* Floating toggle button */
+            .sidebar-toggle {
+                display: flex;
+                position: fixed;
+                top: 12px;
+                right: 12px;
+                width: 40px;
+                height: 40px;
+                font-size: 16px;
+                z-index: 101;
+            }
+
+            .feed-screen .container {
+                margin-left: 0;
+                margin-top: 0;
+                max-width: 100%;
+                padding: 12px;
+                padding-top: 64px;
+            }
+
+            /* When open, shift content down */
+            .feed-screen.sidebar-open .container {
+                padding-top: 12px;
+                margin-top: 280px;
+            }
+        }
+
+        .sidebar h3 {
+            font-size: 11px;
+            font-weight: 600;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #222;
+        }
+        .sidebar h3:not(:first-child) { margin-top: 20px; }
+
+        .filter-group { display: flex; flex-direction: column; gap: 4px; }
+
+        .filter-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        .filter-item:hover { background: #1a1a1a; }
+        .filter-item.disabled { opacity: 0.4; }
+        .filter-item.disabled .filter-icon,
+        .filter-item.disabled .filter-label { opacity: 0.5; }
+
+        .filter-checkbox {
+            width: 14px;
+            height: 14px;
+            border: 1px solid #444;
+            border-radius: 3px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            color: transparent;
+            transition: all 0.15s;
+        }
+        .filter-item:not(.disabled) .filter-checkbox {
+            background: #2a4a2a;
+            border-color: #4ade80;
+            color: #4ade80;
+        }
+
+        .filter-icon { font-size: 14px; width: 18px; text-align: center; }
+        .filter-label { font-size: 12px; color: #aaa; }
+        .filter-item:not(.disabled) .filter-label { color: #ddd; }
+
+        .toggle-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 0;
+        }
+        .toggle-label { font-size: 12px; color: #aaa; }
+
+        .toggle-switch {
+            width: 36px;
+            height: 20px;
+            background: #333;
+            border-radius: 10px;
+            position: relative;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .toggle-switch.on { background: #2a4a2a; }
+        .toggle-switch::after {
+            content: '';
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            background: #666;
+            border-radius: 50%;
+            top: 2px;
+            left: 2px;
+            transition: all 0.2s;
+        }
+        .toggle-switch.on::after {
+            left: 18px;
+            background: #4ade80;
+        }
+
+        .filter-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+        }
+        .filter-btn {
+            flex: 1;
+            padding: 6px 8px;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 4px;
+            color: #888;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .filter-btn:hover { background: #222; color: #fff; }
+
+        /* Stats Panel */
+        .stats-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 4px 0;
+        }
+        .stat-label {
+            font-size: 11px;
+            color: #666;
+        }
+        .stat-value {
+            font-size: 12px;
+            color: #ddd;
+            font-weight: 500;
+        }
+        .stat-value.highlight {
+            color: #4ade80;
+        }
+        .stat-value.warning {
+            color: #fbbf24;
+        }
+        .stat-value.danger {
+            color: #f87171;
+        }
+        .context-bar {
+            width: 60px;
+            height: 6px;
+            background: #222;
+            border-radius: 3px;
+            overflow: hidden;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 6px;
+        }
+        .context-bar-fill {
+            height: 100%;
+            background: #4ade80;
+            transition: width 0.3s, background 0.3s;
+        }
+        .context-bar-fill.warning { background: #fbbf24; }
+        .context-bar-fill.danger { background: #f87171; }
+
+        /* Agents list */
+        .agents-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+        .agents-empty {
+            color: #444;
+            font-size: 11px;
+            font-style: italic;
+        }
+        .agent-item {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 4px;
+            padding: 6px 8px;
+            background: #1a1a1a;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+            transition: background 0.15s;
+        }
+        .agent-item:hover { background: #252525; }
+        .agent-id { color: #22d3ee; font-family: monospace; }
+        .agent-time { color: #666; margin-left: auto; font-size: 10px; }
+        .agent-task { color: #888; font-size: 10px; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+        /* Agent Modal */
+        .agent-modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.8);
+            z-index: 200;
+            padding: 20px;
+            overflow-y: auto;
+        }
+        .agent-modal.open { display: flex; justify-content: center; }
+        .agent-modal-content {
+            background: #111;
+            border: 1px solid #333;
+            border-radius: 8px;
+            width: 100%;
+            max-width: 800px;
+            max-height: 90vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .agent-modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            border-bottom: 1px solid #222;
+        }
+        .agent-modal-header span { font-weight: 500; color: #22d3ee; }
+        .agent-modal-close {
+            background: none;
+            border: none;
+            color: #666;
+            font-size: 24px;
+            cursor: pointer;
+            padding: 0;
+            line-height: 1;
+        }
+        .agent-modal-close:hover { color: #fff; }
+        .agent-modal-feed {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        /* Jump to bottom button */
+        .jump-bottom {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background: #222;
+            border: 1px solid #444;
+            border-radius: 24px;
+            color: #fff;
+            padding: 10px 18px;
+            font-family: inherit;
+            font-size: 13px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transform: translateY(80px);
+            opacity: 0;
+            transition: transform 0.2s ease, opacity 0.2s ease, background 0.15s;
+            z-index: 99;
+        }
+        .jump-bottom:hover {
+            background: #333;
+        }
+        .jump-bottom.visible {
+            transform: translateY(0);
+            opacity: 1;
+        }
+        .jump-bottom-arrow {
+            font-size: 16px;
+        }
+
+        @media (max-width: 640px) {
+            .jump-bottom {
+                right: 12px;
+                bottom: 16px;
+                padding: 8px 14px;
+                font-size: 12px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Auth Screen -->
+    <div id="auth-screen" class="auth-screen">
+        <h1>Wendy's Brain</h1>
+        <p>Enter the code to watch Wendy think</p>
+        <form class="auth-form" onsubmit="handleAuth(event)">
+            <input type="text" id="code-input" placeholder="Code word" autocomplete="off" autofocus>
+            <button type="submit">Enter</button>
+        </form>
+        <div id="auth-error" class="auth-error"></div>
+    </div>
+
+    <!-- Feed Screen -->
+    <div id="feed-screen" class="feed-screen">
+        <!-- Mobile toggle button -->
+        <button id="sidebar-toggle" class="sidebar-toggle" onclick="toggleSidebar()">⚙</button>
+
+        <div class="container">
+            <header>
+                <h1>Wendy's Brain</h1>
+                <p>Real-time view of Wendy's Claude Code session</p>
+                <span id="status" class="status connecting">Connecting...</span>
+            </header>
+            <div id="feed">
+                <div class="idle-notice">Waiting for activity...</div>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div id="sidebar" class="sidebar">
+            <h3>Stats</h3>
+            <div id="stats-panel" class="stats-panel">
+                <div class="stat-row">
+                    <span class="stat-label">Context</span>
+                    <span class="stat-value" id="stat-context">-</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Session Cost</span>
+                    <span class="stat-value" id="stat-cost">-</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Messages</span>
+                    <span class="stat-value" id="stat-messages">-</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Viewers</span>
+                    <span class="stat-value" id="stat-viewers">-</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Last Activity</span>
+                    <span class="stat-value" id="stat-activity">-</span>
+                </div>
+            </div>
+
+            <h3>Settings</h3>
+            <div class="toggle-row">
+                <span class="toggle-label">Auto-scroll</span>
+                <div id="autoscroll-toggle" class="toggle-switch on" onclick="toggleAutoscroll()"></div>
+            </div>
+
+            <h3>Agents</h3>
+            <div id="agents-list" class="agents-list">
+                <div class="agents-empty">No agents yet</div>
+            </div>
+
+            <h3>Event Types</h3>
+            <div class="filter-group" id="filter-group">
+                <!-- Generated by JS -->
+            </div>
+            <div class="filter-actions">
+                <button class="filter-btn" onclick="setAllFilters(true)">All</button>
+                <button class="filter-btn" onclick="setAllFilters(false)">None</button>
+            </div>
+        </div>
+
+        <!-- Agent Modal -->
+        <div id="agent-modal" class="agent-modal" onclick="if(event.target===this)closeAgentModal()">
+            <div class="agent-modal-content">
+                <div class="agent-modal-header">
+                    <span id="agent-modal-title">Agent</span>
+                    <button class="agent-modal-close" onclick="closeAgentModal()">&times;</button>
+                </div>
+                <div id="agent-modal-feed" class="agent-modal-feed">
+                    Loading...
+                </div>
+            </div>
+        </div>
+
+        <!-- Jump to bottom button -->
+        <button id="jump-bottom" class="jump-bottom" onclick="jumpToBottom()">
+            <span class="jump-bottom-arrow">↓</span> Jump to bottom
+        </button>
+    </div>
+
+    <script>
+        const MAX_EVENTS = 100;
+        let ws = null;
+        let autoscroll = true;
+
+        // ==================== Filters & Settings ====================
+        const eventTypes = [
+            { id: 'thinking', icon: '💭', label: 'Thinking', color: '#60a5fa' },
+            { id: 'Read', icon: '📄', label: 'Read', color: '#a78bfa' },
+            { id: 'Write', icon: '✏️', label: 'Write', color: '#f472b6' },
+            { id: 'Edit', icon: '🔧', label: 'Edit', color: '#fb923c' },
+            { id: 'Bash', icon: '⌨️', label: 'Bash', color: '#4ade80' },
+            { id: 'Grep', icon: '🔍', label: 'Grep', color: '#fbbf24' },
+            { id: 'Glob', icon: '📁', label: 'Glob', color: '#fbbf24' },
+            { id: 'Task', icon: '🤖', label: 'Task', color: '#22d3ee' },
+            { id: 'TodoWrite', icon: '📋', label: 'Todos', color: '#a3e635' },
+            { id: 'result', icon: '📨', label: 'Results', color: '#10b981' },
+            { id: 'system', icon: '⚡', label: 'System', color: '#8b5cf6' },
+        ];
+
+        let filters = {};
+        function loadSettings() {
+            try {
+                const saved = localStorage.getItem('brain_settings');
+                if (saved) {
+                    const s = JSON.parse(saved);
+                    filters = s.filters || {};
+                    autoscroll = s.autoscroll !== false;
+                }
+            } catch (e) {}
+            // Default all filters to enabled
+            eventTypes.forEach(t => {
+                if (filters[t.id] === undefined) filters[t.id] = true;
+            });
+        }
+        function saveSettings() {
+            localStorage.setItem('brain_settings', JSON.stringify({ filters, autoscroll }));
+        }
+
+        function renderFilters() {
+            const group = document.getElementById('filter-group');
+            group.innerHTML = eventTypes.map(t => `
+                <div class="filter-item ${filters[t.id] ? '' : 'disabled'}" onclick="toggleFilter('${t.id}')">
+                    <div class="filter-checkbox">✓</div>
+                    <span class="filter-icon">${t.icon}</span>
+                    <span class="filter-label">${t.label}</span>
+                </div>
+            `).join('');
+        }
+
+        function toggleFilter(id) {
+            filters[id] = !filters[id];
+            saveSettings();
+            renderFilters();
+            applyFiltersToFeed();
+        }
+
+        function setAllFilters(enabled) {
+            eventTypes.forEach(t => filters[t.id] = enabled);
+            saveSettings();
+            renderFilters();
+            applyFiltersToFeed();
+        }
+
+        function applyFiltersToFeed() {
+            const events = document.querySelectorAll('#feed .event');
+            events.forEach(el => {
+                const type = el.dataset.eventType;
+                el.style.display = filters[type] !== false ? '' : 'none';
+            });
+        }
+
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            const feedScreen = document.getElementById('feed-screen');
+            const toggle = document.getElementById('sidebar-toggle');
+            sidebar.classList.toggle('mobile-open');
+            feedScreen.classList.toggle('sidebar-open');
+            toggle.classList.toggle('active');
+        }
+
+        function toggleAutoscroll() {
+            autoscroll = !autoscroll;
+            const toggle = document.getElementById('autoscroll-toggle');
+            toggle.classList.toggle('on', autoscroll);
+            saveSettings();
+        }
+
+        // ==================== Jump to Bottom ====================
+        function jumpToBottom() {
+            window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+        }
+
+        function updateJumpButton() {
+            const btn = document.getElementById('jump-bottom');
+            if (!btn) return;
+            const scrollBottom = window.innerHeight + window.scrollY;
+            const docHeight = document.documentElement.scrollHeight;
+            // Show button if more than 300px from bottom
+            if (docHeight - scrollBottom > 300) {
+                btn.classList.add('visible');
+            } else {
+                btn.classList.remove('visible');
+            }
+        }
+
+        // Throttled scroll handler
+        let scrollTimeout;
+        window.addEventListener('scroll', () => {
+            if (scrollTimeout) return;
+            scrollTimeout = setTimeout(() => {
+                updateJumpButton();
+                scrollTimeout = null;
+            }, 100);
+        });
+
+        // ==================== Stats ====================
+        let statsInterval = null;
+
+        async function fetchStats() {
+            try {
+                const res = await fetch('/api/brain/stats');
+                if (!res.ok) return;
+                const stats = await res.json();
+                updateStatsDisplay(stats);
+            } catch (e) {
+                console.debug('Failed to fetch stats:', e);
+            }
+        }
+
+        function updateStatsDisplay(stats) {
+            // Context bar
+            const contextEl = document.getElementById('stat-context');
+            const pct = stats.context_pct || 0;
+            const barClass = pct > 80 ? 'danger' : pct > 50 ? 'warning' : '';
+            contextEl.innerHTML = `
+                <span class="context-bar"><span class="context-bar-fill ${barClass}" style="width:${Math.min(pct, 100)}%"></span></span>
+                ${pct}%
+            `;
+
+            // Cost
+            const costEl = document.getElementById('stat-cost');
+            const cost = stats.session_cost || 0;
+            costEl.textContent = cost > 0 ? `$${cost.toFixed(4)}` : '-';
+
+            // Messages
+            const msgEl = document.getElementById('stat-messages');
+            msgEl.textContent = stats.session_messages || 0;
+
+            // Viewers
+            const viewersEl = document.getElementById('stat-viewers');
+            viewersEl.textContent = stats.viewers || 0;
+
+            // Last activity
+            const activityEl = document.getElementById('stat-activity');
+            if (stats.last_activity) {
+                const ago = Math.floor((Date.now() - stats.last_activity) / 1000);
+                if (ago < 60) {
+                    activityEl.textContent = `${ago}s ago`;
+                    activityEl.className = 'stat-value highlight';
+                } else if (ago < 3600) {
+                    activityEl.textContent = `${Math.floor(ago / 60)}m ago`;
+                    activityEl.className = 'stat-value';
+                } else {
+                    activityEl.textContent = `${Math.floor(ago / 3600)}h ago`;
+                    activityEl.className = 'stat-value warning';
+                }
+            } else {
+                activityEl.textContent = '-';
+                activityEl.className = 'stat-value';
+            }
+        }
+
+        function startStatsPolling() {
+            if (statsInterval) return;
+            fetchStats();
+            statsInterval = setInterval(fetchStats, 5000);
+        }
+
+        function stopStatsPolling() {
+            if (statsInterval) {
+                clearInterval(statsInterval);
+                statsInterval = null;
+            }
+        }
+
+        // ==================== Auth ====================
+        function getToken() { return localStorage.getItem('brain_token'); }
+        function setToken(token) { localStorage.setItem('brain_token', token); }
+        function clearToken() { localStorage.removeItem('brain_token'); }
+
+        async function authenticate(code) {
+            const res = await fetch('/api/brain/auth', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code })
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || 'Invalid code');
+            }
+            const { token } = await res.json();
+            setToken(token);
+            return true;
+        }
+
+        async function handleAuth(e) {
+            e.preventDefault();
+            const input = document.getElementById('code-input');
+            const error = document.getElementById('auth-error');
+            const code = input.value.trim();
+            if (!code) return;
+            error.textContent = '';
+            input.disabled = true;
+            try {
+                await authenticate(code);
+                showFeed();
+                connect();
+            } catch (e) {
+                error.textContent = e.message || 'Authentication failed';
+                input.disabled = false;
+                input.focus();
+            }
+        }
+
+        // ==================== UI ====================
+        function showAuth() {
+            document.getElementById('auth-screen').style.display = 'flex';
+            document.getElementById('feed-screen').classList.remove('active');
+            stopStatsPolling();
+            stopAgentsPolling();
+        }
+        function showFeed() {
+            document.getElementById('auth-screen').style.display = 'none';
+            document.getElementById('feed-screen').classList.add('active');
+            startStatsPolling();
+            startAgentsPolling();
+        }
+        function setStatus(state, text) {
+            const el = document.getElementById('status');
+            el.className = 'status ' + state;
+            el.textContent = text || state.charAt(0).toUpperCase() + state.slice(1);
+        }
+
+        // ==================== Rendering ====================
+        function formatTime(ts) { return new Date(ts).toLocaleTimeString(); }
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        function truncate(str, len = 200) {
+            if (!str || str.length <= len) return str;
+            return str.slice(0, len) + '...';
+        }
+        function basename(path) {
+            const parts = path.split('/');
+            return parts[parts.length - 1];
+        }
+        function dirname(path) {
+            const parts = path.split('/');
+            parts.pop();
+            return parts.join('/') + '/';
+        }
+
+        // Tool-specific renderers
+        const toolRenderers = {
+            Read: (input) => {
+                const path = input.file_path || '';
+                const offset = input.offset;
+                const limit = input.limit;
+                let range = '';
+                if (offset !== undefined || limit !== undefined) {
+                    range = `<span class="line-range">lines ${offset || 0}-${(offset || 0) + (limit || '?')}</span>`;
+                }
+                return `<span class="file-path">${escapeHtml(dirname(path))}</span><span class="file-name">${escapeHtml(basename(path))}</span>${range}`;
+            },
+
+            Write: (input) => {
+                const path = input.file_path || '';
+                const content = input.content || '';
+                const bytes = content.length;
+                return `<span class="file-path">${escapeHtml(dirname(path))}</span><span class="file-name">${escapeHtml(basename(path))}</span><span class="bytes-info">${bytes} bytes</span>`;
+            },
+
+            Edit: (input) => {
+                const path = input.file_path || '';
+                const oldStr = truncate(input.old_string || '', 50);
+                const newStr = truncate(input.new_string || '', 50);
+                return `<span class="file-path">${escapeHtml(dirname(path))}</span><span class="file-name">${escapeHtml(basename(path))}</span>
+                    <div class="command-block" style="margin-top: 8px;">
+                        <div style="color: #f87171;">- ${escapeHtml(oldStr)}</div>
+                        <div style="color: #4ade80;">+ ${escapeHtml(newStr)}</div>
+                    </div>`;
+            },
+
+            Bash: (input) => {
+                const cmd = input.command || '';
+                const desc = input.description || '';
+                return `${desc ? `<div class="command-desc">${escapeHtml(desc)}</div>` : ''}
+                    <div class="command-block"><span class="command-text">$ ${escapeHtml(truncate(cmd, 300))}</span></div>`;
+            },
+
+            Grep: (input) => {
+                const pattern = input.pattern || '';
+                const path = input.path || '.';
+                return `<span class="search-pattern">${escapeHtml(truncate(pattern, 60))}</span><span class="search-path">in ${escapeHtml(path)}</span>`;
+            },
+
+            Glob: (input) => {
+                const pattern = input.pattern || '';
+                const path = input.path || '.';
+                return `<span class="search-pattern">${escapeHtml(pattern)}</span><span class="search-path">in ${escapeHtml(path)}</span>`;
+            },
+
+            Task: (input) => {
+                const agent = input.subagent_type || 'general';
+                const prompt = truncate(input.prompt || '', 150);
+                return `<span class="task-agent">${escapeHtml(agent)}</span><span class="task-prompt">${escapeHtml(prompt)}</span>`;
+            },
+
+            TodoWrite: (input) => {
+                const todos = input.todos || [];
+                if (todos.length === 0) return '<span style="color:#666">Cleared todos</span>';
+                const statusIcons = { completed: '✓', in_progress: '◐', pending: '○' };
+                const items = todos.slice(0, 5).map(t => {
+                    const icon = statusIcons[t.status] || '○';
+                    return `<div class="todo-item"><span class="todo-status ${t.status}">${icon}</span>${escapeHtml(truncate(t.content, 60))}</div>`;
+                }).join('');
+                const more = todos.length > 5 ? `<div style="color:#666;font-size:11px">+${todos.length - 5} more</div>` : '';
+                return `<div class="todo-list">${items}${more}</div>`;
+            }
+        };
+
+        const toolIcons = {
+            Read: '📄', Write: '✏️', Edit: '🔧', Bash: '⌨️',
+            Grep: '🔍', Glob: '📁', Task: '🤖', TodoWrite: '📋'
+        };
+
+        const toolClasses = {
+            Read: 'read', Write: 'write', Edit: 'edit', Bash: 'bash',
+            Grep: 'grep', Glob: 'glob', Task: 'task', TodoWrite: 'todo'
+        };
+
+        function renderToolUse(block) {
+            const name = block.name || 'Unknown';
+            const input = block.input || {};
+            const renderer = toolRenderers[name];
+            const icon = toolIcons[name] || '🔧';
+            const cls = toolClasses[name] || 'generic-tool';
+
+            let content;
+            if (renderer) {
+                content = renderer(input);
+            } else {
+                content = `<span style="color:#f59e0b">${escapeHtml(name)}</span>
+                    <div class="command-block">${escapeHtml(truncate(JSON.stringify(input, null, 2), 200))}</div>`;
+            }
+
+            return { cls, icon, name, content };
+        }
+
+        function renderEvent(data) {
+            const { ts, event } = data;
+            if (!event) return null;
+
+            const div = document.createElement('div');
+            div.className = 'event';
+
+            let icon = '';
+            let type = '';
+            let content = '';
+            let cls = '';
+            let filterType = '';  // Used for filtering
+
+            if (event.type === 'ping') {
+                return null;
+            } else if (event.type === 'system') {
+                cls = 'system';
+                icon = '⚡';
+                type = event.subtype || 'system';
+                filterType = 'system';
+                content = event.subtype === 'init' ? 'Session started' : escapeHtml(JSON.stringify(event));
+            } else if (event.type === 'assistant') {
+                const blocks = event.message?.content || [];
+                for (const block of blocks) {
+                    if (block.type === 'text' && block.text) {
+                        cls = 'thinking';
+                        icon = '💭';
+                        type = 'thinking';
+                        filterType = 'thinking';
+                        content = `<div class="thinking-text">${escapeHtml(block.text)}</div>`;
+                    } else if (block.type === 'tool_use') {
+                        const rendered = renderToolUse(block);
+                        cls = rendered.cls;
+                        icon = rendered.icon;
+                        type = rendered.name;
+                        filterType = rendered.name;  // Read, Write, Edit, Bash, etc.
+                        content = rendered.content;
+                    }
+                }
+            } else if (event.type === 'user') {
+                const blocks = event.message?.content || [];
+                for (const block of blocks) {
+                    if (block.type === 'tool_result') {
+                        cls = 'result';
+                        icon = '📨';
+                        type = 'result';
+                        filterType = 'result';
+                        const resultContent = block.content || '';
+                        content = `<div class="result-content">${escapeHtml(truncate(resultContent, 500))}</div>`;
+                    }
+                }
+            } else if (event.type === 'result') {
+                cls = 'system';
+                icon = '✅';
+                type = 'complete';
+                filterType = 'system';
+                content = `Session complete (${event.num_turns || '?'} turns)`;
+            }
+
+            if (!type) return null;
+
+            div.classList.add(cls);
+            div.dataset.eventType = filterType;
+            div.innerHTML = `
+                <div class="event-header">
+                    <div class="event-label">
+                        <span class="event-icon">${icon}</span>
+                        <span class="event-type">${escapeHtml(type)}</span>
+                    </div>
+                    <span class="event-time">${formatTime(ts)}</span>
+                </div>
+                <div class="event-content">${content}</div>
+            `;
+
+            // Apply filter immediately
+            if (filters[filterType] === false) {
+                div.style.display = 'none';
+            }
+
+            return div;
+        }
+
+        function addEvent(data) {
+            const feed = document.getElementById('feed');
+            const idle = feed.querySelector('.idle-notice');
+            if (idle) idle.remove();
+
+            const el = renderEvent(data);
+            if (!el) return;
+
+            feed.appendChild(el);
+            while (feed.children.length > MAX_EVENTS) {
+                feed.removeChild(feed.firstChild);
+            }
+
+            if (autoscroll) {
+                window.scrollTo(0, document.body.scrollHeight);
+            }
+        }
+
+        // ==================== WebSocket ====================
+        function connect() {
+            const token = getToken();
+            if (!token) { showAuth(); return; }
+
+            setStatus('connecting', 'Connecting...');
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(protocol + '//' + location.host + '/ws/brain?token=' + encodeURIComponent(token));
+
+            ws.onopen = () => setStatus('connected', 'Connected');
+            ws.onclose = (e) => {
+                ws = null;
+                if (e.code === 4001) {
+                    clearToken();
+                    showAuth();
+                    document.getElementById('auth-error').textContent = 'Session expired';
+                } else if (e.code === 4002) {
+                    setStatus('disconnected', 'Server full');
+                } else {
+                    setStatus('disconnected', 'Disconnected');
+                    setTimeout(connect, 3000);
+                }
+            };
+            ws.onerror = () => setStatus('disconnected', 'Error');
+            ws.onmessage = (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    if (data.type === 'ping') { ws.send('pong'); }
+                    else { addEvent(data); }
+                } catch (err) { console.error('Parse error:', err); }
+            };
+        }
+
+        // ==================== Agents ====================
+        let agentsInterval = null;
+
+        async function fetchAgents() {
+            try {
+                const res = await fetch('/api/brain/agents');
+                if (!res.ok) return;
+                const data = await res.json();
+                renderAgentsList(data.agents || []);
+            } catch (e) {
+                console.debug('Failed to fetch agents:', e);
+            }
+        }
+
+        function renderAgentsList(agents) {
+            const container = document.getElementById('agents-list');
+            if (agents.length === 0) {
+                container.innerHTML = '<div class="agents-empty">No agents yet</div>';
+                return;
+            }
+
+            container.innerHTML = agents.map(agent => {
+                const ago = getTimeAgo(agent.modified);
+                const task = agent.task ? escapeHtml(truncate(agent.task, 40)) : '';
+                const label = task || agent.slug || agent.id;
+                return `
+                    <div class="agent-item" onclick="openAgentModal('${agent.id}', '${escapeHtml(label)}')">
+                        <span class="agent-id">${agent.id.slice(0, 7)}</span>
+                        <span class="agent-time">${ago}</span>
+                        ${task ? `<div style="color:#888;font-size:10px;width:100%;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${task}</div>` : ''}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function getTimeAgo(timestamp) {
+            const ago = Math.floor((Date.now() - timestamp) / 1000);
+            if (ago < 60) return `${ago}s`;
+            if (ago < 3600) return `${Math.floor(ago / 60)}m`;
+            if (ago < 86400) return `${Math.floor(ago / 3600)}h`;
+            return `${Math.floor(ago / 86400)}d`;
+        }
+
+        async function openAgentModal(agentId, label) {
+            const modal = document.getElementById('agent-modal');
+            const title = document.getElementById('agent-modal-title');
+            const feed = document.getElementById('agent-modal-feed');
+
+            title.textContent = `Agent: ${label}`;
+            feed.innerHTML = '<div style="color:#666;text-align:center;padding:40px">Loading...</div>';
+            modal.classList.add('open');
+
+            try {
+                const res = await fetch(`/api/brain/agents/${agentId}?limit=100`);
+                if (!res.ok) throw new Error('Failed to load agent');
+                const data = await res.json();
+
+                feed.innerHTML = '';
+                const events = data.events || [];
+                if (events.length === 0) {
+                    feed.innerHTML = '<div style="color:#666;text-align:center;padding:40px">No events yet</div>';
+                    return;
+                }
+
+                events.forEach(eventJson => {
+                    try {
+                        const parsed = JSON.parse(eventJson);
+                        const el = renderEvent(parsed);
+                        if (el) feed.appendChild(el);
+                    } catch (e) {}
+                });
+
+                // Scroll to bottom of modal
+                feed.scrollTop = feed.scrollHeight;
+            } catch (e) {
+                feed.innerHTML = `<div style="color:#f87171;text-align:center;padding:40px">${e.message}</div>`;
+            }
+        }
+
+        function closeAgentModal() {
+            document.getElementById('agent-modal').classList.remove('open');
+        }
+
+        function startAgentsPolling() {
+            if (agentsInterval) return;
+            fetchAgents();
+            agentsInterval = setInterval(fetchAgents, 10000);
+        }
+
+        function stopAgentsPolling() {
+            if (agentsInterval) {
+                clearInterval(agentsInterval);
+                agentsInterval = null;
+            }
+        }
+
+        // ==================== Init ====================
+        function init() {
+            // Load saved settings
+            loadSettings();
+            renderFilters();
+
+            // Set initial autoscroll toggle state
+            const toggle = document.getElementById('autoscroll-toggle');
+            toggle.classList.toggle('on', autoscroll);
+
+            const params = new URLSearchParams(location.search);
+            const urlKey = params.get('key');
+
+            if (urlKey) {
+                authenticate(urlKey)
+                    .then(() => { history.replaceState({}, '', '/'); showFeed(); connect(); })
+                    .catch((e) => {
+                        history.replaceState({}, '', '/');
+                        showAuth();
+                        document.getElementById('auth-error').textContent = e.message || 'Invalid code';
+                    });
+            } else if (getToken()) {
+                showFeed();
+                connect();
+            } else {
+                showAuth();
+            }
+        }
+
+        init();
+    </script>
+</body>
+</html>

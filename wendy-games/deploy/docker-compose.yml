@@ -1,0 +1,36 @@
+services:
+  manager:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: wendy-games-manager
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:8920:8920"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /srv/wendy-games/data:/data/games
+    environment:
+      - DEPLOY_TOKEN=${DEPLOY_TOKEN}
+      - GAMES_DIR=/data/games
+      - HOST_GAMES_DIR=/srv/wendy-games/data
+      - BASE_PORT=8921
+      - MAX_GAMES=20
+      - BASE_URL=https://wendy.monster
+      - DOCKER_NETWORK=wendy-games_default
+    networks:
+      - default
+
+  # Build the runtime image once
+  runtime-builder:
+    build:
+      context: ../runtime
+      dockerfile: Dockerfile
+    image: wendy-games-runtime
+    command: ["echo", "Runtime image built"]
+    profiles:
+      - build
+
+networks:
+  default:
+    name: wendy-games_default

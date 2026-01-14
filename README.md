@@ -13,51 +13,68 @@ A Discord bot powered by Claude Code that can chat, write code, and deploy proje
 ## Architecture
 
 ```
-Discord <-> Bot <-> Claude Code CLI
-              |
-              v
-           Proxy API
-              |
-        +-----+-----+
-        |           |
-   wendy-sites  wendy-games
-   (static)     (multiplayer)
+Discord <-> wendy-bot <-> Claude Code CLI
+                |
+                v
+            Proxy API
+                |
+          +-----+-----+
+          |           |
+    wendy-sites   wendy-games
+     (static)    (multiplayer)
 ```
 
-- **bot/** - Discord bot using discord.py, invokes Claude Code CLI for responses
-- **proxy/** - FastAPI service providing sandboxed APIs for messaging and deployment
-- **config/** - System prompt that defines Wendy's personality and capabilities
-- **scripts/** - Deployment utilities for wendy.monster
+## Components
+
+### wendy-bot/
+The Discord bot and proxy API.
+- `bot/` - Discord bot using discord.py, invokes Claude Code CLI
+- `proxy/` - FastAPI service for sandboxed messaging and deployment
+- `config/` - System prompt defining Wendy's personality
+
+### wendy-sites/
+Static site hosting at wendy.monster. Also serves the Brain Feed - a real-time visualization of Wendy's Claude Code session.
+- `backend/` - FastAPI app for site deployment and brain feed WebSocket
+- Handles tarball uploads, serves static files
+
+### wendy-games/
+Multiplayer game server manager at wendy.monster/game/*.
+- `manager/` - FastAPI app that spawns and manages game containers
+- `runtime/` - Deno helper library for game servers
+- Each game runs in its own Docker container with WebSocket support
 
 ## Setup
 
 1. Clone and configure:
 ```bash
+# Bot
 cp deploy/.env.example deploy/.env
-# Edit deploy/.env with your tokens
+
+# Sites
+cp wendy-sites/deploy/.env.example wendy-sites/deploy/.env
+
+# Games
+cp wendy-games/deploy/.env.example wendy-games/deploy/.env
+
+# Edit each .env with your tokens
 ```
 
 2. Run with Docker:
 ```bash
-cd deploy
-docker compose up -d
+# Start all services
+cd deploy && docker compose up -d
+cd ../wendy-sites/deploy && docker compose up -d
+cd ../wendy-games/deploy && docker compose up -d
 ```
 
-See [SETUP.md](SETUP.md) for detailed instructions.
+## Wendy's Creations
 
-## Environment Variables
+Wendy deploys her projects to wendy.monster:
+- **wendy.monster/** - Brain feed (watch Wendy think in real-time)
+- **wendy.monster/landing/** - Her personal landing page
+- **wendy.monster/game/** - Multiplayer games she's built
 
-| Variable | Description |
-|----------|-------------|
-| `DISCORD_TOKEN` | Discord bot token |
-| `WENDY_WHITELIST_CHANNELS` | Comma-separated channel IDs where Wendy responds |
-| `WENDY_DEPLOY_TOKEN` | Token for wendy-sites deployment |
-| `WENDY_GAMES_TOKEN` | Token for wendy-games deployment |
-
-## Related Projects
-
-- [wendy-sites](https://github.com/Hollings/wendy-sites) - Static site hosting service
-- [wendy-games](https://github.com/Hollings/wendy-games) - Multiplayer game server manager
+Her code lives in `/data/wendy/wendys_folder/` inside the container.
 
 ## License
 

@@ -1,6 +1,6 @@
 # Environment files with secrets
 .env
-deploy/.env
+**/deploy/.env
 
 # Python
 __pycache__/
