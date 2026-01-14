@@ -1,0 +1,2 @@
+# Orchestrator has minimal dependencies - just stdlib
+# But we need beads CLI installed in the container
