@@ -573,6 +573,113 @@
             gap: 8px;
         }
 
+        /* Task viewing banner */
+        .task-banner {
+            display: none;
+            background: linear-gradient(135deg, #1a2a3a 0%, #0d1a2a 100%);
+            border: 1px solid #22d3ee;
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-bottom: 20px;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+        .task-banner.visible { display: flex; }
+        .task-banner-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .task-banner-icon {
+            font-size: 20px;
+        }
+        .task-banner-text {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .task-banner-label {
+            font-size: 11px;
+            color: #22d3ee;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .task-banner-title {
+            font-size: 14px;
+            color: #fff;
+        }
+        .task-banner-back {
+            background: #1a3a4a;
+            border: 1px solid #22d3ee;
+            border-radius: 6px;
+            color: #22d3ee;
+            padding: 8px 16px;
+            font-family: inherit;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .task-banner-back:hover {
+            background: #22d3ee;
+            color: #000;
+        }
+
+        /* Task list in sidebar */
+        .tasks-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .tasks-empty {
+            color: #444;
+            font-size: 11px;
+            font-style: italic;
+        }
+        .task-item {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            padding: 8px 10px;
+            background: #1a1a1a;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+            transition: background 0.15s;
+            border-left: 3px solid transparent;
+        }
+        .task-item:hover { background: #252525; }
+        .task-item.in_progress { border-left-color: #fbbf24; }
+        .task-item.open { border-left-color: #22d3ee; }
+        .task-item.closed { border-left-color: #4ade80; opacity: 0.6; }
+        .task-item.viewing { background: #1a2a3a; border-left-color: #22d3ee; }
+        .task-item-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .task-item-id {
+            color: #22d3ee;
+            font-family: monospace;
+            font-size: 10px;
+        }
+        .task-item-status {
+            font-size: 10px;
+            padding: 1px 6px;
+            border-radius: 3px;
+        }
+        .task-item-status.in_progress { background: #3a3a1a; color: #fbbf24; }
+        .task-item-status.open { background: #1a2a3a; color: #22d3ee; }
+        .task-item-status.closed { background: #1a3a1a; color: #4ade80; }
+        .task-item-title {
+            color: #ccc;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
         /* Jump to bottom button */
         .jump-bottom {
             position: fixed;
@@ -638,6 +745,19 @@
                 <p>Real-time view of Wendy's Claude Code session</p>
                 <span id="status" class="status connecting">Connecting...</span>
             </header>
+
+            <!-- Task viewing banner -->
+            <div id="task-banner" class="task-banner">
+                <div class="task-banner-info">
+                    <span class="task-banner-icon">🔧</span>
+                    <div class="task-banner-text">
+                        <span class="task-banner-label">Viewing Task Output</span>
+                        <span id="task-banner-title" class="task-banner-title">-</span>
+                    </div>
+                </div>
+                <button class="task-banner-back" onclick="backToWendy()">← Back to Wendy</button>
+            </div>
+
             <div id="feed">
                 <div class="idle-notice">Waiting for activity...</div>
             </div>
@@ -673,6 +793,11 @@
             <div class="toggle-row">
                 <span class="toggle-label">Auto-scroll</span>
                 <div id="autoscroll-toggle" class="toggle-switch on" onclick="toggleAutoscroll()"></div>
+            </div>
+
+            <h3>Tasks</h3>
+            <div id="tasks-list" class="tasks-list">
+                <div class="tasks-empty">No tasks</div>
             </div>
 
             <h3>Agents</h3>
@@ -940,12 +1065,15 @@
             document.getElementById('feed-screen').classList.remove('active');
             stopStatsPolling();
             stopAgentsPolling();
+            stopTasksPolling();
+            stopTaskLogPolling();
         }
         function showFeed() {
             document.getElementById('auth-screen').style.display = 'none';
             document.getElementById('feed-screen').classList.add('active');
             startStatsPolling();
             startAgentsPolling();
+            startTasksPolling();
         }
         function setStatus(state, text) {
             const el = document.getElementById('status');
@@ -1297,6 +1425,203 @@
             if (agentsInterval) {
                 clearInterval(agentsInterval);
                 agentsInterval = null;
+            }
+        }
+
+        // ==================== Tasks (Beads) ====================
+        let tasksInterval = null;
+        let viewingTaskId = null;
+        let viewingTaskTitle = null;
+        let taskLogOffset = 0;
+        let taskLogInterval = null;
+        let savedWendyFeed = null;
+
+        async function fetchTasks() {
+            try {
+                const res = await fetch('/api/brain/beads');
+                if (!res.ok) return;
+                const data = await res.json();
+                renderTasksList(data.beads || []);
+            } catch (e) {
+                console.debug('Failed to fetch tasks:', e);
+            }
+        }
+
+        function renderTasksList(tasks) {
+            const container = document.getElementById('tasks-list');
+            if (tasks.length === 0) {
+                container.innerHTML = '<div class="tasks-empty">No tasks</div>';
+                return;
+            }
+
+            container.innerHTML = tasks.map(task => {
+                const statusLabel = {
+                    'in_progress': 'Running',
+                    'open': 'Queued',
+                    'closed': 'Done'
+                }[task.status] || task.status;
+                const isViewing = viewingTaskId === task.id;
+                return `
+                    <div class="task-item ${task.status} ${isViewing ? 'viewing' : ''}" onclick="viewTask('${task.id}', '${escapeHtml(task.title)}')">
+                        <div class="task-item-header">
+                            <span class="task-item-id">${task.id}</span>
+                            <span class="task-item-status ${task.status}">${statusLabel}</span>
+                        </div>
+                        <div class="task-item-title">${escapeHtml(task.title)}</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function viewTask(taskId, title) {
+            // Save current Wendy feed if not already viewing a task
+            if (!viewingTaskId) {
+                savedWendyFeed = document.getElementById('feed').innerHTML;
+            }
+
+            viewingTaskId = taskId;
+            viewingTaskTitle = title;
+            taskLogOffset = 0;
+
+            // Update banner
+            document.getElementById('task-banner').classList.add('visible');
+            document.getElementById('task-banner-title').textContent = `${taskId}: ${title}`;
+
+            // Clear feed and show loading
+            const feed = document.getElementById('feed');
+            feed.innerHTML = '<div class="idle-notice">Loading task output...</div>';
+
+            // Update task list to show which one is being viewed
+            renderTasksList(Array.from(document.querySelectorAll('.task-item')).map(el => ({
+                id: el.querySelector('.task-item-id')?.textContent || '',
+                title: el.querySelector('.task-item-title')?.textContent || '',
+                status: Array.from(el.classList).find(c => ['in_progress', 'open', 'closed'].includes(c)) || 'open'
+            })));
+
+            // Disconnect WebSocket while viewing task
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+
+            // Start polling task log
+            startTaskLogPolling();
+        }
+
+        function backToWendy() {
+            // Stop task log polling
+            stopTaskLogPolling();
+
+            // Hide banner
+            document.getElementById('task-banner').classList.remove('visible');
+
+            // Restore Wendy feed
+            const feed = document.getElementById('feed');
+            if (savedWendyFeed) {
+                feed.innerHTML = savedWendyFeed;
+            } else {
+                feed.innerHTML = '<div class="idle-notice">Waiting for activity...</div>';
+            }
+
+            viewingTaskId = null;
+            viewingTaskTitle = null;
+            savedWendyFeed = null;
+
+            // Re-fetch tasks to update viewing state
+            fetchTasks();
+
+            // Reconnect WebSocket
+            connect();
+        }
+
+        async function fetchTaskLog() {
+            if (!viewingTaskId) return;
+
+            try {
+                const res = await fetch(`/api/brain/beads/${viewingTaskId}/log?offset=${taskLogOffset}`);
+                if (!res.ok) return;
+                const data = await res.json();
+
+                if (data.log) {
+                    appendTaskLog(data.log);
+                }
+                taskLogOffset = data.offset;
+
+                // If task is complete, slow down polling
+                if (data.complete && taskLogInterval) {
+                    clearInterval(taskLogInterval);
+                    taskLogInterval = setInterval(fetchTaskLog, 5000);
+                }
+            } catch (e) {
+                console.debug('Failed to fetch task log:', e);
+            }
+        }
+
+        function appendTaskLog(text) {
+            const feed = document.getElementById('feed');
+            const idle = feed.querySelector('.idle-notice');
+            if (idle) idle.remove();
+
+            // Split by lines and create log entries
+            const lines = text.split('\n');
+            for (const line of lines) {
+                if (!line.trim()) continue;
+
+                const div = document.createElement('div');
+                div.className = 'event';
+
+                // Try to detect line type
+                if (line.includes('[TOOL]') || line.includes('Tool:')) {
+                    div.classList.add('bash');
+                } else if (line.includes('[THINKING]') || line.startsWith('Thinking:')) {
+                    div.classList.add('thinking');
+                } else if (line.includes('[ERROR]') || line.includes('Error:')) {
+                    div.classList.add('system');
+                    div.style.borderLeftColor = '#f87171';
+                } else if (line.includes('===')) {
+                    div.classList.add('system');
+                } else {
+                    div.classList.add('result');
+                }
+
+                div.innerHTML = `<div class="event-content" style="white-space:pre-wrap;word-break:break-word;font-size:12px;color:#aaa;">${escapeHtml(line)}</div>`;
+                feed.appendChild(div);
+            }
+
+            // Auto-scroll if enabled
+            if (autoscroll) {
+                window.scrollTo(0, document.body.scrollHeight);
+            }
+
+            // Trim old entries
+            while (feed.children.length > MAX_EVENTS * 2) {
+                feed.removeChild(feed.firstChild);
+            }
+        }
+
+        function startTaskLogPolling() {
+            if (taskLogInterval) return;
+            fetchTaskLog();
+            taskLogInterval = setInterval(fetchTaskLog, 1000);
+        }
+
+        function stopTaskLogPolling() {
+            if (taskLogInterval) {
+                clearInterval(taskLogInterval);
+                taskLogInterval = null;
+            }
+        }
+
+        function startTasksPolling() {
+            if (tasksInterval) return;
+            fetchTasks();
+            tasksInterval = setInterval(fetchTasks, 10000);
+        }
+
+        function stopTasksPolling() {
+            if (tasksInterval) {
+                clearInterval(tasksInterval);
+                tasksInterval = null;
             }
         }
 

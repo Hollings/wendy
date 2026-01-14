@@ -89,6 +89,90 @@ async def brain_agent_events(agent_id: str, limit: int = 50):
     return {"agent_id": agent_id, "events": events}
 
 
+@app.get("/api/brain/beads")
+async def brain_beads():
+    """List all beads (tasks) from the queue."""
+    import json
+    if not auth.is_configured():
+        raise HTTPException(status_code=503, detail="Brain feed not configured")
+
+    jsonl_path = Path("/data/wendy/.beads/issues.jsonl")
+    beads = []
+
+    if jsonl_path.exists():
+        try:
+            # Parse JSONL - later lines update earlier ones (append-only log)
+            issues_by_id = {}
+            for line in jsonl_path.read_text().strip().split("\n"):
+                if not line.strip():
+                    continue
+                try:
+                    data = json.loads(line)
+                    issue_id = data.get("id")
+                    if issue_id:
+                        issues_by_id[issue_id] = data
+                except json.JSONDecodeError:
+                    continue
+
+            for issue_id, data in issues_by_id.items():
+                beads.append({
+                    "id": issue_id,
+                    "title": data.get("title", "Untitled"),
+                    "status": data.get("status", "open"),
+                    "priority": data.get("priority", 2),
+                    "created": data.get("created"),
+                    "labels": data.get("labels", []),
+                })
+        except IOError:
+            pass
+
+    # Sort: in_progress first, then open, then closed
+    status_order = {"in_progress": 0, "open": 1, "closed": 2}
+    beads.sort(key=lambda b: (
+        status_order.get(b["status"], 3),
+        b.get("priority", 2) if b["status"] != "closed" else 999,
+    ))
+
+    return {"beads": beads}
+
+
+@app.get("/api/brain/beads/{task_id}/log")
+async def brain_task_log(task_id: str, offset: int = 0):
+    """Get log output for a task."""
+    if not auth.is_configured():
+        raise HTTPException(status_code=503, detail="Brain feed not configured")
+
+    logs_dir = Path("/data/wendy/orchestrator_logs")
+    if not logs_dir.exists():
+        return {"task_id": task_id, "log": "", "offset": 0, "complete": False}
+
+    # Find log file for this task
+    log_files = list(logs_dir.glob(f"agent_{task_id}_*.log"))
+    if not log_files:
+        return {"task_id": task_id, "log": "", "offset": 0, "complete": False}
+
+    # Use the most recent log file for this task
+    log_file = max(log_files, key=lambda f: f.stat().st_mtime)
+
+    try:
+        content = log_file.read_text()
+        # Return content from offset
+        new_content = content[offset:] if offset < len(content) else ""
+        new_offset = len(content)
+
+        # Check if task is complete (look for completion markers)
+        complete = "=== TASK COMPLETE ===" in content or "=== TASK FAILED ===" in content
+
+        return {
+            "task_id": task_id,
+            "log": new_content,
+            "offset": new_offset,
+            "complete": complete,
+        }
+    except IOError:
+        return {"task_id": task_id, "log": "", "offset": 0, "complete": False}
+
+
 @app.post("/api/brain/auth", response_model=BrainAuthResponse)
 async def brain_authenticate(request: BrainAuthRequest):
     """Validate access code and return token."""
