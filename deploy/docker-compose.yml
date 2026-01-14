@@ -38,6 +38,27 @@ services:
       - WENDY_SITES_URL=${WENDY_SITES_URL:-http://127.0.0.1:8910}
       - WENDY_GAMES_URL=${WENDY_GAMES_URL:-http://127.0.0.1:8920}
 
+  orchestrator:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: wendy-orchestrator
+    restart: unless-stopped
+    command: ["python", "-m", "orchestrator"]
+    network_mode: host
+    volumes:
+      - wendy_data:/data/wendy
+      - claude_config:/root/.claude
+    environment:
+      - ORCHESTRATOR_CONCURRENCY=1
+      - ORCHESTRATOR_POLL_INTERVAL=30
+      - ORCHESTRATOR_WORKING_DIR=/data/wendy
+      - ORCHESTRATOR_PROXY_URL=http://127.0.0.1:8945
+      - ORCHESTRATOR_NOTIFY_CHANNEL=${ORCHESTRATOR_NOTIFY_CHANNEL:-}
+      - AGENT_SYSTEM_PROMPT_FILE=/app/config/agent_claude_md.txt
+    depends_on:
+      - proxy
+
 volumes:
   wendy_data:
     name: wendy_data
