@@ -10,8 +10,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+import json
+
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from .claude_cli import ClaudeCliTextGenerator, ClaudeCliError
 
@@ -20,6 +22,10 @@ _LOG = logging.getLogger(__name__)
 # Database for caching messages
 DB_PATH = Path(os.getenv("WENDY_DB_PATH", "/data/wendy.db"))
 ATTACHMENTS_DIR = Path("/data/wendy/attachments")
+
+# Task completion watcher
+TASK_COMPLETIONS_FILE = Path("/data/wendy/task_completions.json")
+NOTIFY_CHANNEL_ID = os.getenv("WENDY_NOTIFY_CHANNEL", "")
 
 
 class GenerationJob:
@@ -51,6 +57,19 @@ class WendyCog(commands.Cog):
 
         # Initialize database
         self._init_db()
+
+        # Notify channel for task completions
+        self.notify_channel_id: int | None = None
+        if NOTIFY_CHANNEL_ID:
+            try:
+                self.notify_channel_id = int(NOTIFY_CHANNEL_ID)
+            except ValueError:
+                _LOG.warning("Invalid WENDY_NOTIFY_CHANNEL: %s", NOTIFY_CHANNEL_ID)
+
+        # Start task completion watcher
+        if self.notify_channel_id:
+            self.watch_task_completions.start()
+            _LOG.info("Task completion watcher started for channel %d", self.notify_channel_id)
 
         _LOG.info("WendyCog initialized with %d whitelisted channels", len(self.whitelist_channels))
 
@@ -287,6 +306,83 @@ Cache create: {stats.get('total_cache_create_tokens', 0):,}
         channel_id = ctx.channel.id
         new_session_id = self.generator.reset_channel_session(channel_id)
         await ctx.send(f"Session reset. New session: `{new_session_id[:8]}...`")
+
+    @tasks.loop(seconds=5)
+    async def watch_task_completions(self) -> None:
+        """Watch for task completions and wake Wendy to check them."""
+        if not self.notify_channel_id:
+            return
+
+        try:
+            if not TASK_COMPLETIONS_FILE.exists():
+                return
+
+            data = json.loads(TASK_COMPLETIONS_FILE.read_text())
+            completions = data.get("completions", [])
+
+            # Find unseen completions
+            unseen = [c for c in completions if not c.get("seen_by_wendy", False)]
+            if not unseen:
+                return
+
+            _LOG.info("Found %d unseen task completions, waking Wendy", len(unseen))
+
+            # Mark all as seen
+            for c in completions:
+                c["seen_by_wendy"] = True
+            TASK_COMPLETIONS_FILE.write_text(json.dumps(data, indent=2))
+
+            # Get the notify channel
+            channel = self.bot.get_channel(self.notify_channel_id)
+            if not channel:
+                _LOG.warning("Notify channel %d not found", self.notify_channel_id)
+                return
+
+            # Check for existing generation
+            existing_job = self._active_generations.get(channel.id)
+            if existing_job and existing_job.task and not existing_job.task.done():
+                _LOG.info("Claude CLI already running in notify channel, skipping wake")
+                return
+
+            # Start generation (same as on_message but without a trigger message)
+            job = GenerationJob()
+            task = self.bot.loop.create_task(self._generate_response_for_channel(channel, job))
+            job.task = task
+            self._active_generations[channel.id] = job
+
+        except Exception as e:
+            _LOG.error("Error watching task completions: %s", e)
+
+    @watch_task_completions.before_loop
+    async def before_watch_task_completions(self) -> None:
+        """Wait for bot to be ready before starting the watcher."""
+        await self.bot.wait_until_ready()
+
+    async def _generate_response_for_channel(self, channel: discord.TextChannel, job: GenerationJob) -> None:
+        """Generate a response for a channel (used by task completion watcher)."""
+        try:
+            await self.generator.generate(channel_id=channel.id)
+            _LOG.info("Claude CLI completed for channel %s (task wake)", channel.id)
+
+        except ClaudeCliError as e:
+            error_str = str(e).lower()
+            if "oauth" in error_str and "expired" in error_str:
+                try:
+                    await channel.send(
+                        "my claude cli token expired - someone needs to run "
+                        "`docker exec -it wendy-bot claude login` to fix me"
+                    )
+                except Exception:
+                    _LOG.exception("Failed to send OAuth expiration notice")
+            else:
+                _LOG.error("Claude CLI error: %s", e)
+
+        except Exception as e:
+            _LOG.exception("Generation failed: %s", e)
+
+        finally:
+            if self._active_generations.get(channel.id) is job:
+                self._active_generations.pop(channel.id, None)
 
 
 async def setup(bot: commands.Bot) -> None:
