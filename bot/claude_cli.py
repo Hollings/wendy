@@ -589,6 +589,7 @@ Key tables:
         system_prompt = self._get_base_system_prompt()
         system_prompt += self._get_wendys_notes()
         system_prompt += self._get_tool_instructions(channel_id)
+        system_prompt += self._get_active_beads_warning()
 
         cmd = [
             self.cli_path,
@@ -742,3 +743,53 @@ Key tables:
             except Exception as e:
                 _LOG.warning("Failed to read system prompt file: %s", e)
         return ""
+
+    def _get_active_beads_warning(self) -> str:
+        """Check for in-progress beads and return a warning if any are active."""
+        try:
+            # Read directly from beads JSONL file instead of shelling out
+            jsonl_path = Path("/data/wendy/.beads/issues.jsonl")
+            if not jsonl_path.exists():
+                return ""
+
+            # Parse JSONL - later lines update earlier ones (append-only log)
+            issues_by_id = {}
+            for line in jsonl_path.read_text().strip().split("\n"):
+                if not line.strip():
+                    continue
+                try:
+                    data = json.loads(line)
+                    issue_id = data.get("id")
+                    if issue_id:
+                        issues_by_id[issue_id] = data
+                except json.JSONDecodeError:
+                    continue
+
+            # Filter to in_progress only
+            tasks = [
+                t for t in issues_by_id.values()
+                if t.get("status") == "in_progress"
+            ]
+
+            if not tasks:
+                return ""
+
+            # Build warning message
+            task_list = "\n".join([
+                f"  - {t.get('id', '?')}: {t.get('title', 'Untitled')}"
+                for t in tasks
+            ])
+            return f"""
+
+---
+WARNING: You have {len(tasks)} task(s) currently in progress:
+{task_list}
+
+Do NOT start new tasks until these are resolved. Check on them or mark them complete/cancelled first.
+Use `bd status <id>` to check status or `bd close <id>` to complete a task.
+---
+"""
+
+        except Exception as e:
+            _LOG.warning("Failed to check active beads: %s", e)
+            return ""
