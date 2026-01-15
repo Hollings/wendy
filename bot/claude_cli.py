@@ -359,6 +359,22 @@ class ClaudeCliTextGenerator:
         (wendy_dir / "wendys_folder").mkdir(exist_ok=True)
         (wendy_dir / "uploads").mkdir(exist_ok=True)
 
+        # Set up Claude Code settings (hooks to block Task tool)
+        claude_settings_src = Path("/app/config/claude_settings.json")
+        claude_dir = wendy_dir / ".claude"
+        claude_dir.mkdir(exist_ok=True)
+        settings_dest = claude_dir / "settings.json"
+        if claude_settings_src.exists():
+            if not settings_dest.exists() or settings_dest.stat().st_mtime < claude_settings_src.stat().st_mtime:
+                shutil.copy2(claude_settings_src, settings_dest)
+
+        # Copy BD_USAGE.md for reference
+        bd_usage_src = Path("/app/config/BD_USAGE.md")
+        bd_usage_dest = wendy_dir / "BD_USAGE.md"
+        if bd_usage_src.exists():
+            if not bd_usage_dest.exists() or bd_usage_dest.stat().st_mtime < bd_usage_src.stat().st_mtime:
+                shutil.copy2(bd_usage_src, bd_usage_dest)
+
     def _get_wendys_notes(self) -> str:
         """Load Wendy's self-editable notes from her personal CLAUDE.md."""
         notes_path = Path("/data/wendy/wendys_folder/CLAUDE.md")

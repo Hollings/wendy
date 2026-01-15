@@ -3,10 +3,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System dependencies for CairoSVG rendering + basic fonts + curl + git
+# System dependencies for CairoSVG rendering + basic fonts + curl + git + tmux
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2 libpangocairo-1.0-0 fonts-dejavu-core \
-    curl git \
+    curl git tmux \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js, Claude Code CLI, and Beads

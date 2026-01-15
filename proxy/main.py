@@ -327,7 +327,7 @@ async def check_messages(
                 task_updates.append(TaskUpdate(
                     task_id=c.get("task_id", "unknown"),
                     title=c.get("title", "Unknown task"),
-                    status="completed" if c.get("success", False) else "failed",
+                    status=c.get("status", "completed"),  # Read status string directly
                     duration=c.get("duration", "unknown"),
                     completed_at=c.get("completed_at", ""),
                 ))
@@ -348,6 +348,76 @@ async def check_messages(
 async def health():
     """Health check endpoint."""
     return {"status": "ok"}
+
+
+# ==================== Usage Stats ====================
+
+USAGE_DATA_FILE = Path("/data/wendy/usage_data.json")
+USAGE_FORCE_CHECK_FILE = Path("/data/wendy/usage_force_check")
+
+
+class UsageResponse(BaseModel):
+    session_percent: int
+    week_all_percent: int
+    week_sonnet_percent: int
+    timestamp: str
+    updated_at: str
+    message: str
+
+
+@app.get("/api/usage", response_model=UsageResponse)
+async def get_usage():
+    """Get current Claude Code usage stats.
+
+    Returns the latest usage data from the orchestrator's hourly polling.
+    """
+    if not USAGE_DATA_FILE.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Usage data not available yet. The orchestrator polls hourly."
+        )
+
+    try:
+        data = json.loads(USAGE_DATA_FILE.read_text())
+
+        # Format a human-readable message
+        week_all = data.get("week_all_percent", 0)
+        week_sonnet = data.get("week_sonnet_percent", 0)
+        updated = data.get("updated_at", "unknown")
+
+        message = (
+            f"Claude Code Usage (as of {updated}):\n"
+            f"- Weekly (all models): {week_all}%\n"
+            f"- Weekly (Sonnet only): {week_sonnet}%"
+        )
+
+        return UsageResponse(
+            session_percent=data.get("session_percent", 0),
+            week_all_percent=week_all,
+            week_sonnet_percent=week_sonnet,
+            timestamp=data.get("timestamp", ""),
+            updated_at=updated,
+            message=message
+        )
+
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="Failed to parse usage data")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/usage/refresh")
+async def refresh_usage():
+    """Request a fresh usage check from the orchestrator.
+
+    Creates a flag file that tells the orchestrator to run an immediate usage check
+    on its next poll cycle (within 30 seconds).
+    """
+    try:
+        USAGE_FORCE_CHECK_FILE.touch()
+        return {"success": True, "message": "Usage refresh requested. Check back in ~30 seconds."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ==================== Site Deployment ====================

@@ -17,9 +17,8 @@
         }
 
         .container {
-            max-width: 900px;
+            max-width: 1000px;
             margin: 0 auto;
-            padding: 20px;
         }
 
         /* Auth Screen */
@@ -51,14 +50,88 @@
 
         /* Feed Screen */
         .feed-screen { display: none; }
-        .feed-screen.active { display: block; }
+        .feed-screen.active { display: flex; flex-direction: column; height: 100vh; }
+
+        /* Main Layout - Two Column Desktop */
+        .main-layout {
+            display: flex;
+            flex: 1;
+            min-height: 0;
+        }
+
+        /* Left Column - Feed */
+        .feed-column {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            overflow-y: auto;
+            padding: 20px 40px;
+        }
+        .feed-column > * {
+            max-width: 1000px;
+            width: 100%;
+        }
+
+        /* Right Column - Tabbed Sidebar */
+        .sidebar-column {
+            width: 350px;
+            min-width: 350px;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            background: #0d0d0d;
+            border-left: 1px solid #222;
+        }
+
+        /* Tab Bar */
+        .tab-bar {
+            display: flex;
+            border-bottom: 1px solid #222;
+            background: #0a0a0a;
+        }
+        .tab-btn {
+            flex: 1;
+            padding: 12px 8px;
+            background: none;
+            border: none;
+            color: #666;
+            font-family: inherit;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.15s;
+            border-bottom: 2px solid transparent;
+        }
+        .tab-btn:hover { color: #aaa; background: #111; }
+        .tab-btn.active {
+            color: #fff;
+            border-bottom-color: #4ade80;
+            background: #111;
+        }
+
+        /* Tab Panels */
+        .tab-panel {
+            display: none;
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+        }
+        .tab-panel.active { display: flex; flex-direction: column; }
+
+        /* Mobile Tabs and Panels - Hidden on Desktop */
+        .mobile-tab-bar {
+            display: none;
+        }
+        .mobile-panel {
+            display: none;
+        }
 
         header {
-            text-align: center; padding: 40px 0;
+            text-align: center; padding: 20px 0;
             border-bottom: 1px solid #222; margin-bottom: 20px;
         }
-        header h1 { font-size: 24px; font-weight: normal; color: #fff; }
-        header p { color: #666; margin-top: 8px; }
+        header h1 { font-size: 20px; font-weight: normal; color: #fff; }
+        header p { color: #666; margin-top: 4px; font-size: 12px; }
 
         .status {
             display: inline-block; padding: 4px 12px;
@@ -72,13 +145,31 @@
             display: flex; flex-direction: column;
             gap: 8px; padding-bottom: 40px;
         }
+        .feed-screen.viewing-task #feed {
+            padding-top: 70px;
+        }
 
         /* Event Cards */
         .event {
             padding: 12px 16px; border-radius: 8px;
             background: #111; border-left: 3px solid #333;
             animation: fadeIn 0.2s ease-out;
+            cursor: pointer;
+            transition: background 0.15s;
         }
+        .event:hover { background: #161616; }
+        .event.expanded { background: #1a1a1a; }
+        .event.expanded .event-content { max-height: none; }
+        .event.expanded .result-content { max-height: none; }
+        .event.expanded .thinking-text { max-height: none; }
+        .event .expand-hint {
+            display: none;
+            color: #555;
+            font-size: 10px;
+            margin-top: 4px;
+        }
+        .event.truncated .expand-hint { display: block; }
+        .event.expanded .expand-hint { display: none; }
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
@@ -221,13 +312,15 @@
             white-space: pre-wrap;
             word-break: break-word;
             max-height: 150px;
-            overflow-y: auto;
+            overflow: hidden;
         }
 
         .thinking-text {
             color: #c4c4c4;
             white-space: pre-wrap;
             word-break: break-word;
+            max-height: 200px;
+            overflow: hidden;
         }
 
         .idle-notice {
@@ -243,139 +336,182 @@
             margin-left: 8px;
         }
 
-        /* Sidebar - Desktop */
-        .sidebar {
-            position: fixed;
-            left: 0;
-            top: 0;
-            height: 100vh;
-            width: 200px;
-            background: #0d0d0d;
-            border-right: 1px solid #222;
-            padding: 20px 16px;
-            z-index: 100;
-            overflow-y: auto;
+        /* Marbles Panel */
+        .marbles-panel {
+            align-items: center;
+            justify-content: center;
+            background: #050508;
+            flex: 1;
+            min-height: 0;
+        }
+        .marbles-panel.active {
+            display: flex;
+        }
+        #marbles-canvas {
+            max-width: 100%;
+            max-height: 100%;
+            width: auto;
+            height: auto;
+            aspect-ratio: 450 / 900;
+            display: block;
         }
 
-        /* Shift main content to make room for sidebars */
-        .feed-screen .container {
-            margin-left: 200px;
-            margin-right: 220px;
-            max-width: 800px;
+        /* Beads Panel */
+        .beads-panel {
+            flex: 1;
         }
-
-        /* Right Sidebar */
-        .right-sidebar {
-            position: fixed;
-            right: 0;
-            top: 0;
-            height: 100vh;
-            width: 220px;
-            background: #0d0d0d;
-            border-left: 1px solid #222;
-            padding: 20px 16px;
-            z-index: 100;
-            overflow-y: auto;
+        .beads-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
         }
-        .right-sidebar h3 {
-            font-size: 11px;
-            font-weight: 600;
+        .bead-item {
+            padding: 12px;
+            background: #111;
+            border-radius: 6px;
+            border-left: 3px solid #666;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        .bead-item:hover { background: #1a1a1a; }
+        .bead-item.open { border-left-color: #60a5fa; }
+        .bead-item.in_progress { border-left-color: #fbbf24; }
+        .bead-item.closed { border-left-color: #666; opacity: 0.6; }
+        .bead-item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 4px;
+        }
+        .bead-item-id {
+            font-size: 10px;
             color: #666;
+            font-family: monospace;
+        }
+        .bead-item-status {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 3px;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 12px;
-            padding-bottom: 8px;
-            border-bottom: 1px solid #222;
+        }
+        .bead-item-status.open { background: #1a2a4a; color: #60a5fa; }
+        .bead-item-status.in_progress { background: #3a3a1a; color: #fbbf24; }
+        .bead-item-status.closed { background: #222; color: #888; }
+        .bead-item-title {
+            font-size: 13px;
+            color: #ddd;
+        }
+        .beads-empty {
+            color: #666;
+            text-align: center;
+            padding: 40px 20px;
+            font-style: italic;
         }
 
-        /* Hide toggle button on desktop */
-        .sidebar-toggle {
-            display: none;
-        }
+        /* Mobile Layout */
+        @media (max-width: 800px) {
+            .feed-screen.active { display: flex; }
 
-        /* Mobile: closeable stats bar */
-        @media (max-width: 640px) {
-            .sidebar {
-                position: fixed;
-                left: 0;
-                top: 0;
-                right: 0;
-                bottom: auto;
-                height: auto;
-                width: 100%;
-                border-right: none;
-                border-bottom: 1px solid #222;
-                padding: 12px 16px;
-                display: none;
+            .main-layout {
                 flex-direction: column;
-                gap: 12px;
-                transform: none;
             }
 
-            .sidebar.mobile-open {
+            /* Mobile Tab Bar at top */
+            .mobile-tab-bar {
                 display: flex;
+                border-bottom: 1px solid #222;
+                background: #0a0a0a;
+                position: sticky;
+                top: 0;
+                z-index: 100;
+            }
+            .mobile-tab-bar .tab-btn {
+                flex: 1;
+                padding: 14px 8px;
             }
 
-            .sidebar h3:first-child {
-                margin: 0;
-                padding: 0;
-                border: none;
-            }
-
-            .stats-panel {
-                display: flex;
-                flex-direction: row;
-                flex-wrap: wrap;
-                gap: 12px;
-                margin: 0;
-            }
-
-            .stat-row {
-                flex-direction: row;
-                gap: 4px;
-                padding: 0;
-            }
-
-            .stat-label { font-size: 10px; }
-            .stat-value { font-size: 11px; }
-
-            /* Hide toggle inside sidebar on mobile */
-            .sidebar .sidebar-toggle { display: none; }
-
-            /* Floating toggle button */
-            .sidebar-toggle {
-                display: flex;
-                position: fixed;
-                top: 12px;
-                right: 12px;
-                width: 40px;
-                height: 40px;
-                font-size: 16px;
-                z-index: 101;
-            }
-
-            .feed-screen .container {
-                margin-left: 0;
-                margin-right: 0;
-                margin-top: 0;
-                max-width: 100%;
-                padding: 12px;
-                padding-top: 64px;
-            }
-
-            /* When open, shift content down */
-            .feed-screen.sidebar-open .container {
-                padding-top: 12px;
-                margin-top: 280px;
-            }
-
-            /* Hide right sidebar on mobile */
-            .right-sidebar {
+            /* Hide desktop sidebar */
+            .sidebar-column {
                 display: none;
+            }
+
+            /* Feed column becomes a tab panel on mobile */
+            .feed-column {
+                display: none;
+                padding: 12px;
+            }
+            .feed-column.active {
+                display: flex;
+            }
+            .feed-column header {
+                padding-top: 10px;
+            }
+
+            /* Mobile tab panels */
+            .mobile-panel {
+                display: none;
+                flex: 1;
+                overflow-y: auto;
+                padding: 16px;
+            }
+            .mobile-panel.active {
+                display: flex;
+                flex-direction: column;
             }
         }
 
-        .sidebar h3 {
+        /* Event detail modal (works on all screen sizes) */
+        .event-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.9);
+            z-index: 250;
+            overflow-y: auto;
+            padding: 60px 20px 20px;
+        }
+        .event-modal.visible {
+            display: block;
+        }
+        .event-modal-close {
+            position: fixed;
+            top: 12px;
+            right: 12px;
+            width: 40px;
+            height: 40px;
+            font-size: 20px;
+            background: #333;
+            border: none;
+            border-radius: 6px;
+            color: #fff;
+            cursor: pointer;
+            z-index: 251;
+        }
+        .event-modal-close:hover {
+            background: #444;
+        }
+        .event-modal-content {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .event-modal-content .event {
+            background: #1a1a1a;
+            cursor: default;
+        }
+        .event-modal-content .event:hover {
+            background: #1a1a1a;
+        }
+        .event-modal-content .event-content,
+        .event-modal-content .result-content,
+        .event-modal-content .thinking-text {
+            max-height: none !important;
+        }
+        /* Show full content in modal - handled by JS */
+
+        .panel-heading {
             font-size: 11px;
             font-weight: 600;
             color: #666;
@@ -385,7 +521,7 @@
             padding-bottom: 8px;
             border-bottom: 1px solid #222;
         }
-        .sidebar h3:not(:first-child) { margin-top: 20px; }
+        .panel-heading:not(:first-child) { margin-top: 20px; }
 
         .filter-group { display: flex; flex-direction: column; gap: 4px; }
 
@@ -508,6 +644,58 @@
         .stat-value.danger {
             color: #f87171;
         }
+
+        /* Usage progress bars */
+        .usage-section {
+            margin-top: 16px;
+            padding-top: 12px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+        .usage-row {
+            margin-bottom: 10px;
+        }
+        .usage-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+            color: #aaa;
+            margin-bottom: 4px;
+        }
+        .usage-percent {
+            color: #ddd;
+            font-weight: 500;
+        }
+        .usage-bar {
+            height: 8px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .usage-bar-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+        .usage-bar-fill.normal {
+            background: linear-gradient(90deg, #4ade80, #22c55e);
+        }
+        .usage-bar-fill.warning {
+            background: linear-gradient(90deg, #fbbf24, #f59e0b);
+        }
+        .usage-bar-fill.danger {
+            background: linear-gradient(90deg, #f87171, #ef4444);
+        }
+        .usage-unavailable {
+            font-size: 11px;
+            color: #666;
+            font-style: italic;
+        }
+        .usage-updated {
+            font-size: 10px;
+            color: #666;
+            margin-top: 8px;
+        }
+
         .context-bar {
             width: 60px;
             height: 6px;
@@ -526,19 +714,32 @@
         .context-bar-fill.warning { background: #fbbf24; }
         .context-bar-fill.danger { background: #f87171; }
 
-        /* Task viewing banner */
+        /* Task viewing banner - floating */
         .task-banner {
             display: none;
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
             background: linear-gradient(135deg, #1a2a3a 0%, #0d1a2a 100%);
             border: 1px solid #22d3ee;
             border-radius: 8px;
             padding: 12px 16px;
-            margin-bottom: 20px;
             align-items: center;
             justify-content: space-between;
             gap: 12px;
+            z-index: 150;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            max-width: 600px;
+            width: calc(100% - 440px);
         }
         .task-banner.visible { display: flex; }
+        @media (max-width: 640px) {
+            .task-banner {
+                width: calc(100% - 24px);
+                top: 12px;
+            }
+        }
         .task-banner-info {
             display: flex;
             align-items: center;
@@ -578,66 +779,12 @@
             color: #000;
         }
 
-        /* Task list in sidebar */
-        .tasks-list {
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-            max-height: 200px;
-            overflow-y: auto;
-        }
-        .tasks-empty {
-            color: #444;
-            font-size: 11px;
-            font-style: italic;
-        }
-        .task-item {
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-            padding: 8px 10px;
-            background: #1a1a1a;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 11px;
-            transition: background 0.15s;
-            border-left: 3px solid transparent;
-        }
-        .task-item:hover { background: #252525; }
-        .task-item.in_progress { border-left-color: #fbbf24; }
-        .task-item.open { border-left-color: #22d3ee; }
-        .task-item.closed { border-left-color: #4ade80; opacity: 0.6; }
-        .task-item.viewing { background: #1a2a3a; border-left-color: #22d3ee; }
-        .task-item-header {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-        .task-item-id {
-            color: #22d3ee;
-            font-family: monospace;
-            font-size: 10px;
-        }
-        .task-item-status {
-            font-size: 10px;
-            padding: 1px 6px;
-            border-radius: 3px;
-        }
-        .task-item-status.in_progress { background: #3a3a1a; color: #fbbf24; }
-        .task-item-status.open { background: #1a2a3a; color: #22d3ee; }
-        .task-item-status.closed { background: #1a3a1a; color: #4ade80; }
-        .task-item-title {
-            color: #ccc;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
 
         /* Jump to bottom button */
         .jump-bottom {
             position: fixed;
             bottom: 24px;
-            right: 24px;
+            right: calc(350px + 24px); /* Position left of sidebar */
             background: #222;
             border: 1px solid #444;
             border-radius: 24px;
@@ -665,7 +812,7 @@
             font-size: 16px;
         }
 
-        @media (max-width: 640px) {
+        @media (max-width: 800px) {
             .jump-bottom {
                 right: 12px;
                 bottom: 16px;
@@ -689,80 +836,206 @@
 
     <!-- Feed Screen -->
     <div id="feed-screen" class="feed-screen">
-        <!-- Mobile toggle button -->
-        <button id="sidebar-toggle" class="sidebar-toggle" onclick="toggleSidebar()">⚙</button>
+        <!-- Event detail modal (for clicking marbles) -->
+        <div id="event-modal" class="event-modal">
+            <button class="event-modal-close" onclick="closeEventModal()">✕</button>
+            <div id="event-modal-content" class="event-modal-content"></div>
+        </div>
 
-        <div class="container">
-            <header>
-                <h1>Wendy's Brain</h1>
-                <p>Real-time view of Wendy's Claude Code session</p>
-                <span id="status" class="status connecting">Connecting...</span>
-            </header>
+        <!-- Mobile Tab Bar -->
+        <div class="mobile-tab-bar">
+            <button class="tab-btn active" data-tab="feed" onclick="switchMobileTab('feed')">Feed</button>
+            <button class="tab-btn" data-tab="settings" onclick="switchMobileTab('settings')">Settings</button>
+            <button class="tab-btn" data-tab="beads" onclick="switchMobileTab('beads')">Beads</button>
+            <button class="tab-btn" data-tab="marbles" onclick="switchMobileTab('marbles')">Marbles</button>
+        </div>
 
-            <!-- Task viewing banner -->
-            <div id="task-banner" class="task-banner">
-                <div class="task-banner-info">
-                    <span class="task-banner-icon">🔧</span>
-                    <div class="task-banner-text">
-                        <span class="task-banner-label">Viewing Task Output</span>
-                        <span id="task-banner-title" class="task-banner-title">-</span>
+        <!-- Main Layout -->
+        <div class="main-layout">
+            <!-- Left Column: Feed -->
+            <div id="feed-column" class="feed-column active">
+                <header>
+                    <h1>Wendy's Brain</h1>
+                    <p>Real-time Claude Code session</p>
+                    <span id="status" class="status connecting">Connecting...</span>
+                </header>
+
+                <!-- Task viewing banner -->
+                <div id="task-banner" class="task-banner">
+                    <div class="task-banner-info">
+                        <span class="task-banner-icon">🔧</span>
+                        <div class="task-banner-text">
+                            <span class="task-banner-label">Viewing Task Output</span>
+                            <span id="task-banner-title" class="task-banner-title">-</span>
+                        </div>
+                    </div>
+                    <button class="task-banner-back" onclick="backToWendy()">← Back to Wendy</button>
+                </div>
+
+                <div id="feed">
+                    <div class="idle-notice">Waiting for activity...</div>
+                </div>
+            </div>
+
+            <!-- Right Column: Tabbed Sidebar (Desktop) -->
+            <div class="sidebar-column">
+                <div class="tab-bar">
+                    <button class="tab-btn" data-panel="settings-panel" onclick="switchDesktopTab('settings-panel')">Settings</button>
+                    <button class="tab-btn active" data-panel="marbles-panel" onclick="switchDesktopTab('marbles-panel')">Marbles</button>
+                    <button class="tab-btn" data-panel="beads-panel" onclick="switchDesktopTab('beads-panel')">Beads</button>
+                </div>
+
+                <!-- Settings Panel -->
+                <div id="settings-panel" class="tab-panel">
+                    <h3 class="panel-heading">Stats</h3>
+                    <div class="stats-panel">
+                        <div class="stat-row">
+                            <span class="stat-label">Context</span>
+                            <span class="stat-value" id="stat-context">-</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Session Cost</span>
+                            <span class="stat-value" id="stat-cost">-</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Messages</span>
+                            <span class="stat-value" id="stat-messages">-</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Viewers</span>
+                            <span class="stat-value" id="stat-viewers">-</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Last Activity</span>
+                            <span class="stat-value" id="stat-activity">-</span>
+                        </div>
+                    </div>
+
+                    <div class="usage-section" id="usage-section">
+                        <h3 class="panel-heading">Weekly Usage</h3>
+                        <div id="usage-content">
+                            <div class="usage-row">
+                                <div class="usage-label">
+                                    <span>All Models</span>
+                                    <span class="usage-percent" id="usage-all-pct">-</span>
+                                </div>
+                                <div class="usage-bar">
+                                    <div class="usage-bar-fill normal" id="usage-all-bar" style="width: 0%"></div>
+                                </div>
+                            </div>
+                            <div class="usage-row">
+                                <div class="usage-label">
+                                    <span>Sonnet Only</span>
+                                    <span class="usage-percent" id="usage-sonnet-pct">-</span>
+                                </div>
+                                <div class="usage-bar">
+                                    <div class="usage-bar-fill normal" id="usage-sonnet-bar" style="width: 0%"></div>
+                                </div>
+                            </div>
+                            <div class="usage-updated" id="usage-updated"></div>
+                        </div>
+                    </div>
+
+                    <h3 class="panel-heading">Settings</h3>
+                    <div class="toggle-row">
+                        <span class="toggle-label">Auto-scroll</span>
+                        <div id="autoscroll-toggle" class="toggle-switch on" onclick="toggleAutoscroll()"></div>
+                    </div>
+
+                    <h3 class="panel-heading">Event Types</h3>
+                    <div class="filter-group" id="filter-group">
+                        <!-- Generated by JS -->
+                    </div>
+                    <div class="filter-actions">
+                        <button class="filter-btn" onclick="setAllFilters(true)">All</button>
+                        <button class="filter-btn" onclick="setAllFilters(false)">None</button>
                     </div>
                 </div>
-                <button class="task-banner-back" onclick="backToWendy()">← Back to Wendy</button>
-            </div>
 
-            <div id="feed">
-                <div class="idle-notice">Waiting for activity...</div>
-            </div>
-        </div>
+                <!-- Marbles Panel -->
+                <div id="marbles-panel" class="tab-panel marbles-panel active">
+                    <canvas id="marbles-canvas"></canvas>
+                </div>
 
-        <!-- Sidebar -->
-        <div id="sidebar" class="sidebar">
-            <h3>Stats</h3>
-            <div id="stats-panel" class="stats-panel">
-                <div class="stat-row">
-                    <span class="stat-label">Context</span>
-                    <span class="stat-value" id="stat-context">-</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Session Cost</span>
-                    <span class="stat-value" id="stat-cost">-</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Messages</span>
-                    <span class="stat-value" id="stat-messages">-</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Viewers</span>
-                    <span class="stat-value" id="stat-viewers">-</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Last Activity</span>
-                    <span class="stat-value" id="stat-activity">-</span>
+                <!-- Beads Panel -->
+                <div id="beads-panel" class="tab-panel beads-panel">
+                    <div id="beads-list" class="beads-list">
+                        <div class="beads-empty">No tasks</div>
+                    </div>
                 </div>
             </div>
 
-            <h3>Settings</h3>
-            <div class="toggle-row">
-                <span class="toggle-label">Auto-scroll</span>
-                <div id="autoscroll-toggle" class="toggle-switch on" onclick="toggleAutoscroll()"></div>
+            <!-- Mobile Panels (hidden on desktop) -->
+            <div id="mobile-settings-panel" class="mobile-panel">
+                <h3 class="panel-heading">Stats</h3>
+                <div class="stats-panel">
+                    <div class="stat-row">
+                        <span class="stat-label">Context</span>
+                        <span class="stat-value" id="stat-context-mobile">-</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Session Cost</span>
+                        <span class="stat-value" id="stat-cost-mobile">-</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Messages</span>
+                        <span class="stat-value" id="stat-messages-mobile">-</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Viewers</span>
+                        <span class="stat-value" id="stat-viewers-mobile">-</span>
+                    </div>
+                </div>
+
+                <div class="usage-section" id="usage-section-mobile">
+                    <h3 class="panel-heading">Weekly Usage</h3>
+                    <div id="usage-content-mobile">
+                        <div class="usage-row">
+                            <div class="usage-label">
+                                <span>All Models</span>
+                                <span class="usage-percent" id="usage-all-pct-mobile">-</span>
+                            </div>
+                            <div class="usage-bar">
+                                <div class="usage-bar-fill normal" id="usage-all-bar-mobile" style="width: 0%"></div>
+                            </div>
+                        </div>
+                        <div class="usage-row">
+                            <div class="usage-label">
+                                <span>Sonnet Only</span>
+                                <span class="usage-percent" id="usage-sonnet-pct-mobile">-</span>
+                            </div>
+                            <div class="usage-bar">
+                                <div class="usage-bar-fill normal" id="usage-sonnet-bar-mobile" style="width: 0%"></div>
+                            </div>
+                        </div>
+                        <div class="usage-updated" id="usage-updated-mobile"></div>
+                    </div>
+                </div>
+
+                <h3 class="panel-heading">Settings</h3>
+                <div class="toggle-row">
+                    <span class="toggle-label">Auto-scroll</span>
+                    <div id="autoscroll-toggle-mobile" class="toggle-switch on" onclick="toggleAutoscroll()"></div>
+                </div>
+
+                <h3 class="panel-heading">Event Types</h3>
+                <div class="filter-group" id="filter-group-mobile">
+                    <!-- Generated by JS -->
+                </div>
+                <div class="filter-actions">
+                    <button class="filter-btn" onclick="setAllFilters(true)">All</button>
+                    <button class="filter-btn" onclick="setAllFilters(false)">None</button>
+                </div>
             </div>
 
-            <h3>Event Types</h3>
-            <div class="filter-group" id="filter-group">
-                <!-- Generated by JS -->
+            <div id="mobile-beads-panel" class="mobile-panel beads-panel">
+                <div id="beads-list-mobile" class="beads-list">
+                    <div class="beads-empty">No tasks</div>
+                </div>
             </div>
-            <div class="filter-actions">
-                <button class="filter-btn" onclick="setAllFilters(true)">All</button>
-                <button class="filter-btn" onclick="setAllFilters(false)">None</button>
-            </div>
-        </div>
 
-        <!-- Right Sidebar - Tasks -->
-        <div id="right-sidebar" class="right-sidebar">
-            <h3>Tasks</h3>
-            <div id="tasks-list" class="tasks-list">
-                <div class="tasks-empty">No tasks</div>
+            <div id="mobile-marbles-panel" class="mobile-panel marbles-panel">
+                <!-- Marbles canvas will be moved here dynamically when this tab is active -->
             </div>
         </div>
 
@@ -776,6 +1049,7 @@
         const MAX_EVENTS = 100;
         let ws = null;
         let autoscroll = true;
+        let userAtBottom = true;  // Track if user is scrolled to bottom
 
         // ==================== Filters & Settings ====================
         const eventTypes = [
@@ -812,14 +1086,19 @@
         }
 
         function renderFilters() {
-            const group = document.getElementById('filter-group');
-            group.innerHTML = eventTypes.map(t => `
+            const filterHtml = eventTypes.map(t => `
                 <div class="filter-item ${filters[t.id] ? '' : 'disabled'}" onclick="toggleFilter('${t.id}')">
                     <div class="filter-checkbox">✓</div>
                     <span class="filter-icon">${t.icon}</span>
                     <span class="filter-label">${t.label}</span>
                 </div>
             `).join('');
+
+            // Update both desktop and mobile filter groups
+            const desktopGroup = document.getElementById('filter-group');
+            const mobileGroup = document.getElementById('filter-group-mobile');
+            if (desktopGroup) desktopGroup.innerHTML = filterHtml;
+            if (mobileGroup) mobileGroup.innerHTML = filterHtml;
         }
 
         function toggleFilter(id) {
@@ -844,49 +1123,236 @@
             });
         }
 
-        function toggleSidebar() {
-            const sidebar = document.getElementById('sidebar');
-            const feedScreen = document.getElementById('feed-screen');
-            const toggle = document.getElementById('sidebar-toggle');
-            sidebar.classList.toggle('mobile-open');
-            feedScreen.classList.toggle('sidebar-open');
-            toggle.classList.toggle('active');
+        // ==================== Tab Switching ====================
+        let currentMobileTab = 'feed';
+        let currentDesktopPanel = 'marbles-panel';
+        let marblesTabActive = window.innerWidth > 800;  // Track if marbles tab is visible (desktop defaults to marbles, mobile to feed)
+
+        function switchMobileTab(tabName) {
+            currentMobileTab = tabName;
+
+            // Update tab buttons
+            document.querySelectorAll('.mobile-tab-bar .tab-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.tab === tabName);
+            });
+
+            // Update panels
+            const feedColumn = document.getElementById('feed-column');
+            feedColumn.classList.toggle('active', tabName === 'feed');
+
+            document.querySelectorAll('.mobile-panel').forEach(panel => {
+                panel.classList.remove('active');
+            });
+
+            if (tabName === 'settings') {
+                document.getElementById('mobile-settings-panel').classList.add('active');
+            } else if (tabName === 'beads') {
+                document.getElementById('mobile-beads-panel').classList.add('active');
+            } else if (tabName === 'marbles') {
+                document.getElementById('mobile-marbles-panel').classList.add('active');
+                // Move canvas to mobile panel
+                const canvas = document.getElementById('marbles-canvas');
+                const mobilePanel = document.getElementById('mobile-marbles-panel');
+                if (canvas && mobilePanel) {
+                    mobilePanel.appendChild(canvas);
+                }
+            } else {
+                // Move canvas back to desktop panel
+                const canvas = document.getElementById('marbles-canvas');
+                const desktopPanel = document.getElementById('marbles-panel');
+                if (canvas && desktopPanel && !desktopPanel.contains(canvas)) {
+                    desktopPanel.appendChild(canvas);
+                }
+            }
+
+            // Update marbles active state
+            updateMarblesActiveState();
         }
+
+        function switchDesktopTab(panelId) {
+            currentDesktopPanel = panelId;
+
+            // Update tab buttons
+            document.querySelectorAll('.sidebar-column .tab-bar .tab-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.panel === panelId);
+            });
+
+            // Update panels
+            document.querySelectorAll('.sidebar-column .tab-panel').forEach(panel => {
+                panel.classList.toggle('active', panel.id === panelId);
+            });
+
+            // Update marbles active state
+            updateMarblesActiveState();
+        }
+
+        function updateMarblesActiveState() {
+            const isMobile = window.innerWidth <= 800;
+            if (isMobile) {
+                marblesTabActive = currentMobileTab === 'marbles';
+            } else {
+                marblesTabActive = currentDesktopPanel === 'marbles-panel';
+            }
+
+            // Start or stop animation based on tab visibility
+            if (marblesTabActive && !marblesAnimating) {
+                startMarblesAnimation();
+            }
+        }
+
+        // Listen for resize to update marbles state
+        window.addEventListener('resize', updateMarblesActiveState);
+
+        function showEventModal(eventData) {
+            if (!eventData) return;
+
+            const modal = document.getElementById('event-modal');
+            const content = document.getElementById('event-modal-content');
+
+            // Render the event using existing renderEvent function
+            const eventEl = renderEvent(eventData);
+            if (eventEl) {
+                // Force expanded state
+                eventEl.classList.add('expanded');
+
+                // Show full content, hide truncated versions
+                eventEl.querySelectorAll('.command-full, .edit-full, .task-full').forEach(el => {
+                    el.style.display = 'block';
+                });
+                eventEl.querySelectorAll('.command-truncated, .edit-truncated, .task-truncated').forEach(el => {
+                    // Only hide if there's a full version sibling
+                    const parent = el.parentElement;
+                    const hasFull = parent && parent.querySelector('.command-full, .edit-full, .task-full');
+                    if (hasFull) {
+                        el.style.display = 'none';
+                    }
+                });
+
+                content.innerHTML = '';
+                content.appendChild(eventEl);
+                modal.classList.add('visible');
+
+                // Prevent body scroll while modal is open
+                document.body.style.overflow = 'hidden';
+            }
+        }
+
+        function closeEventModal() {
+            const modal = document.getElementById('event-modal');
+            modal.classList.remove('visible');
+            document.body.style.overflow = '';
+        }
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                closeEventModal();
+            }
+            // Ctrl+Shift+C to trigger compaction (for testing)
+            if (e.ctrlKey && e.shiftKey && e.key === 'C') {
+                e.preventDefault();
+                if (typeof triggerCompaction === 'function') {
+                    triggerCompaction();
+                }
+            }
+            // Ctrl+Shift+M to spawn 50 test marbles (for testing)
+            if (e.ctrlKey && e.shiftKey && e.key === 'M') {
+                e.preventDefault();
+                if (typeof spawnTestMarbles === 'function') {
+                    spawnTestMarbles(50);
+                }
+            }
+        });
+
+        // Close modal when clicking outside content
+        document.getElementById('event-modal')?.addEventListener('click', (e) => {
+            // Close if clicking the modal backdrop (not the content)
+            if (e.target.id === 'event-modal') {
+                closeEventModal();
+            }
+        });
 
         function toggleAutoscroll() {
             autoscroll = !autoscroll;
-            const toggle = document.getElementById('autoscroll-toggle');
-            toggle.classList.toggle('on', autoscroll);
+            // Update both desktop and mobile toggles
+            document.querySelectorAll('#autoscroll-toggle, #autoscroll-toggle-mobile').forEach(toggle => {
+                toggle.classList.toggle('on', autoscroll);
+            });
             saveSettings();
         }
 
         // ==================== Jump to Bottom ====================
+        let isAutoScrolling = false;
+
+        function getScrollContainer() {
+            // Feed-column is the scroll container in the new layout
+            return document.getElementById('feed-column');
+        }
+
         function jumpToBottom() {
-            window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+            const container = getScrollContainer();
+            if (!container) return;
+            isAutoScrolling = true;
+            container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+            userAtBottom = true;
+            setTimeout(() => { isAutoScrolling = false; }, 500);
+        }
+
+        let scrollDebounce = null;
+        function scrollToBottom() {
+            const container = getScrollContainer();
+            if (!container) return;
+            isAutoScrolling = true;
+            // Debounce rapid scroll calls
+            if (scrollDebounce) clearTimeout(scrollDebounce);
+            scrollDebounce = setTimeout(() => {
+                container.scrollTo(0, container.scrollHeight);
+                setTimeout(() => { isAutoScrolling = false; }, 200);
+            }, 50);
+        }
+
+        function isNearBottom() {
+            const container = getScrollContainer();
+            if (!container) return true;
+            const scrollBottom = container.scrollTop + container.clientHeight;
+            const scrollHeight = container.scrollHeight;
+            return scrollHeight - scrollBottom < 150;
         }
 
         function updateJumpButton() {
             const btn = document.getElementById('jump-bottom');
             if (!btn) return;
-            const scrollBottom = window.innerHeight + window.scrollY;
-            const docHeight = document.documentElement.scrollHeight;
+            const container = getScrollContainer();
+            if (!container) return;
+            const scrollBottom = container.scrollTop + container.clientHeight;
+            const scrollHeight = container.scrollHeight;
             // Show button if more than 300px from bottom
-            if (docHeight - scrollBottom > 300) {
+            if (scrollHeight - scrollBottom > 300) {
                 btn.classList.add('visible');
             } else {
                 btn.classList.remove('visible');
             }
         }
 
-        // Throttled scroll handler
+        // Throttled scroll handler - track if user is at bottom
         let scrollTimeout;
-        window.addEventListener('scroll', () => {
-            if (scrollTimeout) return;
-            scrollTimeout = setTimeout(() => {
-                updateJumpButton();
-                scrollTimeout = null;
-            }, 100);
-        });
+        function setupScrollListener() {
+            const container = getScrollContainer();
+            if (!container) return;
+            container.addEventListener('scroll', () => {
+                // Ignore scroll events triggered by programmatic scrolling
+                if (isAutoScrolling) return;
+                if (scrollTimeout) return;
+                scrollTimeout = setTimeout(() => {
+                    updateJumpButton();
+                    // Update userAtBottom - if they scroll near bottom, re-enable autoscroll
+                    userAtBottom = isNearBottom();
+                    scrollTimeout = null;
+                }, 150);
+            });
+        }
+        // Set up scroll listener after DOM is ready
+        document.addEventListener('DOMContentLoaded', setupScrollListener);
 
         // ==================== Stats ====================
         let statsInterval = null;
@@ -903,51 +1369,64 @@
         }
 
         function updateStatsDisplay(stats) {
-            // Context bar
-            const contextEl = document.getElementById('stat-context');
             const pct = stats.context_pct || 0;
             const barClass = pct > 80 ? 'danger' : pct > 50 ? 'warning' : '';
-            contextEl.innerHTML = `
+            const contextHtml = `
                 <span class="context-bar"><span class="context-bar-fill ${barClass}" style="width:${Math.min(pct, 100)}%"></span></span>
                 ${pct}%
             `;
 
-            // Cost
-            const costEl = document.getElementById('stat-cost');
             const cost = stats.session_cost || 0;
-            costEl.textContent = cost > 0 ? `$${cost.toFixed(4)}` : '-';
+            const costText = cost > 0 ? `$${cost.toFixed(4)}` : '-';
+            const msgText = stats.session_messages || 0;
+            const viewersText = stats.viewers || 0;
 
-            // Messages
-            const msgEl = document.getElementById('stat-messages');
-            msgEl.textContent = stats.session_messages || 0;
-
-            // Viewers
-            const viewersEl = document.getElementById('stat-viewers');
-            viewersEl.textContent = stats.viewers || 0;
-
-            // Last activity
-            const activityEl = document.getElementById('stat-activity');
+            // Activity text
+            let activityText = '-';
+            let activityClass = 'stat-value';
             if (stats.last_activity) {
                 const ago = Math.floor((Date.now() - stats.last_activity) / 1000);
                 if (ago < 60) {
-                    activityEl.textContent = `${ago}s ago`;
-                    activityEl.className = 'stat-value highlight';
+                    activityText = `${ago}s ago`;
+                    activityClass = 'stat-value highlight';
                 } else if (ago < 3600) {
-                    activityEl.textContent = `${Math.floor(ago / 60)}m ago`;
-                    activityEl.className = 'stat-value';
+                    activityText = `${Math.floor(ago / 60)}m ago`;
                 } else {
-                    activityEl.textContent = `${Math.floor(ago / 3600)}h ago`;
-                    activityEl.className = 'stat-value warning';
+                    activityText = `${Math.floor(ago / 3600)}h ago`;
+                    activityClass = 'stat-value warning';
                 }
-            } else {
-                activityEl.textContent = '-';
-                activityEl.className = 'stat-value';
             }
+
+            // Update desktop stats
+            const contextEl = document.getElementById('stat-context');
+            if (contextEl) contextEl.innerHTML = contextHtml;
+            const costEl = document.getElementById('stat-cost');
+            if (costEl) costEl.textContent = costText;
+            const msgEl = document.getElementById('stat-messages');
+            if (msgEl) msgEl.textContent = msgText;
+            const viewersEl = document.getElementById('stat-viewers');
+            if (viewersEl) viewersEl.textContent = viewersText;
+            const activityEl = document.getElementById('stat-activity');
+            if (activityEl) {
+                activityEl.textContent = activityText;
+                activityEl.className = activityClass;
+            }
+
+            // Update mobile stats
+            const contextElMobile = document.getElementById('stat-context-mobile');
+            if (contextElMobile) contextElMobile.innerHTML = contextHtml;
+            const costElMobile = document.getElementById('stat-cost-mobile');
+            if (costElMobile) costElMobile.textContent = costText;
+            const msgElMobile = document.getElementById('stat-messages-mobile');
+            if (msgElMobile) msgElMobile.textContent = msgText;
+            const viewersElMobile = document.getElementById('stat-viewers-mobile');
+            if (viewersElMobile) viewersElMobile.textContent = viewersText;
         }
 
         function startStatsPolling() {
             if (statsInterval) return;
             fetchStats();
+            fetchUsage();  // Also fetch usage on start
             statsInterval = setInterval(fetchStats, 5000);
         }
 
@@ -955,6 +1434,103 @@
             if (statsInterval) {
                 clearInterval(statsInterval);
                 statsInterval = null;
+            }
+        }
+
+        // ==================== Usage Stats ====================
+
+        let usageInterval = null;
+
+        async function fetchUsage() {
+            try {
+                const res = await fetch('/api/brain/usage');
+                if (!res.ok) return;
+                const data = await res.json();
+                updateUsageDisplay(data);
+            } catch (e) {
+                console.debug('Failed to fetch usage:', e);
+            }
+        }
+
+        function updateUsageDisplay(data) {
+            if (!data.available) {
+                // Show unavailable message
+                ['', '-mobile'].forEach(suffix => {
+                    const content = document.getElementById(`usage-content${suffix}`);
+                    if (content) {
+                        content.innerHTML = '<div class="usage-unavailable">Usage data not available yet</div>';
+                    }
+                });
+                return;
+            }
+
+            const weekAll = data.week_all_percent || 0;
+            const weekSonnet = data.week_sonnet_percent || 0;
+
+            // Determine bar colors based on percentage
+            function getBarClass(pct) {
+                if (pct >= 80) return 'danger';
+                if (pct >= 60) return 'warning';
+                return 'normal';
+            }
+
+            // Update both desktop and mobile
+            ['', '-mobile'].forEach(suffix => {
+                // All models
+                const allPct = document.getElementById(`usage-all-pct${suffix}`);
+                const allBar = document.getElementById(`usage-all-bar${suffix}`);
+                if (allPct) allPct.textContent = `${weekAll}%`;
+                if (allBar) {
+                    allBar.style.width = `${Math.min(weekAll, 100)}%`;
+                    allBar.className = `usage-bar-fill ${getBarClass(weekAll)}`;
+                }
+
+                // Sonnet only
+                const sonnetPct = document.getElementById(`usage-sonnet-pct${suffix}`);
+                const sonnetBar = document.getElementById(`usage-sonnet-bar${suffix}`);
+                if (sonnetPct) sonnetPct.textContent = `${weekSonnet}%`;
+                if (sonnetBar) {
+                    sonnetBar.style.width = `${Math.min(weekSonnet, 100)}%`;
+                    sonnetBar.className = `usage-bar-fill ${getBarClass(weekSonnet)}`;
+                }
+
+                // Updated time and reset info
+                const updated = document.getElementById(`usage-updated${suffix}`);
+                if (updated) {
+                    let info = [];
+                    if (data.updated_at) {
+                        const date = new Date(data.updated_at);
+                        const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        info.push(`Updated: ${timeStr}`);
+                    }
+                    if (data.week_all_resets) {
+                        // Convert ISO timestamp to local timezone
+                        const resetDate = new Date(data.week_all_resets);
+                        const resetStr = resetDate.toLocaleString([], {
+                            weekday: 'short',
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                        });
+                        info.push(`Resets: ${resetStr}`);
+                    }
+                    updated.textContent = info.join(' | ');
+                }
+            });
+        }
+
+        function startUsagePolling() {
+            if (usageInterval) return;
+            fetchUsage();
+            // Poll every 5 minutes (usage updates hourly, but check more often for manual refreshes)
+            usageInterval = setInterval(fetchUsage, 300000);
+        }
+
+        function stopUsagePolling() {
+            if (usageInterval) {
+                clearInterval(usageInterval);
+                usageInterval = null;
             }
         }
 
@@ -1060,20 +1636,33 @@
 
             Edit: (input) => {
                 const path = input.file_path || '';
-                const oldStr = truncate(input.old_string || '', 50);
-                const newStr = truncate(input.new_string || '', 50);
+                const oldStrFull = input.old_string || '';
+                const newStrFull = input.new_string || '';
+                const oldStr = truncate(oldStrFull, 100);
+                const newStr = truncate(newStrFull, 100);
+                const isTruncated = oldStrFull.length > 100 || newStrFull.length > 100;
                 return `<span class="file-path">${escapeHtml(dirname(path))}</span><span class="file-name">${escapeHtml(basename(path))}</span>
                     <div class="command-block" style="margin-top: 8px;">
-                        <div style="color: #f87171;">- ${escapeHtml(oldStr)}</div>
-                        <div style="color: #4ade80;">+ ${escapeHtml(newStr)}</div>
+                        <div class="edit-truncated">
+                            <div style="color: #f87171;">- ${escapeHtml(oldStr)}</div>
+                            <div style="color: #4ade80;">+ ${escapeHtml(newStr)}</div>
+                        </div>
+                        ${isTruncated ? `<div class="edit-full" style="display:none">
+                            <div style="color: #f87171; white-space: pre-wrap;">- ${escapeHtml(oldStrFull)}</div>
+                            <div style="color: #4ade80; white-space: pre-wrap;">+ ${escapeHtml(newStrFull)}</div>
+                        </div>` : ''}
                     </div>`;
             },
 
             Bash: (input) => {
                 const cmd = input.command || '';
                 const desc = input.description || '';
+                const isTruncated = cmd.length > 300;
                 return `${desc ? `<div class="command-desc">${escapeHtml(desc)}</div>` : ''}
-                    <div class="command-block"><span class="command-text">$ ${escapeHtml(truncate(cmd, 300))}</span></div>`;
+                    <div class="command-block">
+                        <span class="command-text command-truncated">$ ${escapeHtml(truncate(cmd, 300))}</span>
+                        ${isTruncated ? `<span class="command-text command-full" style="display:none">$ ${escapeHtml(cmd)}</span>` : ''}
+                    </div>`;
             },
 
             Grep: (input) => {
@@ -1090,8 +1679,12 @@
 
             Task: (input) => {
                 const agent = input.subagent_type || 'general';
-                const prompt = truncate(input.prompt || '', 150);
-                return `<span class="task-agent">${escapeHtml(agent)}</span><span class="task-prompt">${escapeHtml(prompt)}</span>`;
+                const promptFull = input.prompt || '';
+                const prompt = truncate(promptFull, 150);
+                const isTruncated = promptFull.length > 150;
+                return `<span class="task-agent">${escapeHtml(agent)}</span>
+                    <span class="task-prompt task-truncated">${escapeHtml(prompt)}</span>
+                    ${isTruncated ? `<span class="task-prompt task-full" style="display:none;white-space:pre-wrap">${escapeHtml(promptFull)}</span>` : ''}`;
             },
 
             TodoWrite: (input) => {
@@ -1207,7 +1800,13 @@
                     <span class="event-time">${formatTime(ts)}</span>
                 </div>
                 <div class="event-content">${content}</div>
+                <div class="expand-hint">Click to expand</div>
             `;
+
+            // Check if content is likely truncated (for thinking/result types)
+            if (filterType === 'thinking' || filterType === 'result') {
+                div.classList.add('truncated');
+            }
 
             // Apply filter immediately
             if (filters[filterType] === false) {
@@ -1217,7 +1816,48 @@
             return div;
         }
 
+        // Track seen events to prevent duplicates on reconnect/replay
+        const seenEvents = new Set();
+        const MAX_SEEN_EVENTS = 500;
+
+        function getEventKey(data) {
+            // Create a unique key for this event
+            const ts = data.ts || 0;
+            const type = data.event?.type || '';
+            const subtype = data.event?.subtype || '';
+            const content = data.event?.message?.content;
+            let contentKey = '';
+            if (content && content[0]) {
+                if (content[0].type === 'tool_use') {
+                    contentKey = content[0].name + (content[0].input?.file_path || content[0].input?.command || '').slice(0, 50);
+                } else if (content[0].type === 'text') {
+                    contentKey = content[0].text?.slice(0, 50) || '';
+                } else if (content[0].type === 'tool_result') {
+                    let resultContent = content[0].content || '';
+                    if (Array.isArray(resultContent)) {
+                        resultContent = resultContent.map(c => c.text || '').join(' ');
+                    }
+                    contentKey = 'result-' + (typeof resultContent === 'string' ? resultContent.slice(0, 30) : '');
+                }
+            }
+            return `${ts}-${type}-${subtype}-${contentKey}`;
+        }
+
         function addEvent(data) {
+            // Deduplicate events
+            const eventKey = getEventKey(data);
+            if (seenEvents.has(eventKey)) {
+                return false; // Already processed this event
+            }
+            seenEvents.add(eventKey);
+
+            // Keep set from growing too large
+            if (seenEvents.size > MAX_SEEN_EVENTS) {
+                const arr = Array.from(seenEvents);
+                seenEvents.clear();
+                arr.slice(-250).forEach(k => seenEvents.add(k));
+            }
+
             const feed = document.getElementById('feed');
             const idle = feed.querySelector('.idle-notice');
             if (idle) idle.remove();
@@ -1225,14 +1865,30 @@
             const el = renderEvent(data);
             if (!el) return;
 
+            // Add click handler for expanding
+            el.addEventListener('click', () => toggleEventExpand(el));
+
             feed.appendChild(el);
             while (feed.children.length > MAX_EVENTS) {
                 feed.removeChild(feed.firstChild);
             }
 
-            if (autoscroll) {
-                window.scrollTo(0, document.body.scrollHeight);
+            // Only autoscroll if enabled AND user is at bottom
+            if (autoscroll && userAtBottom) {
+                scrollToBottom();
             }
+            return true;  // Event was new
+        }
+
+        function toggleEventExpand(el) {
+            const isExpanded = el.classList.toggle('expanded');
+
+            // Toggle truncated/full content visibility
+            const truncatedEls = el.querySelectorAll('.command-truncated, .edit-truncated, .task-truncated');
+            const fullEls = el.querySelectorAll('.command-full, .edit-full, .task-full');
+
+            truncatedEls.forEach(e => e.style.display = isExpanded ? 'none' : '');
+            fullEls.forEach(e => e.style.display = isExpanded ? '' : 'none');
         }
 
         // ==================== WebSocket ====================
@@ -1255,7 +1911,10 @@
                     setStatus('disconnected', 'Server full');
                 } else {
                     setStatus('disconnected', 'Disconnected');
-                    setTimeout(connect, 3000);
+                    // Don't auto-reconnect if viewing a task
+                    if (!viewingTaskId) {
+                        setTimeout(connect, 3000);
+                    }
                 }
             };
             ws.onerror = () => setStatus('disconnected', 'Error');
@@ -1274,71 +1933,110 @@
         let viewingTaskTitle = null;
         let taskLogOffset = 0;
         let taskLogInterval = null;
-        let savedWendyFeed = null;
+        let savedFeedContent = null;  // Save feed when viewing task
+
+        let knownBeads = new Set();  // Track beads we've seen
+        let initialBeadsFetched = false;  // Don't spawn marbles for pre-existing beads
 
         async function fetchTasks() {
             try {
                 const res = await fetch('/api/brain/beads');
                 if (!res.ok) return;
                 const data = await res.json();
-                renderTasksList(data.beads || []);
+                const beads = data.beads || [];
+                renderTasksList(beads);
+
+                // Spawn/update bead marbles
+                for (const bead of beads) {
+                    if (beadMarbles.has(bead.id)) {
+                        // Update existing marble's status
+                        const marble = beadMarbles.get(bead.id);
+                        marble.beadStatus = bead.status;
+                    } else if (!knownBeads.has(bead.id)) {
+                        knownBeads.add(bead.id);
+                        // Only spawn marble if this isn't the initial fetch
+                        if (initialBeadsFetched) {
+                            spawnBeadMarble(bead);
+                        }
+                    }
+                }
+                initialBeadsFetched = true;
             } catch (e) {
                 console.debug('Failed to fetch tasks:', e);
             }
         }
 
-        function renderTasksList(tasks) {
-            const container = document.getElementById('tasks-list');
-            if (tasks.length === 0) {
-                container.innerHTML = '<div class="tasks-empty">No tasks</div>';
-                return;
-            }
+        function spawnBeadMarble(bead) {
+            if (!marblesCanvas || marblesWidth === 0) return;
 
-            container.innerHTML = tasks.map(task => {
-                const statusLabel = {
-                    'in_progress': 'Running',
-                    'open': 'Queued',
-                    'closed': 'Done'
-                }[task.status] || task.status;
-                const isViewing = viewingTaskId === task.id;
-                return `
-                    <div class="task-item ${task.status} ${isViewing ? 'viewing' : ''}" onclick="viewTask('${task.id}', '${escapeHtml(task.title)}')">
-                        <div class="task-item-header">
-                            <span class="task-item-id">${task.id}</span>
-                            <span class="task-item-status ${task.status}">${statusLabel}</span>
+            // Spawn from random position at top
+            const x = Math.random() * (marblesWidth - MARBLE_RADIUS * 8) + MARBLE_RADIUS * 4;
+            const y = MARBLE_RADIUS * 4;
+
+            const marble = new Marble(x, y, 'bead', bead.title || 'Task', {
+                radius: MARBLE_RADIUS * 3,  // 3x size
+                color: beadStatusColors[bead.status] || beadStatusColors.open,
+                beadId: bead.id,
+                beadStatus: bead.status,
+            });
+            marbles.push(marble);
+            beadMarbles.set(bead.id, marble);
+        }
+
+        function renderTasksList(tasks) {
+            const html = tasks.length === 0
+                ? '<div class="beads-empty">No tasks</div>'
+                : tasks.map(task => {
+                    const statusLabel = {
+                        'in_progress': 'Running',
+                        'open': 'Queued',
+                        'closed': 'Done'
+                    }[task.status] || task.status;
+                    const isViewing = viewingTaskId === task.id;
+                    return `
+                        <div class="bead-item ${task.status} ${isViewing ? 'viewing' : ''}" onclick="viewTask('${task.id}', '${escapeHtml(task.title)}')">
+                            <div class="bead-item-header">
+                                <span class="bead-item-id">${task.id}</span>
+                                <span class="bead-item-status ${task.status}">${statusLabel}</span>
+                            </div>
+                            <div class="bead-item-title">${escapeHtml(task.title)}</div>
                         </div>
-                        <div class="task-item-title">${escapeHtml(task.title)}</div>
-                    </div>
-                `;
-            }).join('');
+                    `;
+                }).join('');
+
+            // Update both desktop and mobile beads lists
+            const desktopList = document.getElementById('beads-list');
+            const mobileList = document.getElementById('beads-list-mobile');
+            if (desktopList) desktopList.innerHTML = html;
+            if (mobileList) mobileList.innerHTML = html;
         }
 
         function viewTask(taskId, title) {
-            // Save current Wendy feed if not already viewing a task
-            if (!viewingTaskId) {
-                savedWendyFeed = document.getElementById('feed').innerHTML;
-            }
-
             viewingTaskId = taskId;
             viewingTaskTitle = title;
             taskLogOffset = 0;
+
+            // On mobile, switch to the feed tab
+            if (window.innerWidth <= 800) {
+                switchMobileTab('feed');
+            }
+
+            // Add viewing-task class for styling
+            document.getElementById('feed-screen').classList.add('viewing-task');
 
             // Update banner
             document.getElementById('task-banner').classList.add('visible');
             document.getElementById('task-banner-title').textContent = `${taskId}: ${title}`;
 
-            // Clear feed and show loading
+            // Save feed content before clearing
             const feed = document.getElementById('feed');
+            savedFeedContent = feed.innerHTML;
             feed.innerHTML = '<div class="idle-notice">Loading task output...</div>';
 
             // Update task list to show which one is being viewed
-            renderTasksList(Array.from(document.querySelectorAll('.task-item')).map(el => ({
-                id: el.querySelector('.task-item-id')?.textContent || '',
-                title: el.querySelector('.task-item-title')?.textContent || '',
-                status: Array.from(el.classList).find(c => ['in_progress', 'open', 'closed'].includes(c)) || 'open'
-            })));
+            fetchTasks();
 
-            // Disconnect WebSocket while viewing task
+            // Disconnect WebSocket while viewing task to prevent Wendy events mixing in
             if (ws) {
                 ws.close();
                 ws = null;
@@ -1352,26 +2050,30 @@
             // Stop task log polling
             stopTaskLogPolling();
 
+            // Remove viewing-task class
+            document.getElementById('feed-screen').classList.remove('viewing-task');
+
             // Hide banner
             document.getElementById('task-banner').classList.remove('visible');
 
-            // Restore Wendy feed
+            // Restore saved feed content
             const feed = document.getElementById('feed');
-            if (savedWendyFeed) {
-                feed.innerHTML = savedWendyFeed;
-            } else {
-                feed.innerHTML = '<div class="idle-notice">Waiting for activity...</div>';
+            if (savedFeedContent) {
+                feed.innerHTML = savedFeedContent;
+                savedFeedContent = null;
             }
 
             viewingTaskId = null;
             viewingTaskTitle = null;
-            savedWendyFeed = null;
 
             // Re-fetch tasks to update viewing state
             fetchTasks();
 
             // Reconnect WebSocket
             connect();
+
+            // Reset scroll position
+            userAtBottom = true;
         }
 
         async function fetchTaskLog() {
@@ -1407,30 +2109,77 @@
             for (const line of lines) {
                 if (!line.trim()) continue;
 
-                const div = document.createElement('div');
-                div.className = 'event';
-
-                // Try to detect line type
-                if (line.includes('[TOOL]') || line.includes('Tool:')) {
-                    div.classList.add('bash');
-                } else if (line.includes('[THINKING]') || line.startsWith('Thinking:')) {
-                    div.classList.add('thinking');
-                } else if (line.includes('[ERROR]') || line.includes('Error:')) {
-                    div.classList.add('system');
-                    div.style.borderLeftColor = '#f87171';
-                } else if (line.includes('===')) {
-                    div.classList.add('system');
-                } else {
-                    div.classList.add('result');
+                // Try to parse as JSON event first
+                let el = null;
+                try {
+                    const parsed = JSON.parse(line);
+                    // Check for wrapped format {ts, event} or raw format {type, message}
+                    if (parsed.ts && parsed.event) {
+                        // Wrapped format from WebSocket
+                        el = renderEvent(parsed);
+                    } else if (parsed.type && (parsed.type === 'user' || parsed.type === 'assistant' || parsed.type === 'system' || parsed.type === 'result')) {
+                        // Raw Claude Code event format - wrap it for renderEvent
+                        el = renderEvent({ ts: Date.now(), event: parsed });
+                    }
+                    if (el) {
+                        el.addEventListener('click', () => toggleEventExpand(el));
+                    }
+                } catch (e) {
+                    // Not JSON, render as plain text
                 }
 
-                div.innerHTML = `<div class="event-content" style="white-space:pre-wrap;word-break:break-word;font-size:12px;color:#aaa;">${escapeHtml(line)}</div>`;
-                feed.appendChild(div);
+                if (!el) {
+                    // Create a formatted log line
+                    el = document.createElement('div');
+                    el.className = 'event';
+
+                    // Try to detect line type for styling
+                    let icon = '';
+                    let type = 'log';
+
+                    if (line.includes('[TOOL]') || line.includes('Tool:') || line.match(/^(Read|Write|Edit|Bash|Grep|Glob):/i)) {
+                        el.classList.add('bash');
+                        icon = '⌨️';
+                        type = 'tool';
+                    } else if (line.includes('[THINKING]') || line.startsWith('Thinking:') || line.includes('thinking')) {
+                        el.classList.add('thinking');
+                        icon = '💭';
+                        type = 'thinking';
+                    } else if (line.includes('[ERROR]') || line.includes('Error:') || line.toLowerCase().includes('error')) {
+                        el.classList.add('system');
+                        el.style.borderLeftColor = '#f87171';
+                        icon = '❌';
+                        type = 'error';
+                    } else if (line.includes('===') || line.includes('---')) {
+                        el.classList.add('system');
+                        icon = '⚡';
+                        type = 'system';
+                    } else if (line.startsWith('>') || line.includes('Result:') || line.includes('Output:')) {
+                        el.classList.add('result');
+                        icon = '📨';
+                        type = 'result';
+                    } else {
+                        el.classList.add('result');
+                        icon = '📝';
+                    }
+
+                    el.innerHTML = `
+                        <div class="event-header">
+                            <div class="event-label">
+                                <span class="event-icon">${icon}</span>
+                                <span class="event-type">${type}</span>
+                            </div>
+                        </div>
+                        <div class="event-content" style="white-space:pre-wrap;word-break:break-word;font-size:12px;">${escapeHtml(line)}</div>
+                    `;
+                }
+
+                feed.appendChild(el);
             }
 
-            // Auto-scroll if enabled
-            if (autoscroll) {
-                window.scrollTo(0, document.body.scrollHeight);
+            // Auto-scroll if enabled AND user is at bottom
+            if (autoscroll && userAtBottom) {
+                scrollToBottom();
             }
 
             // Trim old entries
@@ -1471,9 +2220,10 @@
             loadSettings();
             renderFilters();
 
-            // Set initial autoscroll toggle state
-            const toggle = document.getElementById('autoscroll-toggle');
-            toggle.classList.toggle('on', autoscroll);
+            // Set initial autoscroll toggle state (both desktop and mobile)
+            document.querySelectorAll('#autoscroll-toggle, #autoscroll-toggle-mobile').forEach(toggle => {
+                toggle.classList.toggle('on', autoscroll);
+            });
 
             const params = new URLSearchParams(location.search);
             const urlKey = params.get('key');
@@ -1495,6 +2245,753 @@
         }
 
         init();
+
+        // ==================== Marbles Physics ====================
+        const MARBLES_VERSION = 'v45';
+        const marblesCanvas = document.getElementById('marbles-canvas');
+        const marblesCtx = marblesCanvas ? marblesCanvas.getContext('2d') : null;
+
+        // Event type to marble color mapping (matches card colors)
+        const marbleColors = {
+            thinking: '#60a5fa',   // blue
+            Read: '#a78bfa',       // purple
+            Write: '#f472b6',      // pink
+            Edit: '#fb923c',       // orange
+            Bash: '#4ade80',       // green
+            Grep: '#fbbf24',       // yellow
+            Glob: '#fbbf24',       // yellow
+            Task: '#22d3ee',       // cyan
+            TodoWrite: '#a3e635',  // lime
+            result: '#10b981',     // teal
+            system: '#8b5cf6',     // purple
+            WebSearch: '#f59e0b',  // amber
+            WebFetch: '#f59e0b',   // amber
+            AskUserQuestion: '#f59e0b', // amber
+            NotebookEdit: '#f59e0b',    // amber
+            default: '#f59e0b'     // amber for unknown tools
+        };
+
+        // Marbles state
+        let marbles = [];
+        let obstacles = [];
+        // Fixed internal dimensions - canvas scales visually but physics stay constant
+        const MARBLES_WIDTH = 450;
+        const MARBLES_HEIGHT = 900;
+        let marblesWidth = MARBLES_WIDTH;
+        let marblesHeight = MARBLES_HEIGHT;
+        let marblesAnimating = false;
+        let lastSpawnTime = 0;
+        let pendingSpawns = [];
+        const SPAWN_DELAY = 125; // 0.125s minimum between spawns
+
+        // Physics constants
+        const GRAVITY = 0.3;
+        const FRICTION = 0.98;
+        const BOUNCE = 0.85;
+        const MARBLE_BOUNCE = 0.85;  // Same as wall bounce
+        const MARBLE_RADIUS = 10;
+        const MAX_MARBLES = 1000;
+
+        let hoveredMarble = null;
+        let beadMarbles = new Map();  // beadId -> marble reference
+
+        // Bead status colors
+        const beadStatusColors = {
+            'open': '#3b82f6',       // blue
+            'in_progress': '#f59e0b', // amber/orange
+            'closed': '#6b7280',     // gray
+        };
+
+        class Marble {
+            constructor(x, y, type, summary, options = {}) {
+                this.x = x;
+                this.y = y;
+                this.vx = (Math.random() - 0.5) * 6;
+                this.vy = Math.random() * 2;
+                this.radius = options.radius || MARBLE_RADIUS;
+                this.type = type;
+                this.color = options.color || marbleColors[type] || marbleColors.default;
+                this.summary = summary || type;
+                this.saturation = 100;  // Starts fully saturated
+                this.settled = false;
+                this.settledTime = 0;
+                this.slowFrames = 0;  // Count consecutive slow frames
+                this.static = false;  // Fully frozen after 10s settled
+                this.spawnTime = Date.now();
+                this.beadId = options.beadId || null;  // For bead marbles
+                this.beadStatus = options.beadStatus || null;
+                this.eventData = options.eventData || null;  // Original event data for modal
+            }
+
+            getDisplayColor() {
+                // Bead marbles use status color directly (no saturation fade)
+                if (this.beadId) {
+                    return beadStatusColors[this.beadStatus] || this.color;
+                }
+                // Regular marbles desaturate based on saturation level
+                const desatAmount = (100 - this.saturation) / 100;
+                return this.desaturate(this.color, desatAmount);
+            }
+
+            desaturate(hex, amount) {
+                // Convert hex to RGB
+                const r = parseInt(hex.slice(1, 3), 16);
+                const g = parseInt(hex.slice(3, 5), 16);
+                const b = parseInt(hex.slice(5, 7), 16);
+                // Convert to grayscale
+                const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+                // Blend toward gray
+                const nr = Math.round(r + (gray - r) * amount);
+                const ng = Math.round(g + (gray - g) * amount);
+                const nb = Math.round(b + (gray - b) * amount);
+                return `rgb(${nr}, ${ng}, ${nb})`;
+            }
+
+            update() {
+                if (this.static) return;  // Completely frozen
+
+                if (this.settled) {
+                    this.settledTime++;
+                    // Become static after 10 seconds (600 frames at 60fps)
+                    if (this.settledTime > 600) {
+                        this.static = true;
+                    }
+                    return;
+                }
+
+                // Apply gravity
+                this.vy += GRAVITY;
+
+                // Apply friction
+                this.vx *= FRICTION;
+
+                // Update position
+                this.x += this.vx;
+                this.y += this.vy;
+
+                // Bounce off walls
+                if (this.x - this.radius < 0) {
+                    this.x = this.radius;
+                    this.vx *= -BOUNCE;
+                }
+                if (this.x + this.radius > marblesWidth) {
+                    this.x = marblesWidth - this.radius;
+                    this.vx *= -BOUNCE;
+                }
+
+                // Bounce off floor
+                if (this.y + this.radius > marblesHeight) {
+                    this.y = marblesHeight - this.radius;
+                    this.vy *= -BOUNCE;
+                }
+
+                // Track slow movement - settle after 3 seconds of being slow in lower area
+                if (Math.abs(this.vy) < 2 && Math.abs(this.vx) < 1.5 && this.y > marblesHeight * 0.6) {
+                    this.slowFrames++;
+                    if (this.slowFrames > 180) {  // 3 seconds at 60fps
+                        this.settled = true;
+                    }
+                } else {
+                    this.slowFrames = 0;  // Reset if moving fast
+                }
+
+                // Bounce off ceiling (soft)
+                if (this.y - this.radius < 0) {
+                    this.y = this.radius;
+                    this.vy *= -BOUNCE * 0.5;
+                }
+
+                // Collide with obstacles
+                for (const obs of obstacles) {
+                    this.resolveCollisionWithCircle(obs.x, obs.y, obs.radius);
+                }
+            }
+
+            resolveCollisionWithCircle(ox, oy, oRadius) {
+                const dx = this.x - ox;
+                const dy = this.y - oy;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const minDist = this.radius + oRadius;
+
+                if (dist < minDist && dist > 0) {
+                    // Normalize collision vector
+                    const nx = dx / dist;
+                    const ny = dy / dist;
+
+                    // Move out of collision completely
+                    this.x = ox + nx * minDist;
+                    this.y = oy + ny * minDist;
+
+                    // Reflect velocity
+                    const dot = this.vx * nx + this.vy * ny;
+                    if (dot < 0) {
+                        this.vx -= 2 * dot * nx * BOUNCE;
+                        this.vy -= 2 * dot * ny * BOUNCE;
+                    }
+                }
+            }
+
+            draw(ctx) {
+                ctx.fillStyle = this.getDisplayColor();
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        function initMarbles() {
+            if (!marblesCanvas || !marblesCtx) return;
+
+            initMarblesCanvas();
+            createObstacles();
+            // Don't auto-start - will start when marbles tab becomes active
+            // startMarblesAnimation();
+        }
+
+        function initMarblesCanvas() {
+            if (!marblesCanvas) return;
+            // Set fixed internal dimensions
+            marblesCanvas.width = MARBLES_WIDTH;
+            marblesCanvas.height = MARBLES_HEIGHT;
+            marblesWidth = MARBLES_WIDTH;
+            marblesHeight = MARBLES_HEIGHT;
+        }
+
+        function createObstacles() {
+            obstacles = [];
+            if (marblesWidth === 0 || marblesHeight === 0) return;
+
+            // Create pegs/obstacles at various positions
+            const rows = 4;
+            const pegsPerRow = 3;
+            const startY = marblesHeight * 0.2;
+            const endY = marblesHeight * 0.7;
+            const rowSpacing = (endY - startY) / rows;
+
+            for (let row = 0; row < rows; row++) {
+                const y = startY + row * rowSpacing;
+                const offset = row % 2 === 0 ? 0 : marblesWidth / (pegsPerRow * 2);
+
+                for (let col = 0; col < pegsPerRow; col++) {
+                    const x = (marblesWidth / (pegsPerRow + 1)) * (col + 1) + offset;
+                    // Add some randomness to positions
+                    const jitterX = (Math.random() - 0.5) * 20;
+                    const jitterY = (Math.random() - 0.5) * 15;
+                    obstacles.push({
+                        x: x + jitterX,
+                        y: y + jitterY,
+                        radius: 15 + Math.random() * 10
+                    });
+                }
+            }
+        }
+
+        function drawObstacles(ctx) {
+            ctx.fillStyle = '#333';
+            for (const obs of obstacles) {
+                ctx.beginPath();
+                ctx.arc(obs.x, obs.y, obs.radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        function queueMarbleSpawn(eventType, summary, eventData) {
+            // Cap pending queue at 50 to prevent runaway growth
+            if (pendingSpawns.length >= 50) return;
+            pendingSpawns.push({ type: eventType, summary: summary || eventType, eventData });
+        }
+
+        function processPendingSpawns() {
+            const now = Date.now();
+            if (pendingSpawns.length > 0 && now - lastSpawnTime >= SPAWN_DELAY) {
+                const spawn = pendingSpawns.shift();
+                spawnMarbleNow(spawn.type, spawn.summary, spawn.eventData);
+                lastSpawnTime = now;
+            }
+        }
+
+        function spawnMarbleNow(eventType, summary, eventData) {
+            if (!marblesCanvas || marblesWidth === 0) return;
+
+            // Don't spawn if at capacity
+            if (marbles.length >= MAX_MARBLES) return;
+
+            // Decrease saturation on all existing marbles, min 10%
+            // 4.5% per spawn = fully faded after 20 new marbles
+            for (const m of marbles) {
+                if (m.saturation > 10) {
+                    m.saturation = Math.max(10, m.saturation - 4.5);
+                }
+            }
+
+            // Spawn from random position at top
+            const x = Math.random() * (marblesWidth - MARBLE_RADIUS * 4) + MARBLE_RADIUS * 2;
+            const y = MARBLE_RADIUS * 2;
+
+            const marble = new Marble(x, y, eventType, summary, { eventData });
+            marbles.push(marble);
+        }
+
+        function updateMarbles() {
+            // Process pending spawns with delay
+            processPendingSpawns();
+
+            // Update each marble
+            for (const marble of marbles) {
+                marble.update();
+            }
+
+            // Marble-to-marble collisions - run multiple iterations for stability
+            for (let iter = 0; iter < 3; iter++) {
+                for (let i = 0; i < marbles.length; i++) {
+                    for (let j = i + 1; j < marbles.length; j++) {
+                        const m1 = marbles[i];
+                        const m2 = marbles[j];
+
+                        // Skip if both are static
+                        if (m1.static && m2.static) continue;
+
+                        const dx = m2.x - m1.x;
+                        const dy = m2.y - m1.y;
+                        const distSq = dx * dx + dy * dy;
+                        const minDist = m1.radius + m2.radius;
+
+                        if (distSq < minDist * minDist && distSq > 0) {
+                            const dist = Math.sqrt(distSq);
+                            // Normalize
+                            const nx = dx / dist;
+                            const ny = dy / dist;
+
+                            // Determine which marbles can move
+                            const m1Frozen = m1.static || m1.settled;
+                            const m2Frozen = m2.static || m2.settled;
+
+                            // Separate - only move non-frozen marbles
+                            const overlap = minDist - dist;
+                            if (m1Frozen && !m2Frozen) {
+                                m2.x += nx * overlap;
+                                m2.y += ny * overlap;
+                            } else if (m2Frozen && !m1Frozen) {
+                                m1.x -= nx * overlap;
+                                m1.y -= ny * overlap;
+                            } else if (!m1Frozen && !m2Frozen) {
+                                const separateX = nx * overlap * 0.5;
+                                const separateY = ny * overlap * 0.5;
+                                m1.x -= separateX;
+                                m1.y -= separateY;
+                                m2.x += separateX;
+                                m2.y += separateY;
+                            }
+                            // If both frozen, don't move either
+
+                            // Clamp to bounds after separation
+                            if (!m1Frozen) {
+                                m1.x = Math.max(m1.radius, Math.min(marblesWidth - m1.radius, m1.x));
+                                m1.y = Math.max(m1.radius, Math.min(marblesHeight - m1.radius, m1.y));
+                            }
+                            if (!m2Frozen) {
+                                m2.x = Math.max(m2.radius, Math.min(marblesWidth - m2.radius, m2.x));
+                                m2.y = Math.max(m2.radius, Math.min(marblesHeight - m2.radius, m2.y));
+                            }
+
+                            // Apply collision response based on frozen state
+                            if (m1Frozen && m2Frozen) {
+                                // Both frozen, no velocity change
+                            } else if (m2Frozen) {
+                                // m1 hitting frozen m2 - wall reflection
+                                // Normal points from m1 to m2, dot > 0 means approaching
+                                const dot = m1.vx * nx + m1.vy * ny;
+                                if (dot > 0) {
+                                    m1.vx -= 2 * dot * nx * MARBLE_BOUNCE;
+                                    m1.vy -= 2 * dot * ny * MARBLE_BOUNCE;
+                                }
+                            } else if (m1Frozen) {
+                                // m2 hitting frozen m1 - wall reflection
+                                // Normal points from m1 to m2, so m2 approaching means dot < 0
+                                const dot = m2.vx * nx + m2.vy * ny;
+                                if (dot < 0) {
+                                    m2.vx -= 2 * dot * nx * MARBLE_BOUNCE;
+                                    m2.vy -= 2 * dot * ny * MARBLE_BOUNCE;
+                                }
+                            } else {
+                                // Both moving - elastic collision between equal masses
+                                const dvx = m1.vx - m2.vx;
+                                const dvy = m1.vy - m2.vy;
+                                const dvn = dvx * nx + dvy * ny;
+                                if (dvn > 0) {
+                                    const impulse = dvn * (1 + MARBLE_BOUNCE) * 0.5;
+                                    m1.vx -= impulse * nx;
+                                    m1.vy -= impulse * ny;
+                                    m2.vx += impulse * nx;
+                                    m2.vy += impulse * ny;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+        }
+
+        function drawMarbles(ctx) {
+            // Clear canvas completely
+            ctx.fillStyle = '#050508';
+            ctx.fillRect(0, 0, marblesWidth, marblesHeight);
+
+            // Draw version indicator
+            ctx.fillStyle = '#333';
+            ctx.font = '10px monospace';
+            ctx.fillText(MARBLES_VERSION, marblesWidth - 25, 15);
+
+            // Draw obstacles
+            drawObstacles(ctx);
+
+            // Draw marbles
+            for (const marble of marbles) {
+                marble.draw(ctx);
+            }
+
+            // Draw tooltip if hovering
+            drawTooltip(ctx);
+        }
+
+        function marblesLoop() {
+            if (!marblesAnimating) return;
+
+            // Only run physics and draw when marbles tab is visible
+            if (marblesTabActive) {
+                updateCompactionShift(); // Animate compaction shift if active
+                updateMarbles();
+                drawMarbles(marblesCtx);
+            }
+
+            requestAnimationFrame(marblesLoop);
+        }
+
+        function startMarblesAnimation() {
+            if (marblesAnimating) return;
+            marblesAnimating = true;
+            marblesLoop();
+        }
+
+        function stopMarblesAnimation() {
+            marblesAnimating = false;
+        }
+
+        // ==================== Compaction Effect ====================
+        // Animated shift state
+        let compactionShiftRemaining = 0;
+        let compactionTotalShift = 0; // Track total shift for bumper placement
+        const COMPACTION_SHIFT_SPEED = 15; // pixels per frame
+        const MIN_BUMPER_ROW_SPACING = 80; // Minimum vertical gap between bumper rows
+
+        function triggerCompaction() {
+            if (marbles.length < 4) return; // Need enough marbles to compact
+
+            // Sort by Y position (highest Y = lowest on screen / bottom)
+            const sorted = [...marbles].sort((a, b) => b.y - a.y);
+
+            // Remove bottom 50%
+            const removeCount = Math.floor(sorted.length / 2);
+            const toRemove = new Set(sorted.slice(0, removeCount));
+            marbles = marbles.filter(m => !toRemove.has(m));
+
+            if (marbles.length === 0) return;
+
+            // Find lowest remaining marble
+            const lowestY = Math.max(...marbles.map(m => m.y + m.radius));
+
+            // Calculate shift to move remaining marbles to bottom
+            const targetBottomY = marblesHeight - 50; // 50px from canvas bottom
+            const shiftAmount = targetBottomY - lowestY;
+
+            if (shiftAmount > 0) {
+                // Start animated shift
+                compactionShiftRemaining = shiftAmount;
+                compactionTotalShift = shiftAmount;
+            } else {
+                compactionTotalShift = 0;
+            }
+
+            // Boost saturation on remaining marbles (they're "fresh" after compaction)
+            for (const m of marbles) {
+                m.saturation = Math.min(100, m.saturation + 40);
+                // Unsettle them so they can move again
+                m.settled = false;
+                m.static = false;
+                m.settledTime = 0;
+            }
+
+            console.log(`Compaction: removed ${removeCount} marbles, ${marbles.length} remaining, shifting ${shiftAmount}px`);
+        }
+
+        // Called each frame to animate the compaction shift
+        function updateCompactionShift() {
+            if (compactionShiftRemaining <= 0) return;
+
+            const step = Math.min(COMPACTION_SHIFT_SPEED, compactionShiftRemaining);
+            compactionShiftRemaining -= step;
+
+            // Shift all marbles down
+            for (const m of marbles) {
+                m.y += step;
+            }
+
+            // Shift all bumpers down too
+            for (const obs of obstacles) {
+                obs.y += step;
+            }
+
+            // When shift is complete, maybe add bumpers
+            if (compactionShiftRemaining <= 0) {
+                addUpperBumpers();
+            }
+        }
+
+        function addUpperBumpers() {
+            // Find the highest (lowest Y) existing obstacle
+            const highestBumperY = obstacles.length > 0
+                ? Math.min(...obstacles.map(o => o.y - o.radius))
+                : marblesHeight;
+
+            // Only add bumpers if there's enough headroom
+            // Need at least MIN_BUMPER_ROW_SPACING * 2 for two rows with gaps
+            const availableSpace = highestBumperY - 50; // Leave 50px margin at top
+
+            if (availableSpace < MIN_BUMPER_ROW_SPACING) {
+                console.log(`Not enough headroom for bumpers (${availableSpace}px available)`);
+                return;
+            }
+
+            // Calculate how many rows we can fit
+            const maxRows = Math.floor(availableSpace / MIN_BUMPER_ROW_SPACING);
+            const rows = Math.min(2, maxRows); // Cap at 2 rows
+
+            if (rows < 1) return;
+
+            const pegsPerRow = 3;
+            const startY = 50; // Start 50px from top
+            const rowSpacing = Math.min(MIN_BUMPER_ROW_SPACING, availableSpace / (rows + 1));
+
+            console.log(`Adding ${rows} bumper rows with ${rowSpacing}px spacing`);
+
+            for (let row = 0; row < rows; row++) {
+                const y = startY + row * rowSpacing;
+                const offset = row % 2 === 0 ? 0 : marblesWidth / (pegsPerRow * 2);
+
+                for (let col = 0; col < pegsPerRow; col++) {
+                    const x = (marblesWidth / (pegsPerRow + 1)) * (col + 1) + offset;
+                    const jitterX = (Math.random() - 0.5) * 20;
+                    const jitterY = (Math.random() - 0.5) * 15;
+                    obstacles.push({
+                        x: x + jitterX,
+                        y: y + jitterY,
+                        radius: 15 + Math.random() * 10
+                    });
+                }
+            }
+        }
+
+        // Test function to spawn multiple marbles quickly
+        function spawnTestMarbles(count = 50) {
+            const testTypes = ['thinking', 'Read', 'Write', 'Edit', 'Bash', 'Grep', 'Task', 'result', 'system'];
+            const testSummaries = ['test.js', 'main.py', 'index.html', 'npm install', 'git status', 'analyzing...', 'searching...', 'done!'];
+
+            let spawned = 0;
+            const interval = setInterval(() => {
+                if (spawned >= count) {
+                    clearInterval(interval);
+                    console.log(`Spawned ${count} test marbles`);
+                    return;
+                }
+
+                const type = testTypes[Math.floor(Math.random() * testTypes.length)];
+                const summary = testSummaries[Math.floor(Math.random() * testSummaries.length)];
+                // Spawn directly, bypassing the rate-limited queue
+                spawnMarbleNow(type, summary, null);
+                spawned++;
+            }, 100); // Spawn one every 100ms
+        }
+
+        // Hook into event system to spawn marbles
+        const originalAddEvent = addEvent;
+        addEvent = function(data) {
+            const isNew = originalAddEvent(data);
+
+            // Only spawn marble if this was a new event (not duplicate)
+            if (!isNew) return;
+
+            // Spawn marble for this event
+            const event = data.event;
+            if (!event) return;
+
+            let eventType = null;
+            let summary = null;
+
+            if (event.type === 'assistant') {
+                const blocks = event.message?.content || [];
+                for (const block of blocks) {
+                    if (block.type === 'text' && block.text) {
+                        eventType = 'thinking';
+                        // First 50 chars of thinking
+                        summary = block.text.slice(0, 50).replace(/\n/g, ' ');
+                        if (block.text.length > 50) summary += '...';
+                    } else if (block.type === 'tool_use') {
+                        eventType = block.name;
+                        const input = block.input || {};
+                        // Create summary based on tool type
+                        if (block.name === 'Read' || block.name === 'Write' || block.name === 'Edit') {
+                            const path = input.file_path || '';
+                            summary = path.split('/').pop() || block.name;
+                        } else if (block.name === 'Bash') {
+                            const cmd = input.command || '';
+                            summary = cmd.slice(0, 40);
+                            if (cmd.length > 40) summary += '...';
+                        } else if (block.name === 'Grep' || block.name === 'Glob') {
+                            summary = input.pattern || block.name;
+                        } else if (block.name === 'Task') {
+                            summary = input.description || 'Task';
+                        } else if (block.name === 'TodoWrite') {
+                            const todos = input.todos || [];
+                            const inProgress = todos.find(t => t.status === 'in_progress');
+                            summary = inProgress ? inProgress.content.slice(0, 40) : 'Todos';
+                        } else {
+                            summary = block.name;
+                        }
+                    }
+                }
+            } else if (event.type === 'user') {
+                const blocks = event.message?.content || [];
+                for (const block of blocks) {
+                    if (block.type === 'tool_result') {
+                        eventType = 'result';
+                        let content = block.content || '';
+                        // content can be string or array of content blocks
+                        if (Array.isArray(content)) {
+                            content = content.map(c => c.text || '').join(' ');
+                        }
+                        if (typeof content === 'string') {
+                            summary = content.slice(0, 40).replace(/\n/g, ' ');
+                            if (content.length > 40) summary += '...';
+                        } else {
+                            summary = 'result';
+                        }
+                    }
+                }
+            } else if (event.type === 'system') {
+                // Check for compaction events
+                const subtype = (event.subtype || '').toLowerCase();
+                if (subtype === 'compaction' || subtype === 'compact' ||
+                    subtype === 'summarize' || subtype === 'context_compaction' ||
+                    subtype.includes('compaction')) {
+                    triggerCompaction();
+                    // Still spawn a marble for the event
+                }
+                eventType = 'system';
+                summary = event.subtype || 'system';
+            }
+
+            if (eventType) {
+                queueMarbleSpawn(eventType, summary, data);
+            }
+        };
+
+        // Mouse hover detection for marbles
+        function setupMarbleHover() {
+            if (!marblesCanvas) return;
+
+            marblesCanvas.addEventListener('mousemove', (e) => {
+                const rect = marblesCanvas.getBoundingClientRect();
+                // Scale mouse coordinates to canvas internal size
+                const scaleX = marblesCanvas.width / rect.width;
+                const scaleY = marblesCanvas.height / rect.height;
+                const x = (e.clientX - rect.left) * scaleX;
+                const y = (e.clientY - rect.top) * scaleY;
+
+                // Find marble under cursor (check from top, most recent first)
+                hoveredMarble = null;
+                for (let i = marbles.length - 1; i >= 0; i--) {
+                    const m = marbles[i];
+                    const dx = x - m.x;
+                    const dy = y - m.y;
+                    if (dx * dx + dy * dy < m.radius * m.radius) {
+                        hoveredMarble = m;
+                        break;
+                    }
+                }
+                marblesCanvas.style.cursor = hoveredMarble ? 'pointer' : 'default';
+            });
+
+            marblesCanvas.addEventListener('mouseleave', () => {
+                hoveredMarble = null;
+            });
+
+            // Click handler for marbles
+            marblesCanvas.addEventListener('click', (e) => {
+                const rect = marblesCanvas.getBoundingClientRect();
+                // Scale click coordinates to canvas internal size
+                const scaleX = marblesCanvas.width / rect.width;
+                const scaleY = marblesCanvas.height / rect.height;
+                const x = (e.clientX - rect.left) * scaleX;
+                const y = (e.clientY - rect.top) * scaleY;
+
+                // Find marble under cursor
+                for (let i = marbles.length - 1; i >= 0; i--) {
+                    const m = marbles[i];
+                    const dx = x - m.x;
+                    const dy = y - m.y;
+                    if (dx * dx + dy * dy < m.radius * m.radius) {
+                        if (m.beadId) {
+                            // Bead marble - navigate to task view
+                            viewTask(m.beadId, m.summary);
+                        } else if (m.eventData) {
+                            // Regular event marble - show event modal
+                            showEventModal(m.eventData);
+                        }
+                        break;
+                    }
+                }
+            });
+        }
+
+        // Draw tooltip for hovered marble
+        function drawTooltip(ctx) {
+            if (!hoveredMarble) return;
+
+            const m = hoveredMarble;
+            const text = m.summary;
+            ctx.font = '12px monospace';
+            const metrics = ctx.measureText(text);
+            const padding = 6;
+            const width = metrics.width + padding * 2;
+            const height = 20;
+
+            // Position tooltip above marble
+            let tx = m.x - width / 2;
+            let ty = m.y - m.radius - height - 5;
+
+            // Keep on screen
+            if (tx < 5) tx = 5;
+            if (tx + width > marblesWidth - 5) tx = marblesWidth - width - 5;
+            if (ty < 5) ty = m.y + m.radius + 5;
+
+            // Draw background
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+            ctx.fillRect(tx, ty, width, height);
+            ctx.strokeStyle = m.color;
+            ctx.lineWidth = 1;
+            ctx.strokeRect(tx, ty, width, height);
+
+            // Draw text
+            ctx.fillStyle = '#fff';
+            ctx.fillText(text, tx + padding, ty + 14);
+        }
+
+        // Initialize marbles when page loads
+        setTimeout(() => {
+            initMarbles();
+            setupMarbleHover();
+        }, 100);
     </script>
 </body>
 </html>

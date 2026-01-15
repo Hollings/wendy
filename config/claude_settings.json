@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Task tool is disabled. Use bd (beads) for background tasks instead. See /data/wendy/BD_USAGE.md for details.' >&2 && exit 2"
+          }
+        ]
+      }
+    ]
+  }
+}

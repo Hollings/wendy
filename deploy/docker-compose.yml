@@ -55,12 +55,16 @@ services:
       - ORCHESTRATOR_WORKING_DIR=/data/wendy
       - ORCHESTRATOR_PROXY_URL=http://127.0.0.1:8945
       - ORCHESTRATOR_NOTIFY_CHANNEL=${ORCHESTRATOR_NOTIFY_CHANNEL:-}
+      - ORCHESTRATOR_USAGE_POLL_INTERVAL=${ORCHESTRATOR_USAGE_POLL_INTERVAL:-3600}
+      - ORCHESTRATOR_USAGE_NOTIFY_CHANNEL=${ORCHESTRATOR_USAGE_NOTIFY_CHANNEL:-}
       - AGENT_SYSTEM_PROMPT_FILE=/app/config/agent_claude_md.txt
     depends_on:
       - proxy
 
 volumes:
   wendy_data:
+    external: true
     name: wendy_data
   claude_config:
+    external: true
     name: claude_config

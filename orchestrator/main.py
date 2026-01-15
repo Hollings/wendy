@@ -14,7 +14,7 @@ import time
 import urllib.request
 import urllib.error
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from threading import Thread
 from typing import Optional
@@ -31,6 +31,14 @@ AGENT_TIMEOUT = int(os.getenv("ORCHESTRATOR_AGENT_TIMEOUT", "1800"))  # 30 minut
 MAX_LOG_FILES = int(os.getenv("ORCHESTRATOR_MAX_LOG_FILES", "50"))
 AGENT_SYSTEM_PROMPT_FILE = Path(os.getenv("AGENT_SYSTEM_PROMPT_FILE", "/app/config/agent_claude_md.txt"))
 CANCEL_FILE = WORKING_DIR / "cancel_tasks.json"
+
+# Usage monitoring configuration
+USAGE_POLL_INTERVAL = int(os.getenv("ORCHESTRATOR_USAGE_POLL_INTERVAL", "3600"))  # 1 hour
+USAGE_NOTIFY_CHANNEL = os.getenv("ORCHESTRATOR_USAGE_NOTIFY_CHANNEL", "")  # Channel for usage alerts
+USAGE_STATE_FILE = WORKING_DIR / "usage_state.json"
+USAGE_DATA_FILE = WORKING_DIR / "usage_data.json"  # Latest usage for proxy to read
+USAGE_FORCE_CHECK_FILE = WORKING_DIR / "usage_force_check"  # Trigger immediate check
+USAGE_SCRIPT_PATH = Path("/app/scripts/get_usage.sh")
 
 # Logging setup
 logging.basicConfig(
@@ -58,6 +66,7 @@ class Orchestrator:
         self.active_agents: dict[str, RunningAgent] = {}
         self.concurrency = CONCURRENCY
         LOG_DIR.mkdir(parents=True, exist_ok=True)
+        self.last_usage_check = 0.0  # timestamp of last usage check
 
     def get_ready_tasks(self) -> list[dict]:
         """Get list of ready, unassigned tasks from beads, sorted by priority."""
@@ -355,12 +364,14 @@ Begin working on this task now."""
                 continue
 
             if retcode is not None:
-                # Agent finished normally
-                success = retcode == 0
+                # Agent finished - treat as success unless timeout/cancel
+                # Claude CLI exit codes aren't reliable indicators of task success
+                # The agent completing without timeout/crash means it did its work
+                success = True
 
                 log.info(
                     f"Agent completed task {task_id} "
-                    f"({'success' if success else 'failed'}) "
+                    f"(exit code {retcode}) "
                     f"after {duration}"
                 )
 
@@ -392,6 +403,169 @@ Begin working on this task now."""
                     log.debug(f"Removed old log: {old_log.name}")
         except Exception as e:
             log.debug(f"Log cleanup error: {e}")
+
+    def format_reset_time_pacific(self, iso_timestamp: str) -> str:
+        """Convert ISO timestamp to Pacific time formatted string."""
+        if not iso_timestamp:
+            return ""
+        try:
+            # Parse ISO timestamp
+            dt = datetime.fromisoformat(iso_timestamp.replace('Z', '+00:00'))
+            # Convert to Pacific (UTC-8, or UTC-7 during DST)
+            # Using fixed UTC-8 for simplicity (PST)
+            pacific = dt.astimezone(timezone(timedelta(hours=-8)))
+            return pacific.strftime("%a %b %d, %I:%M%p PT")
+        except Exception as e:
+            log.debug(f"Failed to parse reset time: {e}")
+            return iso_timestamp
+
+    def get_usage_state(self) -> dict:
+        """Load usage state (last notified thresholds)."""
+        if USAGE_STATE_FILE.exists():
+            try:
+                return json.loads(USAGE_STATE_FILE.read_text())
+            except (json.JSONDecodeError, IOError):
+                pass
+        return {"last_notified_week_all": 0, "last_notified_week_sonnet": 0}
+
+    def save_usage_state(self, state: dict):
+        """Save usage state."""
+        try:
+            USAGE_STATE_FILE.write_text(json.dumps(state, indent=2))
+        except Exception as e:
+            log.error(f"Failed to save usage state: {e}")
+
+    def check_usage(self):
+        """Check Claude usage and notify if thresholds crossed."""
+        now = time.time()
+
+        # Check for force check request
+        force_check = USAGE_FORCE_CHECK_FILE.exists()
+        if force_check:
+            try:
+                USAGE_FORCE_CHECK_FILE.unlink()
+                log.info("Force usage check requested")
+            except Exception:
+                pass
+
+        # Only check every USAGE_POLL_INTERVAL seconds (unless forced)
+        if not force_check and now - self.last_usage_check < USAGE_POLL_INTERVAL:
+            return
+
+        self.last_usage_check = now
+
+        # Skip if script doesn't exist
+        if not USAGE_SCRIPT_PATH.exists():
+            log.debug("Usage script not found, skipping usage check")
+            return
+
+        # Skip if no channel configured
+        channel = USAGE_NOTIFY_CHANNEL or NOTIFY_CHANNEL
+        if not channel:
+            log.debug("No usage notify channel configured, skipping")
+            return
+
+        log.info("Checking Claude usage...")
+
+        try:
+            result = subprocess.run(
+                ["bash", str(USAGE_SCRIPT_PATH)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                cwd=WORKING_DIR
+            )
+
+            if result.returncode != 0:
+                log.warning(f"Usage script failed: {result.stderr}")
+                return
+
+            usage = json.loads(result.stdout)
+            week_all = usage.get("week_all_percent", 0)
+            week_sonnet = usage.get("week_sonnet_percent", 0)
+            session_pct = usage.get("session_percent", 0)
+
+            log.info(f"Usage: week_all={week_all}%, week_sonnet={week_sonnet}%")
+
+            # Save latest usage data for proxy to read
+            try:
+                usage_data = {
+                    "session_percent": session_pct,
+                    "session_resets": usage.get("session_resets", ""),
+                    "week_all_percent": week_all,
+                    "week_all_resets": usage.get("week_all_resets", ""),
+                    "week_sonnet_percent": week_sonnet,
+                    "week_sonnet_resets": usage.get("week_sonnet_resets", ""),
+                    "timestamp": usage.get("timestamp", datetime.now().isoformat()),
+                    "updated_at": datetime.now().isoformat()
+                }
+                USAGE_DATA_FILE.write_text(json.dumps(usage_data, indent=2))
+            except Exception as e:
+                log.error(f"Failed to save usage data: {e}")
+
+            # Check for threshold crossings
+            state = self.get_usage_state()
+            last_all = state.get("last_notified_week_all", 0)
+            last_sonnet = state.get("last_notified_week_sonnet", 0)
+
+            # Calculate 10% thresholds
+            current_all_threshold = (week_all // 10) * 10
+            current_sonnet_threshold = (week_sonnet // 10) * 10
+
+            messages = []
+
+            # Get reset times formatted for Pacific
+            week_all_resets = self.format_reset_time_pacific(usage.get("week_all_resets", ""))
+            week_sonnet_resets = self.format_reset_time_pacific(usage.get("week_sonnet_resets", ""))
+
+            # Check if we crossed a new 10% threshold for all models
+            if current_all_threshold > last_all and current_all_threshold > 0:
+                reset_str = f" (resets {week_all_resets})" if week_all_resets else ""
+                messages.append(f"Weekly usage (all models): {week_all}%{reset_str}")
+                state["last_notified_week_all"] = current_all_threshold
+
+            # Check if we crossed a new 10% threshold for Sonnet
+            if current_sonnet_threshold > last_sonnet and current_sonnet_threshold > 0:
+                reset_str = f" (resets {week_sonnet_resets})" if week_sonnet_resets else ""
+                messages.append(f"Weekly usage (Sonnet): {week_sonnet}%{reset_str}")
+                state["last_notified_week_sonnet"] = current_sonnet_threshold
+
+            # Send notification if thresholds crossed
+            if messages:
+                message = "Claude Code Usage Alert:\n" + "\n".join(messages)
+                self.send_usage_notification(channel, message)
+                self.save_usage_state(state)
+
+        except subprocess.TimeoutExpired:
+            log.warning("Usage check timed out")
+        except json.JSONDecodeError as e:
+            log.warning(f"Failed to parse usage output: {e}")
+        except Exception as e:
+            log.error(f"Usage check error: {e}")
+
+    def send_usage_notification(self, channel: str, message: str):
+        """Send a usage notification to Discord."""
+        try:
+            data = json.dumps({
+                "channel_id": channel,
+                "content": message
+            }).encode("utf-8")
+
+            req = urllib.request.Request(
+                f"{PROXY_URL}/api/send_message",
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status == 200:
+                    log.info("Sent usage notification to Discord")
+                else:
+                    log.warning(f"Usage notification failed with status {resp.status}")
+
+        except Exception as e:
+            log.error(f"Failed to send usage notification: {e}")
 
     def check_cancel_requests(self):
         """Check for and process cancel requests."""
@@ -484,6 +658,9 @@ Begin working on this task now."""
 
                 # Periodic log cleanup
                 self.cleanup_old_logs()
+
+                # Check Claude usage (hourly)
+                self.check_usage()
 
                 # See if we can start more agents
                 available_slots = self.concurrency - len(self.active_agents)

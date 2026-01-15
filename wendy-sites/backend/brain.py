@@ -126,9 +126,21 @@ async def tail_stream() -> None:
                         current_size = STREAM_FILE.stat().st_size
 
                         # Handle file truncation (wendy-bot trims to 5000 lines)
+                        # Skip to current end and ignore this batch - the trim rewrites
+                        # the whole file so we'd re-broadcast everything otherwise
                         if current_size < pos:
-                            _LOG.info("File truncated, resetting position from %d to 0", pos)
-                            pos = 0
+                            _LOG.info("File truncated, jumping to end (was %d, now %d)", pos, current_size)
+                            # Jump to END of current file to skip the rewritten content
+                            pos = current_size
+                            # Wait a bit for the trim operation to complete
+                            await asyncio.sleep(0.5)
+                            # Now jump to whatever the new size is
+                            try:
+                                pos = STREAM_FILE.stat().st_size
+                                _LOG.info("After truncation settle, pos now %d", pos)
+                            except:
+                                pass
+                            continue
 
                         if current_size <= pos:
                             continue

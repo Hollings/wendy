@@ -26,3 +26,5 @@ services:
 
 volumes:
   sites_data:
+    external: true
+    name: wendy-sites_sites_data

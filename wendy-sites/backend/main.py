@@ -72,6 +72,41 @@ async def brain_stats():
     return brain.get_stats()
 
 
+USAGE_DATA_FILE = Path("/data/wendy/usage_data.json")
+
+
+@app.get("/api/brain/usage")
+async def brain_usage():
+    """Get Claude Code usage stats."""
+    import json
+    if not auth.is_configured():
+        raise HTTPException(status_code=503, detail="Brain feed not configured")
+
+    if not USAGE_DATA_FILE.exists():
+        return {
+            "available": False,
+            "message": "Usage data not available yet"
+        }
+
+    try:
+        data = json.loads(USAGE_DATA_FILE.read_text())
+        return {
+            "available": True,
+            "session_percent": data.get("session_percent", 0),
+            "session_resets": data.get("session_resets", ""),
+            "week_all_percent": data.get("week_all_percent", 0),
+            "week_all_resets": data.get("week_all_resets", ""),
+            "week_sonnet_percent": data.get("week_sonnet_percent", 0),
+            "week_sonnet_resets": data.get("week_sonnet_resets", ""),
+            "updated_at": data.get("updated_at", ""),
+        }
+    except Exception as e:
+        return {
+            "available": False,
+            "message": f"Error reading usage data: {e}"
+        }
+
+
 @app.get("/api/brain/agents")
 async def brain_agents():
     """List all subagents."""

@@ -93,3 +93,4 @@ You rarely need `bd list` or `bd show` - just create tasks and wait for notifica
 - Agents can only work in `/data/wendy/wendys_folder/`
 - Agents CANNOT deploy - you deploy after reviewing their work
 - One task runs at a time (queued if busy)
+- **Task descriptions are read immediately** - updating a task after creation won't help. If you need to change the description, close the task and create a new one.
