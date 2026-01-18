@@ -1,4 +1,26 @@
-"""Brain feed - real-time stream of Wendy's Claude Code session."""
+"""Brain feed - real-time stream of Wendy's Claude Code session.
+
+This module provides real-time streaming of Wendy's Claude Code session events
+to connected dashboard clients via WebSocket. It watches the stream.jsonl file
+for new events and broadcasts them to all authenticated clients.
+
+Architecture:
+    Claude CLI writes to stream.jsonl -> tail_stream() watches file
+    -> broadcast() sends to WebSocket clients -> Dashboard displays
+
+Features:
+    - Efficient tail-reading of stream.jsonl from the end
+    - Handles file truncation (when wendy-bot trims old events)
+    - Tracks session stats (context usage, costs, active tasks)
+    - Lists and reads subagent logs
+    - Connection limit (MAX_CLIENTS) to prevent overload
+
+Events:
+    Events are JSON lines with structure: {"ts": "...", "event": {...}}
+    Event types: assistant, user, result, tool_use, tool_result
+"""
+
+from __future__ import annotations
 
 import asyncio
 import json
@@ -11,18 +33,41 @@ from watchfiles import Change, awatch
 
 _LOG = logging.getLogger(__name__)
 
-STREAM_FILE = Path("/data/wendy/stream.jsonl")
-SESSION_STATE_FILE = Path("/data/wendy/session_state.json")
-DB_PATH = Path("/data/wendy/wendy.db")
-CLAUDE_DIR = Path("/data/claude")
-MAX_HISTORY = 50
-MAX_CLIENTS = 100
-CONTEXT_WINDOW = 200000  # Claude's context window
+# =============================================================================
+# Configuration Constants
+# =============================================================================
+
+STREAM_FILE: Path = Path("/data/wendy/stream.jsonl")
+"""Path to the Claude Code stream.jsonl file."""
+
+SESSION_STATE_FILE: Path = Path("/data/wendy/session_state.json")
+"""Path to session state JSON file with per-channel stats."""
+
+DB_PATH: Path = Path("/data/wendy/wendy.db")
+"""Path to the SQLite database with cached messages."""
+
+CLAUDE_DIR: Path = Path("/data/claude")
+"""Base directory for Claude Code data (projects, sessions)."""
+
+MAX_HISTORY: int = 50
+"""Number of recent events to send to newly connected clients."""
+
+MAX_CLIENTS: int = 100
+"""Maximum concurrent WebSocket connections allowed."""
+
+CONTEXT_WINDOW: int = 200000
+"""Claude's context window size in tokens (for percentage calculation)."""
+
+# =============================================================================
+# Module State
+# =============================================================================
 
 connected_clients: set[WebSocket] = set()
-_watcher_task: asyncio.Task | None = None
+"""Set of currently connected WebSocket clients."""
 
-# Track latest stats from stream events
+_watcher_task: asyncio.Task | None = None
+"""Background task running tail_stream()."""
+
 _latest_stats: dict = {
     "context_tokens": 0,
     "context_pct": 0,
@@ -30,10 +75,26 @@ _latest_stats: dict = {
     "last_activity": None,
     "active_tasks": 0,
 }
+"""Latest statistics extracted from stream events."""
+
+
+# =============================================================================
+# Event Reading Functions
+# =============================================================================
 
 
 def get_recent_events(n: int = MAX_HISTORY) -> list[str]:
-    """Get last N events from stream file efficiently."""
+    """Get the last N events from stream file efficiently.
+
+    Reads the file backwards from the end to avoid loading the entire
+    file into memory (stream.jsonl can be several MB).
+
+    Args:
+        n: Maximum number of events to return.
+
+    Returns:
+        List of JSON event strings, newest last.
+    """
     if not STREAM_FILE.exists():
         return []
 
@@ -75,8 +136,19 @@ def get_recent_events(n: int = MAX_HISTORY) -> list[str]:
         return []
 
 
+# =============================================================================
+# WebSocket Broadcasting
+# =============================================================================
+
+
 async def broadcast(message: str) -> None:
-    """Send message to all connected clients."""
+    """Send a message to all connected WebSocket clients.
+
+    Automatically removes dead connections that fail to receive.
+
+    Args:
+        message: JSON string to send to all clients.
+    """
     if not connected_clients:
         return
 
@@ -102,7 +174,12 @@ async def broadcast(message: str) -> None:
 
 
 async def tail_stream() -> None:
-    """Watch stream.jsonl and broadcast new events."""
+    """Watch stream.jsonl and broadcast new events to all clients.
+
+    Uses watchfiles to efficiently monitor the file for changes.
+    Handles file truncation gracefully (when wendy-bot trims old events).
+    Runs forever in a background task started by start_watcher().
+    """
     _LOG.info("Starting brain feed watcher...")
 
     while True:
@@ -165,8 +242,20 @@ async def tail_stream() -> None:
             await asyncio.sleep(5)
 
 
+# =============================================================================
+# Client Management
+# =============================================================================
+
+
 async def add_client(ws: WebSocket) -> bool:
-    """Add a client connection. Returns False if at capacity."""
+    """Add a WebSocket client connection.
+
+    Args:
+        ws: WebSocket connection to add.
+
+    Returns:
+        True if added successfully, False if at MAX_CLIENTS capacity.
+    """
     if len(connected_clients) >= MAX_CLIENTS:
         return False
     connected_clients.add(ws)
@@ -175,18 +264,40 @@ async def add_client(ws: WebSocket) -> bool:
 
 
 def remove_client(ws: WebSocket) -> None:
-    """Remove a client connection."""
+    """Remove a WebSocket client connection.
+
+    Args:
+        ws: WebSocket connection to remove.
+    """
     connected_clients.discard(ws)
     _LOG.info("Client disconnected, total: %d", len(connected_clients))
 
 
 def client_count() -> int:
-    """Get number of connected clients."""
+    """Get the number of currently connected WebSocket clients.
+
+    Returns:
+        Number of active connections.
+    """
     return len(connected_clients)
 
 
+# =============================================================================
+# Statistics Functions
+# =============================================================================
+
+
 def get_stats() -> dict:
-    """Get current brain stats."""
+    """Get current brain feed statistics.
+
+    Combines real-time stats from stream events with data from
+    session state and database.
+
+    Returns:
+        Dict with keys: viewers, context_tokens, context_pct, session_cost,
+        last_activity, active_tasks, session_messages, cached_messages,
+        session_id, total_input, total_output, cache_read.
+    """
     stats = {
         "viewers": len(connected_clients),
         "context_tokens": _latest_stats["context_tokens"],
@@ -227,7 +338,17 @@ def get_stats() -> dict:
 
 
 def update_stats_from_event(event_json: str) -> None:
-    """Update stats from a stream event."""
+    """Update internal stats from a stream event.
+
+    Parses the event JSON and updates _latest_stats with:
+    - Context token usage (from assistant messages)
+    - Session cost (from result events)
+    - Active task count (increments on Task tool_use, decrements on tool_result)
+    - Last activity timestamp
+
+    Args:
+        event_json: JSON string of the stream event.
+    """
     global _latest_stats
     try:
         data = json.loads(event_json)
@@ -274,8 +395,20 @@ def update_stats_from_event(event_json: str) -> None:
         _LOG.debug("Failed to parse event for stats: %s", e)
 
 
+# =============================================================================
+# Subagent Functions
+# =============================================================================
+
+
 def get_subagents_dir() -> Path | None:
-    """Get the subagents directory for the current session."""
+    """Get the subagents directory for the current Claude session.
+
+    Looks up the session ID from session_state.json and constructs
+    the path to the subagents directory.
+
+    Returns:
+        Path to subagents directory, or None if not found.
+    """
     try:
         if not SESSION_STATE_FILE.exists():
             return None
@@ -293,7 +426,15 @@ def get_subagents_dir() -> Path | None:
 
 
 def list_agents() -> list[dict]:
-    """List all agent files with metadata."""
+    """List all subagent files with metadata.
+
+    Scans the subagents directory for agent-*.jsonl files and extracts
+    metadata from each (slug, task description, size, modified time).
+
+    Returns:
+        List of agent dicts sorted by modified time (newest first).
+        Each dict has: id, slug, task, size, modified, path.
+    """
     subagents_dir = get_subagents_dir()
     if not subagents_dir:
         return []
@@ -340,7 +481,18 @@ def list_agents() -> list[dict]:
 
 
 def get_agent_events(agent_id: str, limit: int = 50) -> list[str]:
-    """Get recent events from a specific agent."""
+    """Get recent events from a specific subagent's log.
+
+    Reads the last N lines from agent-{agent_id}.jsonl efficiently
+    by reading backwards from the end.
+
+    Args:
+        agent_id: The agent ID (filename without agent- prefix and .jsonl).
+        limit: Maximum number of events to return.
+
+    Returns:
+        List of JSON event strings, newest last.
+    """
     subagents_dir = get_subagents_dir()
     if not subagents_dir:
         return []
@@ -379,8 +531,17 @@ def get_agent_events(agent_id: str, limit: int = 50) -> list[str]:
         return []
 
 
+# =============================================================================
+# Watcher Control
+# =============================================================================
+
+
 def start_watcher() -> None:
-    """Start the file watcher background task."""
+    """Start the file watcher background task.
+
+    Creates an asyncio task running tail_stream() if not already running.
+    Called on FastAPI startup when auth is configured.
+    """
     global _watcher_task
     if _watcher_task is None or _watcher_task.done():
         _watcher_task = asyncio.create_task(tail_stream())

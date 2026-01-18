@@ -22,14 +22,25 @@ from typing import Any
 
 _LOG = logging.getLogger(__name__)
 
-SESSION_STATE_FILE = Path("/data/wendy/session_state.json")
-SESSION_DIR = Path("/root/.claude/projects/-data-wendy")
-STREAM_LOG_FILE = Path("/data/wendy/stream.jsonl")
-MAX_DISCORD_MESSAGES = 50  # Actual Discord messages, not API turns
-MAX_STREAM_LOG_LINES = 5000  # Rolling log limit
+# File paths for session persistence
+SESSION_STATE_FILE: Path = Path("/data/wendy/session_state.json")
+"""Path to JSON file storing per-channel session state (session IDs, token counts, etc.)."""
+
+SESSION_DIR: Path = Path("/root/.claude/projects/-data-wendy")
+"""Directory where Claude CLI stores conversation history files (.jsonl per session)."""
+
+STREAM_LOG_FILE: Path = Path("/data/wendy/stream.jsonl")
+"""Rolling log file for real-time event streaming from Claude CLI."""
+
+# Limits for session management
+MAX_DISCORD_MESSAGES: int = 50
+"""Maximum Discord messages to keep in a session before truncating older messages."""
+
+MAX_STREAM_LOG_LINES: int = 5000
+"""Maximum lines to keep in the rolling stream log file."""
 
 # Sensitive env vars to filter from CLI subprocess
-SENSITIVE_ENV_VARS = {
+SENSITIVE_ENV_VARS: set[str] = {
     "DISCORD_TOKEN",
     "WEBHOOK_URL",
     "ANTHROPIC_API_KEY",
@@ -40,6 +51,11 @@ SENSITIVE_ENV_VARS = {
     "WENDY_DEPLOY_TOKEN",
     "WENDY_GAMES_TOKEN",
 }
+"""Environment variables to exclude when spawning Claude CLI subprocesses.
+
+These are filtered out to prevent the CLI from accessing sensitive credentials
+that should only be available to the parent bot process.
+"""
 
 # Tool instructions template - {channel_id} and {folder} are substituted
 TOOL_INSTRUCTIONS_TEMPLATE = """
@@ -150,21 +166,57 @@ class ClaudeCliError(Exception):
 
 
 class ClaudeCliTextGenerator:
-    """Generate text using Claude CLI (subscription-based).
+    """Generate text using Claude CLI for subscription-based usage.
 
-    This generator invokes the `claude` CLI command instead of the API,
-    allowing use of subscription usage instead of API credits.
+    This generator invokes the `claude` CLI command instead of the Anthropic API,
+    allowing use of Claude Code subscription quota instead of API credits for cost savings.
+
+    The generator manages per-channel sessions with automatic:
+    - Session persistence and resumption via --resume flag
+    - Token usage tracking and statistics
+    - Session truncation when Discord messages exceed MAX_DISCORD_MESSAGES
+    - Temporary file management for image attachments
+    - Debug logging and event streaming
+
+    Attributes:
+        model: The Claude model to use (e.g., "sonnet", "opus", "haiku").
+        cli_path: Absolute path to the claude CLI executable.
+        timeout: Maximum seconds to wait for CLI response before timing out.
+
+    Example:
+        >>> generator = ClaudeCliTextGenerator(model="sonnet")
+        >>> await generator.generate(channel_id=123456789)
     """
 
+    model: str
+    cli_path: str
+    timeout: int
+    _temp_dir: Path | None
+    _temp_files: list[Path]
+
     def __init__(self, model: str = "sonnet") -> None:
+        """Initialize the Claude CLI text generator.
+
+        Args:
+            model: The Claude model identifier to use. Defaults to "sonnet".
+                   Common values: "sonnet", "opus", "haiku".
+
+        Raises:
+            ClaudeCliError: If the claude CLI executable cannot be found.
+        """
         self.model = model
         self.cli_path = self._find_cli_path()
         self.timeout = int(os.getenv("CLAUDE_CLI_TIMEOUT", "300"))
-        self._temp_dir: Path | None = None
-        self._temp_files: list[Path] = []
+        self._temp_dir = None
+        self._temp_files = []
 
     def _load_session_state(self) -> dict[str, Any]:
-        """Load session state from file."""
+        """Load the persisted session state from disk.
+
+        Returns:
+            Dictionary mapping channel IDs (as strings) to session info dicts.
+            Empty dict if file doesn't exist or is corrupted.
+        """
         if SESSION_STATE_FILE.exists():
             try:
                 return json.loads(SESSION_STATE_FILE.read_text())
@@ -173,17 +225,36 @@ class ClaudeCliTextGenerator:
         return {}
 
     def _save_session_state(self, state: dict[str, Any]) -> None:
-        """Save session state to file."""
+        """Persist session state to disk.
+
+        Args:
+            state: The complete session state dictionary to save.
+        """
         SESSION_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         SESSION_STATE_FILE.write_text(json.dumps(state, indent=2))
 
     def _get_channel_session(self, channel_id: int) -> dict[str, Any] | None:
-        """Get session info for a channel."""
+        """Retrieve session info for a specific Discord channel.
+
+        Args:
+            channel_id: The Discord channel ID to look up.
+
+        Returns:
+            Session info dict containing session_id, token counts, etc.,
+            or None if no session exists for this channel.
+        """
         state = self._load_session_state()
         return state.get(str(channel_id))
 
     def _create_channel_session(self, channel_id: int) -> str:
-        """Create a new session for a channel, return session_id."""
+        """Create a new Claude CLI session for a Discord channel.
+
+        Args:
+            channel_id: The Discord channel ID to create a session for.
+
+        Returns:
+            The newly generated UUID session ID.
+        """
         session_id = str(uuid.uuid4())
         state = self._load_session_state()
         state[str(channel_id)] = {
@@ -200,7 +271,16 @@ class ClaudeCliTextGenerator:
         return session_id
 
     def _update_session_stats(self, channel_id: int, usage: dict[str, Any]) -> None:
-        """Update session stats after a run."""
+        """Update session statistics after a successful CLI run.
+
+        Increments message count and accumulates token usage metrics.
+        Also triggers session truncation check if messages exceed limits.
+
+        Args:
+            channel_id: The Discord channel ID whose session to update.
+            usage: Token usage dict from CLI response containing input_tokens,
+                   output_tokens, cache_read_input_tokens, cache_creation_input_tokens.
+        """
         state = self._load_session_state()
         channel_key = str(channel_id)
         if channel_key not in state:
@@ -218,7 +298,16 @@ class ClaudeCliTextGenerator:
         self._truncate_session_if_needed(state[channel_key]["session_id"])
 
     def _truncate_session_if_needed(self, session_id: str) -> None:
-        """Truncate session if Discord messages exceed MAX_DISCORD_MESSAGES."""
+        """Truncate session history if Discord messages exceed MAX_DISCORD_MESSAGES.
+
+        This prevents sessions from growing indefinitely by removing older messages
+        while preserving the most recent conversation context. The truncation is
+        careful to avoid cutting in the middle of a tool_result to maintain
+        conversation coherence.
+
+        Args:
+            session_id: The UUID session ID to check and potentially truncate.
+        """
         session_file = SESSION_DIR / f"{session_id}.jsonl"
         if not session_file.exists():
             return

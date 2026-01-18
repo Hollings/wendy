@@ -1,8 +1,35 @@
-"""
-Wendy Sites - Static HTML deployment service for wendy.monster
+"""Wendy Sites - Static HTML deployment service for wendy.monster.
 
-Also serves the Brain Feed - real-time visualization of Wendy's Claude Code session.
+This FastAPI service provides two main features:
+
+1. **Static Site Deployment**: Deploy HTML/CSS/JS sites to subdomains of wendy.monster
+   - POST /api/deploy - Deploy a tarball as a new site
+   - GET /api/sites - List deployed sites
+   - DELETE /api/sites/{name} - Remove a site
+   - GET /{site_name}/{path} - Serve static files
+
+2. **Brain Feed Dashboard**: Real-time visualization of Wendy's Claude Code session
+   - GET / - Serve the dashboard HTML
+   - POST /api/brain/auth - Authenticate with access code
+   - WebSocket /ws/brain - Real-time event stream
+   - GET /api/brain/stats - Session statistics
+   - GET /api/brain/agents - List subagents
+   - GET /api/brain/beads - Task queue
+
+Security:
+    - Site deployment requires DEPLOY_TOKEN in Authorization header
+    - Brain feed requires BRAIN_ACCESS_CODE authentication
+    - Tarball extraction has path traversal protection
+
+Environment Variables:
+    DEPLOY_TOKEN: Secret token for deployment API
+    SITES_DIR: Directory to store deployed sites (default: /data/sites)
+    BASE_URL: Base URL for site URLs (default: https://wendy.monster)
+    BRAIN_ACCESS_CODE: Access code for brain feed
+    BRAIN_SECRET: Secret for HMAC token signing
 """
+
+from __future__ import annotations
 
 import asyncio
 import os
@@ -20,42 +47,80 @@ from starlette.websockets import WebSocketDisconnect
 
 app = FastAPI(title="Wendy Sites", version="2.0.0")
 
+# =============================================================================
 # Configuration
-DEPLOY_TOKEN = os.environ.get("DEPLOY_TOKEN", "")
-SITES_DIR = Path(os.environ.get("SITES_DIR", "/data/sites"))
-MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB
-SITE_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$|^[a-z0-9]$")
-BASE_URL = os.environ.get("BASE_URL", "https://wendy.monster")
+# =============================================================================
 
-# Static files directory
-STATIC_DIR = Path(__file__).parent / "static"
+DEPLOY_TOKEN: str = os.environ.get("DEPLOY_TOKEN", "")
+"""Secret token required for deployment API authentication."""
+
+SITES_DIR: Path = Path(os.environ.get("SITES_DIR", "/data/sites"))
+"""Directory where deployed sites are stored."""
+
+MAX_UPLOAD_SIZE: int = 50 * 1024 * 1024
+"""Maximum upload size in bytes (50 MB)."""
+
+SITE_NAME_PATTERN: re.Pattern = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$|^[a-z0-9]$")
+"""Regex pattern for valid site names (lowercase alphanumeric with hyphens)."""
+
+BASE_URL: str = os.environ.get("BASE_URL", "https://wendy.monster")
+"""Base URL for constructing site URLs."""
+
+STATIC_DIR: Path = Path(__file__).parent / "static"
+"""Directory containing static files (brain dashboard HTML)."""
 
 # Ensure directories exist
 SITES_DIR.mkdir(parents=True, exist_ok=True)
 
 
-# ==================== Startup ====================
+# =============================================================================
+# Application Lifecycle
+# =============================================================================
+
 
 @app.on_event("startup")
-async def startup():
-    """Start background tasks."""
+async def startup() -> None:
+    """Start background tasks on application startup.
+
+    Starts the brain feed file watcher if authentication is configured.
+    """
     if auth.is_configured():
         brain.start_watcher()
 
 
-# ==================== Brain Feed ====================
+# =============================================================================
+# Brain Feed Models
+# =============================================================================
+
 
 class BrainAuthRequest(BaseModel):
+    """Request body for brain feed authentication.
+
+    Attributes:
+        code: Access code to validate.
+    """
+
     code: str
 
 
 class BrainAuthResponse(BaseModel):
+    """Response from successful brain authentication.
+
+    Attributes:
+        token: HMAC-signed token for WebSocket authentication.
+    """
+
     token: str
 
 
+# =============================================================================
+# Brain Feed Endpoints
+# =============================================================================
+
+
 @app.get("/", response_class=HTMLResponse)
-async def serve_brain_page():
-    """Serve the brain feed page at root."""
+async def serve_brain_page() -> HTMLResponse:
+    """Serve the brain feed dashboard HTML at the root URL."""
     brain_html = STATIC_DIR / "brain" / "index.html"
     if brain_html.exists():
         return HTMLResponse(brain_html.read_text())
@@ -63,19 +128,20 @@ async def serve_brain_page():
 
 
 @app.get("/api/brain/stats")
-async def brain_stats():
-    """Get brain feed stats."""
+async def brain_stats() -> dict:
+    """Get current brain feed statistics (context, costs, activity)."""
     if not auth.is_configured():
         raise HTTPException(status_code=503, detail="Brain feed not configured")
     return brain.get_stats()
 
 
-USAGE_DATA_FILE = Path("/data/wendy/usage_data.json")
+USAGE_DATA_FILE: Path = Path("/data/wendy/usage_data.json")
+"""Path to usage statistics file written by orchestrator."""
 
 
 @app.get("/api/brain/usage")
-async def brain_usage():
-    """Get Claude Code usage stats."""
+async def brain_usage() -> dict:
+    """Get Claude Code usage statistics (session and weekly limits)."""
     import json
     if not auth.is_configured():
         raise HTTPException(status_code=503, detail="Brain feed not configured")
@@ -106,16 +172,16 @@ async def brain_usage():
 
 
 @app.get("/api/brain/agents")
-async def brain_agents():
-    """List all subagents."""
+async def brain_agents() -> dict:
+    """List all active and completed subagents from the current session."""
     if not auth.is_configured():
         raise HTTPException(status_code=503, detail="Brain feed not configured")
     return {"agents": brain.list_agents()}
 
 
 @app.get("/api/brain/agents/{agent_id}")
-async def brain_agent_events(agent_id: str, limit: int = 50):
-    """Get events from a specific agent."""
+async def brain_agent_events(agent_id: str, limit: int = 50) -> dict:
+    """Get recent events from a specific subagent's log file."""
     if not auth.is_configured():
         raise HTTPException(status_code=503, detail="Brain feed not configured")
     events = brain.get_agent_events(agent_id, limit)
@@ -123,8 +189,8 @@ async def brain_agent_events(agent_id: str, limit: int = 50):
 
 
 @app.get("/api/brain/beads")
-async def brain_beads():
-    """List all beads (tasks) from the queue."""
+async def brain_beads() -> dict:
+    """List all tasks from the beads queue (open, in_progress, closed)."""
     import json
     if not auth.is_configured():
         raise HTTPException(status_code=503, detail="Brain feed not configured")
@@ -170,8 +236,8 @@ async def brain_beads():
 
 
 @app.get("/api/brain/beads/{task_id}/log")
-async def brain_task_log(task_id: str, offset: int = 0):
-    """Get log output for a task."""
+async def brain_task_log(task_id: str, offset: int = 0) -> dict:
+    """Get orchestrator log output for a running or completed task."""
     if not auth.is_configured():
         raise HTTPException(status_code=503, detail="Brain feed not configured")
 
@@ -207,8 +273,8 @@ async def brain_task_log(task_id: str, offset: int = 0):
 
 
 @app.post("/api/brain/auth", response_model=BrainAuthResponse)
-async def brain_authenticate(request: BrainAuthRequest):
-    """Validate access code and return token."""
+async def brain_authenticate(request: BrainAuthRequest) -> BrainAuthResponse:
+    """Validate access code and return signed authentication token."""
     if not auth.is_configured():
         raise HTTPException(status_code=503, detail="Brain feed not configured")
 
@@ -219,8 +285,12 @@ async def brain_authenticate(request: BrainAuthRequest):
 
 
 @app.websocket("/ws/brain")
-async def brain_websocket(websocket: WebSocket, token: str = Query("")):
-    """WebSocket endpoint for brain feed."""
+async def brain_websocket(websocket: WebSocket, token: str = Query("")) -> None:
+    """WebSocket endpoint for real-time brain feed event streaming.
+
+    Validates token, sends recent history, then streams new events.
+    Sends periodic pings to detect dead connections.
+    """
     # Validate token
     if not auth.verify_token(token):
         await websocket.close(code=4001, reason="Invalid or expired token")
@@ -255,11 +325,14 @@ async def brain_websocket(websocket: WebSocket, token: str = Query("")):
         brain.remove_client(websocket)
 
 
-# ==================== Health Check ====================
+# =============================================================================
+# Health Check
+# =============================================================================
+
 
 @app.get("/health")
-async def health():
-    """Health check endpoint."""
+async def health() -> dict:
+    """Health check endpoint for monitoring and load balancers."""
     return {
         "status": "healthy",
         "sites_count": len(list(SITES_DIR.iterdir())) if SITES_DIR.exists() else 0,
@@ -268,10 +341,22 @@ async def health():
     }
 
 
-# ==================== Site Deployment ====================
+# =============================================================================
+# Site Deployment Helpers
+# =============================================================================
+
 
 def verify_deploy_token(authorization: str | None) -> None:
-    """Verify the deploy token."""
+    """Verify the Authorization header contains a valid deploy token.
+
+    Args:
+        authorization: Authorization header value (e.g., "Bearer <token>").
+
+    Raises:
+        HTTPException 401: Missing authorization.
+        HTTPException 403: Invalid token.
+        HTTPException 500: Server not configured.
+    """
     if not DEPLOY_TOKEN:
         raise HTTPException(status_code=500, detail="Server not configured with deploy token")
 
@@ -288,7 +373,14 @@ def verify_deploy_token(authorization: str | None) -> None:
 
 
 def validate_site_name(name: str) -> None:
-    """Validate site name format."""
+    """Validate that site name meets requirements.
+
+    Args:
+        name: Proposed site name.
+
+    Raises:
+        HTTPException 400: Invalid or reserved site name.
+    """
     if not name:
         raise HTTPException(status_code=400, detail="Site name is required")
 
@@ -305,7 +397,15 @@ def validate_site_name(name: str) -> None:
 
 
 def safe_extract_tarball(tar_path: Path, dest_dir: Path) -> None:
-    """Safely extract tarball with path traversal protection."""
+    """Safely extract tarball with path traversal protection.
+
+    Args:
+        tar_path: Path to the tarball file.
+        dest_dir: Destination directory.
+
+    Raises:
+        HTTPException 400: Tarball contains absolute paths or path traversal.
+    """
     with tarfile.open(tar_path, "r:gz") as tar:
         for member in tar.getmembers():
             # Check for path traversal attempts
@@ -326,13 +426,21 @@ def safe_extract_tarball(tar_path: Path, dest_dir: Path) -> None:
         tar.extractall(dest_dir, filter="data")
 
 
+# =============================================================================
+# Site Deployment Endpoints
+# =============================================================================
+
+
 @app.post("/api/deploy")
 async def deploy_site(
     name: str = Form(...),
     files: UploadFile = File(...),
     authorization: str | None = Header(None),
-):
-    """Deploy a site from a tarball."""
+) -> JSONResponse:
+    """Deploy a static site from a tarball archive.
+
+    Extracts the tarball to SITES_DIR/{name}/ and verifies index.html exists.
+    """
     verify_deploy_token(authorization)
     validate_site_name(name)
 
@@ -384,8 +492,8 @@ async def deploy_site(
 
 
 @app.get("/api/sites")
-async def list_sites(authorization: str | None = Header(None)):
-    """List all deployed sites."""
+async def list_sites(authorization: str | None = Header(None)) -> dict:
+    """List all deployed sites with their URLs."""
     verify_deploy_token(authorization)
 
     sites = []
@@ -400,8 +508,8 @@ async def list_sites(authorization: str | None = Header(None)):
 
 
 @app.delete("/api/sites/{name}")
-async def delete_site(name: str, authorization: str | None = Header(None)):
-    """Delete a deployed site."""
+async def delete_site(name: str, authorization: str | None = Header(None)) -> dict:
+    """Delete a deployed site by name."""
     verify_deploy_token(authorization)
     validate_site_name(name)
 
@@ -413,11 +521,14 @@ async def delete_site(name: str, authorization: str | None = Header(None)):
     return {"success": True, "message": f"Site '{name}' deleted"}
 
 
-# ==================== Static File Serving ====================
+# =============================================================================
+# Static File Serving
+# =============================================================================
+
 
 @app.get("/{site_name}/{path:path}")
-async def serve_site_file(site_name: str, path: str = ""):
-    """Serve static files from a deployed site."""
+async def serve_site_file(site_name: str, path: str = "") -> FileResponse:
+    """Serve static files from a deployed site with security checks."""
     site_dir = SITES_DIR / site_name
 
     if not site_dir.exists():
@@ -448,6 +559,6 @@ async def serve_site_file(site_name: str, path: str = ""):
 
 
 @app.get("/{site_name}")
-async def serve_site_root(site_name: str):
-    """Redirect to site with trailing slash."""
+async def serve_site_root(site_name: str) -> FileResponse:
+    """Serve a site's index.html directly (without trailing slash)."""
     return FileResponse(SITES_DIR / site_name / "index.html")

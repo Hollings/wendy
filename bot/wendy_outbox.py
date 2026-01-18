@@ -1,7 +1,29 @@
 """Outbox watcher for Wendy's async message sending.
 
-Watches /data/wendy/outbox/ for JSON files and sends messages to Discord.
+This module implements a file-watching cog that monitors /data/wendy/outbox/
+for JSON files and sends them as Discord messages. This allows Claude CLI
+(via the proxy API) to queue messages without direct Discord access.
+
+File Format:
+    Outbox files are JSON with the following structure:
+    {
+        "channel_id": "123456789",
+        "message": "Hello world",
+        "file_path": "/data/wendy/uploads/foo.png"  // optional
+    }
+
+    Filename format: {channel_id}_{timestamp_ns}.json
+
+Message Log:
+    Sent messages are logged to message_log.jsonl for debugging and
+    correlation between outbox timestamps and Discord message IDs.
+
+Architecture:
+    Proxy API -> outbox/ files -> WendyOutbox.watch_outbox -> Discord
 """
+
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -13,23 +35,47 @@ from discord.ext import commands, tasks
 
 _LOG = logging.getLogger(__name__)
 
-OUTBOX_DIR = Path(os.getenv("WENDY_OUTBOX_DIR", "/data/wendy/outbox"))
-MESSAGE_LOG_FILE = Path("/data/wendy/message_log.jsonl")
-MAX_MESSAGE_LOG_LINES = 1000
-MAX_FILE_SIZE_MB = 25  # Discord's default limit for non-boosted servers
+# =============================================================================
+# Configuration Constants
+# =============================================================================
+
+OUTBOX_DIR: Path = Path(os.getenv("WENDY_OUTBOX_DIR", "/data/wendy/outbox"))
+"""Directory to watch for outgoing message files."""
+
+MESSAGE_LOG_FILE: Path = Path("/data/wendy/message_log.jsonl")
+"""JSONL file for logging sent messages (for debugging)."""
+
+MAX_MESSAGE_LOG_LINES: int = 1000
+"""Maximum lines to keep in message log before trimming."""
+
+MAX_FILE_SIZE_MB: int = 25
+"""Maximum attachment size in MB (Discord's default limit for non-boosted servers)."""
 
 
 class WendyOutbox(commands.Cog):
-    """Watches Wendy's outbox and sends messages to Discord."""
+    """Discord cog that watches the outbox directory and sends queued messages.
 
-    def __init__(self, bot: commands.Bot):
+    This cog polls the OUTBOX_DIR every 0.5 seconds for JSON files. When found,
+    it parses the message data, sends it to the specified Discord channel,
+    logs the correlation, and deletes the file.
+
+    Attributes:
+        bot: The Discord bot instance.
+    """
+
+    def __init__(self, bot: commands.Bot) -> None:
+        """Initialize the outbox watcher and start the polling task.
+
+        Args:
+            bot: The Discord bot instance.
+        """
         self.bot = bot
         self._ensure_outbox_dir()
         self.watch_outbox.start()
         _LOG.info("WendyOutbox initialized, watching %s", OUTBOX_DIR)
 
     def _ensure_outbox_dir(self) -> None:
-        """Create outbox directory if it doesn't exist."""
+        """Create the outbox directory if it doesn't exist."""
         OUTBOX_DIR.mkdir(parents=True, exist_ok=True)
 
     def _log_sent_message(
@@ -39,7 +85,14 @@ class WendyOutbox(commands.Cog):
         channel_id: int,
         content: str
     ) -> None:
-        """Log a sent message to message_log.jsonl for debug correlation."""
+        """Log a sent message to message_log.jsonl for debug correlation.
+
+        Args:
+            discord_msg_id: The Discord snowflake ID of the sent message.
+            outbox_ts: The nanosecond timestamp from the outbox filename.
+            channel_id: The Discord channel ID.
+            content: The message content (truncated in log).
+        """
         try:
             MESSAGE_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
@@ -60,7 +113,10 @@ class WendyOutbox(commands.Cog):
             _LOG.error("Failed to log sent message: %s", e)
 
     def _trim_message_log_if_needed(self) -> None:
-        """Trim message log to MAX_MESSAGE_LOG_LINES if it gets too large."""
+        """Trim message log to MAX_MESSAGE_LOG_LINES if it exceeds the limit.
+
+        Keeps only the most recent lines to prevent unbounded growth.
+        """
         try:
             if not MESSAGE_LOG_FILE.exists():
                 return
@@ -76,18 +132,29 @@ class WendyOutbox(commands.Cog):
             _LOG.error("Failed to trim message log: %s", e)
 
     def _extract_outbox_timestamp(self, filename: str) -> int | None:
-        """Extract timestamp from outbox filename like '123456_1234567890123.json'."""
+        """Extract the nanosecond timestamp from an outbox filename.
+
+        Args:
+            filename: Filename like '123456_1234567890123.json'.
+
+        Returns:
+            Timestamp as integer, or None if filename doesn't match pattern.
+        """
         match = re.match(r"\d+_(\d+)\.json$", filename)
         if match:
             return int(match.group(1))
         return None
 
-    def cog_unload(self):
+    def cog_unload(self) -> None:
+        """Clean up when the cog is unloaded."""
         self.watch_outbox.cancel()
 
     @tasks.loop(seconds=0.5)
-    async def watch_outbox(self):
-        """Check for new messages in the outbox."""
+    async def watch_outbox(self) -> None:
+        """Poll the outbox directory and process any JSON files found.
+
+        Runs every 0.5 seconds. Each file is processed independently.
+        """
         try:
             for file_path in OUTBOX_DIR.glob("*.json"):
                 await self._process_outbox_file(file_path)
@@ -95,11 +162,22 @@ class WendyOutbox(commands.Cog):
             _LOG.error("Error watching outbox: %s", e)
 
     @watch_outbox.before_loop
-    async def before_watch(self):
+    async def before_watch(self) -> None:
+        """Wait for bot to be ready before starting the watcher."""
         await self.bot.wait_until_ready()
 
     async def _process_outbox_file(self, outbox_file: Path) -> None:
-        """Process a single outbox file and send the message."""
+        """Process a single outbox file and send the message to Discord.
+
+        Parses the JSON, validates the attachment if any, sends to Discord,
+        logs the correlation, and deletes the file.
+
+        Files are always deleted after processing (even on error) to prevent
+        infinite retry loops.
+
+        Args:
+            outbox_file: Path to the outbox JSON file.
+        """
         try:
             data = json.loads(outbox_file.read_text())
             channel_id = int(data["channel_id"])
@@ -161,4 +239,11 @@ class WendyOutbox(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
+    """Discord.py extension setup function.
+
+    Called by bot.load_extension() to register the cog.
+
+    Args:
+        bot: The Discord bot instance.
+    """
     await bot.add_cog(WendyOutbox(bot))

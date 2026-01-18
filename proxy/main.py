@@ -3,7 +3,30 @@
 This service acts as a proxy so Wendy (running in Claude CLI) can send messages,
 check for new messages, and deploy sites without having direct access to the
 Discord token or other sensitive environment variables.
+
+Architecture:
+    Wendy (Claude CLI) -> Proxy API (this service) -> Discord Bot / wendy-sites / wendy-games
+
+Key Features:
+    - Message sending via outbox file queue (bot picks up and sends)
+    - Message checking with new-message interrupts (prevents stale replies)
+    - Task completion notifications from the orchestrator
+    - Site deployment to wendy.monster
+    - Game deployment for multiplayer backends
+    - Claude Code usage statistics
+
+Endpoints:
+    POST /api/send_message - Queue a message for sending to Discord
+    GET  /api/check_messages/{channel_id} - Get new messages and task updates
+    GET  /api/usage - Get Claude Code usage statistics
+    POST /api/usage/refresh - Request immediate usage check
+    POST /api/deploy_site - Deploy a static site to wendy.monster
+    POST /api/deploy_game - Deploy a multiplayer game backend
+    GET  /api/game_logs/{name} - Get logs from a running game server
+    GET  /health - Health check endpoint
 """
+
+from __future__ import annotations
 
 import json
 import os
@@ -17,33 +40,84 @@ from pydantic import BaseModel
 
 app = FastAPI(title="Wendy Proxy API")
 
-# Configuration
-DB_PATH = os.getenv("WENDY_DB_PATH", "/data/wendy.db")
-OUTBOX_DIR = Path("/data/wendy/outbox")
-STATE_FILE = Path("/data/wendy/message_check_state.json")
-ATTACHMENTS_DIR = Path("/data/wendy/attachments")
-TASK_COMPLETIONS_FILE = Path("/data/wendy/task_completions.json")
+# =============================================================================
+# Configuration Constants
+# =============================================================================
+
+DB_PATH: str = os.getenv("WENDY_DB_PATH", "/data/wendy.db")
+"""Path to the SQLite database containing cached Discord messages."""
+
+OUTBOX_DIR: Path = Path("/data/wendy/outbox")
+"""Directory where queued outgoing messages are written as JSON files."""
+
+STATE_FILE: Path = Path("/data/wendy/message_check_state.json")
+"""JSON file tracking last-seen message IDs per channel for interrupt detection."""
+
+ATTACHMENTS_DIR: Path = Path("/data/wendy/attachments")
+"""Directory where downloaded Discord attachments are stored."""
+
+TASK_COMPLETIONS_FILE: Path = Path("/data/wendy/task_completions.json")
+"""JSON file where orchestrator writes task completion notifications."""
+
+
+# =============================================================================
+# Request/Response Models
+# =============================================================================
 
 
 class SendMessageRequest(BaseModel):
+    """Request body for sending a Discord message.
+
+    Attributes:
+        channel_id: Discord channel ID to send to.
+        content: Message text content (max 2000 chars).
+        message: Legacy alias for content (deprecated).
+        attachment: Optional path to file to attach (must be in /data/wendy/ or /tmp/).
+    """
+
     channel_id: str
     content: str | None = None
-    message: str | None = None  # Legacy field name
+    message: str | None = None
     attachment: str | None = None
 
 
 class SendMessageResponse(BaseModel):
+    """Response from successful message send.
+
+    Attributes:
+        success: Always True for successful sends.
+        message: Confirmation message with filename.
+    """
+
     success: bool
     message: str
 
 
 class NewMessagesError(BaseModel):
+    """Returned when new messages arrived since last check (409 Conflict).
+
+    Attributes:
+        error: Human-readable error description.
+        new_messages: List of messages that arrived.
+        guidance: Instructions for the caller on how to handle this.
+    """
+
     error: str
     new_messages: list
     guidance: str
 
 
 class MessageInfo(BaseModel):
+    """Information about a single Discord message.
+
+    Attributes:
+        message_id: Discord message snowflake ID.
+        author: Display name of the message author.
+        content: Message text content.
+        timestamp: Unix timestamp (int) or ISO string.
+        attachments: List of local file paths for any attachments.
+    """
+
     message_id: int
     author: str
     content: str
@@ -52,22 +126,53 @@ class MessageInfo(BaseModel):
 
 
 class TaskUpdate(BaseModel):
+    """Notification about a completed orchestrator task.
+
+    Attributes:
+        task_id: Beads task ID.
+        title: Human-readable task title.
+        status: Completion status ("completed" or "failed").
+        duration: How long the task ran (e.g., "0:05:32").
+        completed_at: ISO timestamp of completion.
+    """
+
     task_id: str
     title: str
-    status: str  # "completed" or "failed"
+    status: str
     duration: str
     completed_at: str
 
 
 class CheckMessagesResponse(BaseModel):
+    """Response from check_messages endpoint.
+
+    Attributes:
+        messages: List of new messages since last check.
+        task_updates: List of task completions to notify about.
+    """
+
     messages: list[MessageInfo]
     task_updates: list[TaskUpdate]
 
 
-# ==================== State Management ====================
+# =============================================================================
+# State Management Functions
+# =============================================================================
+
 
 def get_last_seen(channel_id: int) -> int | None:
-    """Get the last seen message_id for a channel."""
+    """Get the last seen message ID for a channel.
+
+    Used for new-message interrupt detection. When Wendy calls check_messages,
+    we record the newest message ID. If new messages arrive before Wendy sends
+    her reply, we can detect this and reject the send.
+
+    Args:
+        channel_id: Discord channel ID.
+
+    Returns:
+        Last seen message ID, or None if no state exists for this channel.
+    """
     if not STATE_FILE.exists():
         return None
     try:
@@ -78,8 +183,16 @@ def get_last_seen(channel_id: int) -> int | None:
 
 
 def update_last_seen(channel_id: int, message_id: int) -> None:
-    """Update the last seen message_id for a channel."""
-    state = {}
+    """Update the last seen message ID for a channel.
+
+    Called after check_messages returns messages, and also after send_message
+    detects new messages (so retries succeed).
+
+    Args:
+        channel_id: Discord channel ID.
+        message_id: Newest message ID seen.
+    """
+    state: dict = {}
     if STATE_FILE.exists():
         try:
             state = json.loads(STATE_FILE.read_text())
@@ -94,30 +207,56 @@ def update_last_seen(channel_id: int, message_id: int) -> None:
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
-# ==================== Attachments ====================
+# =============================================================================
+# Attachment Handling
+# =============================================================================
+
 
 def find_attachments_for_message(message_id: int) -> list[str]:
-    """Find attachment files for a message ID."""
+    """Find local attachment files for a Discord message.
+
+    The Discord bot saves attachments as msg_{message_id}_{index}_{filename}.
+    This function finds all attachments associated with a message.
+
+    Args:
+        message_id: Discord message snowflake ID.
+
+    Returns:
+        Sorted list of absolute file paths for attachments.
+    """
     if not ATTACHMENTS_DIR.exists():
         return []
 
-    matching = []
+    matching: list[str] = []
     for att_file in ATTACHMENTS_DIR.glob(f"msg_{message_id}_*"):
         matching.append(str(att_file))
 
     return sorted(matching)
 
 
-# ==================== Endpoints ====================
+# =============================================================================
+# API Endpoints
+# =============================================================================
 
-DISCORD_MAX_MESSAGE_LENGTH = 2000
+DISCORD_MAX_MESSAGE_LENGTH: int = 2000
+"""Maximum message length allowed by Discord."""
 
 
 def check_for_new_messages(channel_id: int) -> list[dict]:
-    """Check if there are new messages since last check_messages call.
+    """Check if new messages have arrived since last check_messages call.
 
-    Returns list of new messages if any exist, empty list otherwise.
-    Also auto-updates last_seen so retry will succeed.
+    This is the core of the new-message interrupt system. It prevents Wendy
+    from sending stale replies when users have sent additional messages.
+
+    If new messages are found, the last_seen state is auto-updated so that
+    a retry will succeed (after Wendy incorporates the new messages).
+
+    Args:
+        channel_id: Discord channel ID to check.
+
+    Returns:
+        List of new message dicts (with keys: message_id, author, content,
+        timestamp), or empty list if no new messages.
     """
     last_seen = get_last_seen(channel_id)
 
@@ -165,12 +304,27 @@ def check_for_new_messages(channel_id: int) -> list[dict]:
 
 
 @app.post("/api/send_message")
-async def send_message(request: SendMessageRequest):
-    """Send a message to a Discord channel via the outbox.
+async def send_message(request: SendMessageRequest) -> dict:
+    """Send a message to a Discord channel via the outbox queue.
 
-    If new messages have arrived since the last check_messages call,
-    returns a 409 Conflict with those messages. The caller should
-    review the messages, update their reply, and retry.
+    This endpoint writes a JSON file to the outbox directory, which the
+    Discord bot picks up and sends to the channel.
+
+    New-message interrupt handling:
+        If new messages have arrived since the last check_messages call,
+        returns the new messages instead of queuing. This prevents stale
+        replies when users send additional messages while Wendy is responding.
+
+    Args:
+        request: SendMessageRequest with channel_id, content, and optional attachment.
+
+    Returns:
+        On success: {"success": True, "message": "Message queued: <filename>"}
+        On interrupt: {"error": "...", "new_messages": [...], "guidance": "..."}
+
+    Raises:
+        HTTPException 400: Message too long or invalid attachment path.
+        HTTPException 500: Server error.
     """
     try:
         channel_id = int(request.channel_id)
@@ -247,9 +401,24 @@ async def check_messages(
     limit: int = 10,
     all_messages: bool = False
 ) -> CheckMessagesResponse:
-    """Check for new messages and task updates in a channel."""
-    messages = []
-    task_updates = []
+    """Check for new Discord messages and orchestrator task updates.
+
+    This is Wendy's main endpoint for getting context. It returns recent
+    messages in the channel and any completed tasks from the orchestrator.
+
+    The last_seen state is updated after each call, which enables the
+    new-message interrupt detection in send_message.
+
+    Args:
+        channel_id: Discord channel ID to check.
+        limit: Maximum number of messages to return (default 10).
+        all_messages: If True, return all messages regardless of last_seen.
+
+    Returns:
+        CheckMessagesResponse with messages (oldest first) and task_updates.
+    """
+    messages: list[MessageInfo] = []
+    task_updates: list[TaskUpdate] = []
 
     # Get messages from database
     try:
@@ -344,18 +513,34 @@ async def check_messages(
 
 
 @app.get("/health")
-async def health():
-    """Health check endpoint."""
+async def health() -> dict:
+    """Health check endpoint for load balancers and monitoring."""
     return {"status": "ok"}
 
 
-# ==================== Usage Stats ====================
+# =============================================================================
+# Usage Statistics
+# =============================================================================
 
-USAGE_DATA_FILE = Path("/data/wendy/usage_data.json")
-USAGE_FORCE_CHECK_FILE = Path("/data/wendy/usage_force_check")
+USAGE_DATA_FILE: Path = Path("/data/wendy/usage_data.json")
+"""JSON file where orchestrator writes latest Claude Code usage statistics."""
+
+USAGE_FORCE_CHECK_FILE: Path = Path("/data/wendy/usage_force_check")
+"""Sentinel file - touching this triggers immediate usage refresh."""
 
 
 class UsageResponse(BaseModel):
+    """Claude Code usage statistics response.
+
+    Attributes:
+        session_percent: Current session usage percentage.
+        week_all_percent: Weekly usage (all models) percentage.
+        week_sonnet_percent: Weekly usage (Sonnet only) percentage.
+        timestamp: When the usage data was collected.
+        updated_at: When the data was last written to disk.
+        message: Human-readable formatted usage summary.
+    """
+
     session_percent: int
     week_all_percent: int
     week_sonnet_percent: int
@@ -365,10 +550,18 @@ class UsageResponse(BaseModel):
 
 
 @app.get("/api/usage", response_model=UsageResponse)
-async def get_usage():
-    """Get current Claude Code usage stats.
+async def get_usage() -> UsageResponse:
+    """Get current Claude Code usage statistics.
 
     Returns the latest usage data from the orchestrator's hourly polling.
+    Use POST /api/usage/refresh to request an immediate update.
+
+    Returns:
+        UsageResponse with session and weekly usage percentages.
+
+    Raises:
+        HTTPException 404: Usage data not yet available.
+        HTTPException 500: Error reading usage data.
     """
     if not USAGE_DATA_FILE.exists():
         raise HTTPException(
@@ -406,11 +599,17 @@ async def get_usage():
 
 
 @app.post("/api/usage/refresh")
-async def refresh_usage():
-    """Request a fresh usage check from the orchestrator.
+async def refresh_usage() -> dict:
+    """Request an immediate usage check from the orchestrator.
 
-    Creates a flag file that tells the orchestrator to run an immediate usage check
-    on its next poll cycle (within 30 seconds).
+    Creates a sentinel file that triggers the orchestrator to run a usage
+    check on its next poll cycle (within 30 seconds typically).
+
+    Returns:
+        Success message with instructions to check back later.
+
+    Raises:
+        HTTPException 500: Error creating sentinel file.
     """
     try:
         USAGE_FORCE_CHECK_FILE.touch()
@@ -419,15 +618,32 @@ async def refresh_usage():
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-# ==================== Site Deployment ====================
+# =============================================================================
+# Site Deployment
+# =============================================================================
 
-WENDY_SITES_URL = os.getenv("WENDY_SITES_URL", "http://100.120.250.100:8910")
-WENDY_DEPLOY_TOKEN = os.getenv("WENDY_DEPLOY_TOKEN", "")
-WENDY_GAMES_URL = os.getenv("WENDY_GAMES_URL", "http://100.120.250.100:8920")
-WENDY_GAMES_TOKEN = os.getenv("WENDY_GAMES_TOKEN", "")
+WENDY_SITES_URL: str = os.getenv("WENDY_SITES_URL", "http://100.120.250.100:8910")
+"""URL of the wendy-sites deployment service."""
+
+WENDY_DEPLOY_TOKEN: str = os.getenv("WENDY_DEPLOY_TOKEN", "")
+"""Authentication token for wendy-sites API."""
+
+WENDY_GAMES_URL: str = os.getenv("WENDY_GAMES_URL", "http://100.120.250.100:8920")
+"""URL of the wendy-games deployment service."""
+
+WENDY_GAMES_TOKEN: str = os.getenv("WENDY_GAMES_TOKEN", "")
+"""Authentication token for wendy-games API."""
 
 
 class DeploySiteResponse(BaseModel):
+    """Response from site deployment.
+
+    Attributes:
+        success: Whether deployment succeeded.
+        url: Public URL of the deployed site (e.g., https://foo.wendy.monster).
+        message: Human-readable status message.
+    """
+
     success: bool
     url: str | None = None
     message: str
@@ -437,8 +653,23 @@ class DeploySiteResponse(BaseModel):
 async def deploy_site(
     name: str = Form(...),
     files: UploadFile = File(...),
-):
-    """Deploy a site to wendy.monster."""
+) -> DeploySiteResponse:
+    """Deploy a static site to wendy.monster.
+
+    Accepts a tar.gz archive containing the site files and deploys them
+    to https://{name}.wendy.monster via the wendy-sites service.
+
+    Args:
+        name: Site name (becomes subdomain: name.wendy.monster).
+        files: Tar.gz archive containing site files (index.html, etc.).
+
+    Returns:
+        DeploySiteResponse with the public URL on success.
+
+    Raises:
+        HTTPException 500: WENDY_DEPLOY_TOKEN not configured.
+        HTTPException 502: Cannot connect to wendy-sites service.
+    """
     if not WENDY_DEPLOY_TOKEN:
         raise HTTPException(
             status_code=500,
@@ -486,9 +717,22 @@ async def deploy_site(
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-# ==================== Game Deployment ====================
+# =============================================================================
+# Game Deployment
+# =============================================================================
+
 
 class DeployGameResponse(BaseModel):
+    """Response from game deployment.
+
+    Attributes:
+        success: Whether deployment succeeded.
+        url: Public HTTP URL for the game (if applicable).
+        ws: WebSocket URL for real-time game connections.
+        port: Assigned port number for the game server.
+        message: Human-readable status message.
+    """
+
     success: bool
     url: str | None = None
     ws: str | None = None
@@ -497,8 +741,17 @@ class DeployGameResponse(BaseModel):
 
 
 @app.get("/api/game_logs/{name}")
-async def get_game_logs(name: str, lines: int = 100):
-    """Get logs from a game server."""
+async def get_game_logs(name: str, lines: int = 100) -> dict:
+    """Get recent logs from a running game server.
+
+    Args:
+        name: Game name/identifier.
+        lines: Number of log lines to return (default 100).
+
+    Returns:
+        Dict with 'name' and 'logs' keys. Logs may be an error message
+        if the game is not found or there's a connection error.
+    """
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(
@@ -523,8 +776,23 @@ async def get_game_logs(name: str, lines: int = 100):
 async def deploy_game(
     name: str = Form(...),
     files: UploadFile = File(...),
-):
-    """Deploy a multiplayer game backend to wendy.monster."""
+) -> DeployGameResponse:
+    """Deploy a multiplayer game backend to wendy.monster.
+
+    Accepts a tar.gz archive containing the game server code and deploys it
+    via the wendy-games service. Returns WebSocket connection details.
+
+    Args:
+        name: Game name/identifier (used for routing and logs).
+        files: Tar.gz archive containing game server files.
+
+    Returns:
+        DeployGameResponse with WebSocket URL and port on success.
+
+    Raises:
+        HTTPException 500: WENDY_GAMES_TOKEN not configured.
+        HTTPException 502: Cannot connect to wendy-games service.
+    """
     if not WENDY_GAMES_TOKEN:
         raise HTTPException(
             status_code=500,

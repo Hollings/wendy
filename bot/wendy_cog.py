@@ -1,4 +1,26 @@
-"""WendyCog - Main Discord cog for Wendy bot."""
+"""WendyCog - Main Discord cog for Wendy bot.
+
+This module implements the Discord.py cog that:
+- Listens for messages in whitelisted channels
+- Caches incoming messages to SQLite for context building
+- Downloads and saves attachments locally
+- Triggers Claude CLI sessions in response to messages
+- Monitors for orchestrator task completions and wakes Wendy
+- Provides !context and !reset commands for session management
+
+Architecture:
+    Discord Gateway -> WendyCog.on_message -> ClaudeCliTextGenerator -> Proxy API
+
+The cog maintains per-channel state:
+- Active generation jobs (prevents concurrent Claude CLI instances)
+- Channel configurations (folder, mode, permissions)
+- Message cache in SQLite
+
+Configuration is via environment variables:
+    WENDY_CHANNEL_CONFIG: JSON array of channel configs
+    WENDY_WHITELIST_CHANNELS: Comma-separated channel IDs (legacy)
+    WENDY_DB_PATH: Path to SQLite database
+"""
 
 from __future__ import annotations
 
@@ -16,25 +38,64 @@ from .claude_cli import ClaudeCliError, ClaudeCliTextGenerator
 
 _LOG = logging.getLogger(__name__)
 
-# Database for caching messages
-DB_PATH = Path(os.getenv("WENDY_DB_PATH", "/data/wendy.db"))
-ATTACHMENTS_DIR = Path("/data/wendy/attachments")
+# =============================================================================
+# Configuration Constants
+# =============================================================================
 
-# Task completion watcher
-TASK_COMPLETIONS_FILE = Path("/data/wendy/task_completions.json")
+DB_PATH: Path = Path(os.getenv("WENDY_DB_PATH", "/data/wendy.db"))
+"""Path to SQLite database for caching Discord messages."""
+
+ATTACHMENTS_DIR: Path = Path("/data/wendy/attachments")
+"""Directory for storing downloaded message attachments."""
+
+TASK_COMPLETIONS_FILE: Path = Path("/data/wendy/task_completions.json")
+"""JSON file where orchestrator writes task completion notifications."""
 
 
 class GenerationJob:
-    """Tracks active generation state."""
+    """Tracks an active Claude CLI generation for a channel.
 
-    def __init__(self):
+    Used to prevent concurrent generations in the same channel and to
+    allow cleanup when the generation completes.
+
+    Attributes:
+        task: The asyncio Task running the generation, or None if not started.
+    """
+
+    def __init__(self) -> None:
+        """Initialize an empty generation job."""
         self.task: asyncio.Task | None = None
 
 
 class WendyCog(commands.Cog):
-    """Main Wendy Discord bot cog."""
+    """Main Discord cog for Wendy bot.
 
-    def __init__(self, bot: commands.Bot):
+    Handles message listening, caching, attachment downloads, and
+    coordinating with the Claude CLI for response generation.
+
+    Attributes:
+        bot: The Discord bot instance.
+        generator: ClaudeCliTextGenerator for running Claude sessions.
+        channel_configs: Map of channel_id to channel configuration dicts.
+        whitelist_channels: Set of channel IDs where Wendy listens.
+
+    Example channel config format:
+        {"id": "123", "name": "coding", "folder": "coding", "mode": "full"}
+
+    Modes:
+        - "full": Full coding capabilities with all tools
+        - "chat": Limited to conversation without file access
+    """
+
+    def __init__(self, bot: commands.Bot) -> None:
+        """Initialize the cog with channel configurations.
+
+        Loads channel config from WENDY_CHANNEL_CONFIG (JSON) or falls back
+        to WENDY_WHITELIST_CHANNELS (comma-separated IDs).
+
+        Args:
+            bot: The Discord bot instance.
+        """
         self.bot = bot
         self.generator = ClaudeCliTextGenerator()
 
@@ -88,7 +149,12 @@ class WendyCog(commands.Cog):
         _LOG.info("WendyCog initialized with %d whitelisted channels", len(self.whitelist_channels))
 
     def _init_db(self) -> None:
-        """Initialize the SQLite database for message caching."""
+        """Initialize the SQLite database schema for message caching.
+
+        Creates two tables:
+        - cached_messages: Recent messages for interrupt detection
+        - message_history: Full history with reactions and attachments
+        """
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(DB_PATH)
         conn.execute("""
@@ -126,7 +192,15 @@ class WendyCog(commands.Cog):
         _LOG.info("Database initialized at %s", DB_PATH)
 
     def _cache_message(self, message: discord.Message) -> None:
-        """Cache a Discord message to the database."""
+        """Cache a Discord message to the database.
+
+        Stores the message in both cached_messages (for interrupt detection)
+        and message_history (for full context). Uses INSERT OR REPLACE to
+        handle edits.
+
+        Args:
+            message: Discord message object to cache.
+        """
         try:
             conn = sqlite3.connect(DB_PATH)
             conn.execute("""
@@ -164,7 +238,17 @@ class WendyCog(commands.Cog):
             _LOG.error("Failed to cache message: %s", e)
 
     async def _save_attachments(self, message: discord.Message) -> list[str]:
-        """Download and save message attachments, return paths."""
+        """Download and save message attachments to local filesystem.
+
+        Files are saved with pattern: msg_{message_id}_{index}_{filename}
+        This allows the proxy to find attachments by message ID.
+
+        Args:
+            message: Discord message with potential attachments.
+
+        Returns:
+            List of absolute paths to saved attachment files.
+        """
         if not message.attachments:
             return []
 
@@ -189,7 +273,19 @@ class WendyCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        """Handle incoming messages."""
+        """Handle incoming Discord messages.
+
+        This is the main event handler. For each message:
+        1. Filters out own messages, DMs, commands, empty messages
+        2. Checks channel whitelist
+        3. Caches the message and downloads attachments
+        4. Starts a Claude CLI session if bot should respond
+
+        Only one generation can run per channel at a time.
+
+        Args:
+            message: Incoming Discord message.
+        """
         # Ignore own messages
         if message.author.id == self.bot.user.id:
             return
@@ -236,7 +332,18 @@ class WendyCog(commands.Cog):
         self._active_generations[message.channel.id] = job
 
     def _channel_allowed(self, message: discord.Message) -> bool:
-        """Check if channel is in whitelist."""
+        """Check if the message's channel is allowed for processing.
+
+        Allows message if:
+        - Bot is directly mentioned (any channel), OR
+        - Channel is in the whitelist
+
+        Args:
+            message: Discord message to check.
+
+        Returns:
+            True if the channel is allowed.
+        """
         # If bot is mentioned, allow any channel
         if self.bot.user in message.mentions:
             return True
@@ -247,7 +354,14 @@ class WendyCog(commands.Cog):
         return message.channel.id in self.whitelist_channels
 
     async def _should_respond(self, message: discord.Message) -> bool:
-        """Determine if bot should respond to this message."""
+        """Determine if bot should actively respond to this message.
+
+        Args:
+            message: Discord message to check.
+
+        Returns:
+            True if Wendy should generate a response.
+        """
         # Always respond if mentioned
         if self.bot.user in message.mentions:
             return True
@@ -256,7 +370,15 @@ class WendyCog(commands.Cog):
         return message.channel.id in self.whitelist_channels
 
     async def _generate_response(self, message: discord.Message, job: GenerationJob) -> None:
-        """Generate a response using Claude CLI."""
+        """Generate and send a response using Claude CLI.
+
+        Runs the Claude CLI with the channel's configuration. Handles OAuth
+        expiration errors specially by notifying the channel.
+
+        Args:
+            message: The triggering Discord message.
+            job: GenerationJob tracking this generation.
+        """
         channel = message.channel
         channel_config = self.channel_configs.get(channel.id, {})
 
@@ -287,7 +409,13 @@ class WendyCog(commands.Cog):
 
     @commands.command(name="context")
     async def context_command(self, ctx: commands.Context) -> None:
-        """Show session stats for this channel."""
+        """Show current Claude session statistics for this channel.
+
+        Displays session ID, creation time, message count, and token usage.
+
+        Args:
+            ctx: Discord command context.
+        """
         channel_id = ctx.channel.id
         stats = self.generator.get_session_stats(channel_id)
 
@@ -316,14 +444,25 @@ Cache create: {stats.get('total_cache_create_tokens', 0):,}
 
     @commands.command(name="reset")
     async def reset_command(self, ctx: commands.Context) -> None:
-        """Reset the channel's session."""
+        """Reset the Claude session for this channel.
+
+        Creates a new session, clearing conversation history and context.
+
+        Args:
+            ctx: Discord command context.
+        """
         channel_id = ctx.channel.id
         new_session_id = self.generator.reset_channel_session(channel_id)
         await ctx.send(f"Session reset. New session: `{new_session_id[:8]}...`")
 
     @tasks.loop(seconds=5)
     async def watch_task_completions(self) -> None:
-        """Watch for task completions and wake Wendy to check them."""
+        """Watch for orchestrator task completions and wake Wendy.
+
+        Polls TASK_COMPLETIONS_FILE every 5 seconds. When unseen completions
+        are found, marks them as seen and triggers a generation in the
+        "full" mode channel to let Wendy review the results.
+        """
         if not self.whitelist_channels:
             return
 
@@ -388,8 +527,18 @@ Cache create: {stats.get('total_cache_create_tokens', 0):,}
         """Wait for bot to be ready before starting the watcher."""
         await self.bot.wait_until_ready()
 
-    async def _generate_response_for_channel(self, channel: discord.TextChannel, job: GenerationJob) -> None:
-        """Generate a response for a channel (used by task completion watcher)."""
+    async def _generate_response_for_channel(
+        self, channel: discord.TextChannel, job: GenerationJob
+    ) -> None:
+        """Generate a response for a channel without a triggering message.
+
+        Used by the task completion watcher to wake Wendy and let her check
+        completed tasks. Similar to _generate_response but without a message.
+
+        Args:
+            channel: Target Discord channel.
+            job: GenerationJob tracking this generation.
+        """
         channel_config = self.channel_configs.get(channel.id, {})
 
         try:
@@ -418,4 +567,11 @@ Cache create: {stats.get('total_cache_create_tokens', 0):,}
 
 
 async def setup(bot: commands.Bot) -> None:
+    """Discord.py extension setup function.
+
+    Called by bot.load_extension() to register the cog.
+
+    Args:
+        bot: The Discord bot instance.
+    """
     await bot.add_cog(WendyCog(bot))

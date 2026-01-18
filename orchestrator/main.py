@@ -1,9 +1,31 @@
-"""
-Bead Orchestrator - Spawns Claude Code agents to work on tasks from the beads queue.
+"""Bead Orchestrator - Autonomous task execution system using Claude Code agents.
 
-Polls `bd ready` for available tasks and spawns agents up to the concurrency limit.
-Each agent is given a task and works autonomously until completion.
+This module implements a task orchestrator that:
+- Polls the beads task queue for ready, unassigned tasks
+- Spawns Claude Code CLI agents to work on tasks autonomously
+- Manages concurrent agent execution up to a configurable limit
+- Handles agent timeouts, cancellations, and completions
+- Sends Discord notifications for task status updates
+- Monitors Claude Code subscription usage and alerts on thresholds
+
+Architecture:
+    The orchestrator runs as a standalone process that coordinates with:
+    - Beads (`bd` CLI): Task queue management (ready, claim, close)
+    - Claude Code CLI: Agent execution with streaming output
+    - Discord Proxy: Notifications via HTTP API
+    - Usage Script: Claude subscription usage monitoring
+
+Example:
+    Run the orchestrator:
+        $ python -m orchestrator.main
+
+    Or import and run programmatically:
+        >>> from orchestrator.main import Orchestrator
+        >>> orchestrator = Orchestrator()
+        >>> orchestrator.run()
 """
+
+from __future__ import annotations
 
 import json
 import logging
@@ -17,29 +39,70 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-# Configuration
-CONCURRENCY = int(os.getenv("ORCHESTRATOR_CONCURRENCY", "1"))
-POLL_INTERVAL = int(os.getenv("ORCHESTRATOR_POLL_INTERVAL", "30"))  # seconds
-WORKING_DIR = Path(os.getenv("ORCHESTRATOR_WORKING_DIR", "/data/wendy"))
-BEADS_DIR = WORKING_DIR / "coding"  # Where .beads/ lives (coding channel folder)
-LOG_DIR = WORKING_DIR / "orchestrator_logs"
-PROXY_URL = os.getenv("ORCHESTRATOR_PROXY_URL", "http://127.0.0.1:8945")
-NOTIFY_CHANNEL = os.getenv("ORCHESTRATOR_NOTIFY_CHANNEL", "")
-AGENT_TIMEOUT = int(os.getenv("ORCHESTRATOR_AGENT_TIMEOUT", "1800"))  # 30 minutes
-MAX_LOG_FILES = int(os.getenv("ORCHESTRATOR_MAX_LOG_FILES", "50"))
-AGENT_SYSTEM_PROMPT_FILE = Path(os.getenv("AGENT_SYSTEM_PROMPT_FILE", "/app/config/agent_claude_md.txt"))
-CANCEL_FILE = WORKING_DIR / "cancel_tasks.json"
+# =============================================================================
+# Configuration Constants
+# =============================================================================
 
-# Usage monitoring configuration
-USAGE_POLL_INTERVAL = int(os.getenv("ORCHESTRATOR_USAGE_POLL_INTERVAL", "3600"))  # 1 hour
-USAGE_NOTIFY_CHANNEL = os.getenv("ORCHESTRATOR_USAGE_NOTIFY_CHANNEL", "")  # Channel for usage alerts
-USAGE_STATE_FILE = WORKING_DIR / "usage_state.json"
-USAGE_DATA_FILE = WORKING_DIR / "usage_data.json"  # Latest usage for proxy to read
-USAGE_FORCE_CHECK_FILE = WORKING_DIR / "usage_force_check"  # Trigger immediate check
-USAGE_SCRIPT_PATH = Path("/app/scripts/get_usage.sh")
+CONCURRENCY: int = int(os.getenv("ORCHESTRATOR_CONCURRENCY", "1"))
+"""Maximum number of concurrent Claude Code agents to run.
 
-# Agent prompt template - {task_id}, {title}, {description} are substituted
-AGENT_PROMPT_TEMPLATE = """You have been assigned a task from the work queue.
+Set via ORCHESTRATOR_CONCURRENCY environment variable. Default is 1 to avoid
+overwhelming the system. Higher values (2-4) can be used if tasks are I/O bound.
+"""
+
+POLL_INTERVAL: int = int(os.getenv("ORCHESTRATOR_POLL_INTERVAL", "30"))
+"""Seconds between polling for new tasks. Default 30 seconds."""
+
+WORKING_DIR: Path = Path(os.getenv("ORCHESTRATOR_WORKING_DIR", "/data/wendy"))
+"""Base working directory for orchestrator data and outputs."""
+
+BEADS_DIR: Path = WORKING_DIR / "coding"
+"""Directory containing the .beads/ task queue (coding channel folder)."""
+
+LOG_DIR: Path = WORKING_DIR / "orchestrator_logs"
+"""Directory for agent execution log files."""
+
+PROXY_URL: str = os.getenv("ORCHESTRATOR_PROXY_URL", "http://127.0.0.1:8945")
+"""URL of the Discord proxy API for sending notifications."""
+
+NOTIFY_CHANNEL: str = os.getenv("ORCHESTRATOR_NOTIFY_CHANNEL", "")
+"""Discord channel ID to send task completion notifications to."""
+
+AGENT_TIMEOUT: int = int(os.getenv("ORCHESTRATOR_AGENT_TIMEOUT", "1800"))
+"""Maximum seconds an agent can run before being terminated. Default 30 minutes."""
+
+MAX_LOG_FILES: int = int(os.getenv("ORCHESTRATOR_MAX_LOG_FILES", "50"))
+"""Maximum number of log files to retain. Older logs are automatically cleaned up."""
+
+AGENT_SYSTEM_PROMPT_FILE: Path = Path(os.getenv("AGENT_SYSTEM_PROMPT_FILE", "/app/config/agent_claude_md.txt"))
+"""Path to additional system prompt context to append to agent prompts."""
+
+CANCEL_FILE: Path = WORKING_DIR / "cancel_tasks.json"
+"""JSON file containing task IDs that should be cancelled."""
+
+# =============================================================================
+# Usage Monitoring Configuration
+# =============================================================================
+
+USAGE_POLL_INTERVAL: int = int(os.getenv("ORCHESTRATOR_USAGE_POLL_INTERVAL", "3600"))
+"""Seconds between Claude usage checks. Default 1 hour."""
+
+USAGE_NOTIFY_CHANNEL: str = os.getenv("ORCHESTRATOR_USAGE_NOTIFY_CHANNEL", "")
+"""Discord channel for usage threshold alerts. Falls back to NOTIFY_CHANNEL if empty."""
+
+USAGE_STATE_FILE: Path = WORKING_DIR / "usage_state.json"
+"""JSON file tracking last notified usage thresholds to avoid duplicate alerts."""
+
+USAGE_DATA_FILE: Path = WORKING_DIR / "usage_data.json"
+"""JSON file with latest usage data for the proxy dashboard to read."""
+
+USAGE_FORCE_CHECK_FILE: Path = WORKING_DIR / "usage_force_check"
+"""Sentinel file - if exists, triggers immediate usage check regardless of interval."""
+
+USAGE_SCRIPT_PATH: Path = Path("/app/scripts/get_usage.sh")
+"""Path to shell script that fetches Claude Code usage statistics."""
+
+AGENT_PROMPT_TEMPLATE: str = """You have been assigned a task from the work queue.
 
 Task ID: {task_id}
 Title: {title}
@@ -57,6 +120,18 @@ IMPORTANT: Do NOT deploy anything. Your job is to write the code only.
 Wendy will review your work and handle deployment separately.
 
 Begin working on this task now."""
+"""Template for agent task prompts.
+
+Placeholders:
+    {task_id}: The beads task ID (e.g., "abc123")
+    {title}: Task title/summary
+    {description}: Full task description from beads
+
+The template instructs agents to:
+- Complete the task in the /data/wendy/coding/ directory
+- Test changes locally if applicable
+- NOT deploy anything (Wendy handles deployment)
+"""
 
 # Logging setup
 logging.basicConfig(
@@ -71,7 +146,21 @@ log = logging.getLogger("orchestrator")
 
 @dataclass
 class RunningAgent:
-    """Tracks a running Claude Code agent."""
+    """Tracks state for a running Claude Code agent subprocess.
+
+    Each running agent corresponds to a beads task being worked on by
+    an autonomous Claude Code CLI process. The orchestrator creates one
+    of these for each spawned agent and uses it to monitor status,
+    enforce timeouts, and clean up on completion.
+
+    Attributes:
+        task_id: The beads task ID (e.g., "abc123").
+        title: Human-readable task title for logging and notifications.
+        process: The subprocess.Popen object for the Claude CLI process.
+        started_at: When the agent was spawned (for timeout tracking).
+        log_file: Path to the log file capturing agent stdout/stderr.
+    """
+
     task_id: str
     title: str
     process: subprocess.Popen
@@ -80,14 +169,44 @@ class RunningAgent:
 
 
 class Orchestrator:
-    def __init__(self):
+    """Main orchestrator for autonomous task execution using Claude Code agents.
+
+    The orchestrator polls the beads task queue for ready, unassigned tasks
+    and spawns Claude Code CLI agents to work on them. It manages concurrent
+    execution, handles timeouts and cancellations, and sends Discord notifications
+    for status updates.
+
+    Attributes:
+        active_agents: Map of task_id to RunningAgent for in-progress work.
+        concurrency: Maximum number of concurrent agents allowed.
+        last_usage_check: Timestamp of last Claude usage check (for rate limiting).
+
+    Example:
+        >>> orchestrator = Orchestrator()
+        >>> orchestrator.run()  # Starts the main polling loop
+    """
+
+    def __init__(self) -> None:
+        """Initialize the orchestrator.
+
+        Creates the log directory if needed and sets up initial state.
+        Does not start the main loop - call run() for that.
+        """
         self.active_agents: dict[str, RunningAgent] = {}
-        self.concurrency = CONCURRENCY
+        self.concurrency: int = CONCURRENCY
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-        self.last_usage_check = 0.0  # timestamp of last usage check
+        self.last_usage_check: float = 0.0
 
     def _send_discord_message(self, channel: str, content: str) -> bool:
-        """Send a message to Discord via the proxy API."""
+        """Send a message to Discord via the proxy API.
+
+        Args:
+            channel: Discord channel ID to send to.
+            content: Message content (supports Discord markdown).
+
+        Returns:
+            True if message was sent successfully, False on any error.
+        """
         try:
             data = json.dumps({
                 "channel_id": channel,
@@ -112,7 +231,15 @@ class Orchestrator:
             return False
 
     def _terminate_agent(self, agent: RunningAgent, reason: str) -> None:
-        """Terminate an agent process and write to its log file."""
+        """Terminate an agent process and append reason to its log file.
+
+        Attempts graceful termination first (SIGTERM), then forceful kill
+        (SIGKILL) if the process doesn't exit within 5 seconds.
+
+        Args:
+            agent: The RunningAgent to terminate.
+            reason: Human-readable reason for termination (logged to file).
+        """
         try:
             agent.process.terminate()
             agent.process.wait(timeout=5)
@@ -125,7 +252,15 @@ class Orchestrator:
             f.write(f"Completed: {datetime.now().isoformat()}\n")
 
     def get_ready_tasks(self) -> list[dict]:
-        """Get list of ready, unassigned tasks from beads, sorted by priority."""
+        """Get list of ready, unassigned tasks from beads, sorted by priority.
+
+        Runs `bd ready --unassigned --sort priority --json` to fetch tasks
+        that are ready to be worked on and haven't been claimed yet.
+
+        Returns:
+            List of task dicts with keys like 'id', 'title', 'priority', 'labels'.
+            Returns empty list on any error (command failure, parse error, timeout).
+        """
         try:
             result = subprocess.run(
                 ["bd", "ready", "--unassigned", "--sort", "priority", "--json"],
@@ -153,7 +288,17 @@ class Orchestrator:
             return []
 
     def claim_task(self, task_id: str) -> bool:
-        """Mark task as in-progress (atomically claim it)."""
+        """Atomically claim a task by marking it as in-progress.
+
+        Runs `bd update <task_id> --claim` which sets the task assignee
+        and prevents other orchestrators from picking it up.
+
+        Args:
+            task_id: The beads task ID to claim.
+
+        Returns:
+            True if claim succeeded, False on any error.
+        """
         try:
             result = subprocess.run(
                 ["bd", "update", task_id, "--claim"],
@@ -170,7 +315,15 @@ class Orchestrator:
             return False
 
     def complete_task(self, task_id: str, success: bool = True) -> bool:
-        """Mark task as complete or failed."""
+        """Mark a task as complete or failed in beads.
+
+        Args:
+            task_id: The beads task ID.
+            success: If True, runs `bd close`; if False, runs `bd reopen`.
+
+        Returns:
+            True if the status update succeeded, False on error.
+        """
         try:
             cmd = ["bd", "close" if success else "reopen", task_id]
             result = subprocess.run(
@@ -186,7 +339,17 @@ class Orchestrator:
             return False
 
     def get_task_details(self, task_id: str) -> dict | None:
-        """Get full task details."""
+        """Fetch full task details from beads.
+
+        Runs `bd show <task_id> --json` to get the complete task record
+        including description and labels.
+
+        Args:
+            task_id: The beads task ID.
+
+        Returns:
+            Task dict with full details, or None if task not found or on error.
+        """
         try:
             result = subprocess.run(
                 ["bd", "show", task_id, "--json"],
@@ -205,15 +368,45 @@ class Orchestrator:
             log.debug(f"Failed to get task details: {e}")
         return None
 
-    def parse_model_from_labels(self, labels: list) -> str | None:
-        """Extract model from labels like 'model:opus' -> 'opus'."""
+    def parse_model_from_labels(self, labels: list | None) -> str | None:
+        """Extract model specification from task labels.
+
+        Looks for labels in the format 'model:<model_name>' and extracts
+        the model name for passing to Claude CLI.
+
+        Args:
+            labels: List of task labels from beads.
+
+        Returns:
+            Model name (e.g., 'opus', 'sonnet') or None if not specified.
+
+        Example:
+            >>> self.parse_model_from_labels(['priority:high', 'model:opus'])
+            'opus'
+        """
         for label in labels or []:
             if label.startswith("model:"):
                 return label.split(":", 1)[1]
         return None
 
     def spawn_agent(self, task: dict) -> RunningAgent | None:
-        """Spawn a Claude Code agent to work on a task."""
+        """Spawn a Claude Code CLI agent to work on a task.
+
+        Creates a log file for the agent, builds the CLI command with
+        appropriate flags, and spawns the subprocess. The agent runs
+        autonomously until completion, timeout, or cancellation.
+
+        Args:
+            task: Task dict from beads with keys: id, title, description,
+                priority, labels.
+
+        Returns:
+            RunningAgent instance for tracking, or None if spawn failed.
+
+        Note:
+            Uses --allowedTools instead of --dangerously-skip-permissions
+            because the latter doesn't work when running as root.
+        """
         task_id = task.get("id", "unknown")
         title = task.get("title", "Untitled task")
         description = task.get("description", "")
@@ -301,8 +494,18 @@ class Orchestrator:
             log.error(f"Failed to spawn agent for {task_id}: {e}")
             return None
 
-    def notify_completion(self, task_id: str, title: str, success: bool, duration: str):
-        """Record completion and optionally send Discord notification."""
+    def notify_completion(self, task_id: str, title: str, success: bool, duration: str) -> None:
+        """Record task completion and optionally send Discord notification.
+
+        Always writes to task_completions.json (which Wendy can poll for updates).
+        If NOTIFY_CHANNEL is configured, also sends a Discord message.
+
+        Args:
+            task_id: The beads task ID.
+            title: Human-readable task title.
+            success: Whether the task completed successfully.
+            duration: Human-readable duration string (e.g., "0:05:32").
+        """
         status = "completed" if success else "failed"
         timestamp = datetime.now().isoformat()
 
@@ -356,9 +559,16 @@ class Orchestrator:
             except Exception:
                 pass
 
-    def check_agents(self):
-        """Check status of running agents, handle timeouts, and clean up finished ones."""
-        finished = []
+    def check_agents(self) -> None:
+        """Poll running agents and handle completions, timeouts, and cleanup.
+
+        For each active agent:
+        - If timed out: terminate, mark failed, notify, remove from active
+        - If finished: mark complete, write log footer, notify, remove from active
+
+        Called periodically from the main loop.
+        """
+        finished: list[str] = []
 
         for task_id, agent in self.active_agents.items():
             retcode = agent.process.poll()
@@ -403,8 +613,12 @@ class Orchestrator:
         for task_id in finished:
             del self.active_agents[task_id]
 
-    def cleanup_old_logs(self):
-        """Remove old log files, keeping only the most recent MAX_LOG_FILES."""
+    def cleanup_old_logs(self) -> None:
+        """Remove old agent log files, keeping only the most recent MAX_LOG_FILES.
+
+        Sorts log files by modification time and deletes the oldest ones
+        if the total count exceeds MAX_LOG_FILES.
+        """
         try:
             log_files = sorted(LOG_DIR.glob("agent_*.log"), key=lambda f: f.stat().st_mtime)
             if len(log_files) > MAX_LOG_FILES:
@@ -415,7 +629,15 @@ class Orchestrator:
             log.debug(f"Log cleanup error: {e}")
 
     def format_reset_time_pacific(self, iso_timestamp: str) -> str:
-        """Convert ISO timestamp to Pacific time formatted string."""
+        """Convert ISO timestamp to Pacific time formatted string.
+
+        Args:
+            iso_timestamp: ISO 8601 timestamp (e.g., "2024-01-15T08:00:00Z").
+
+        Returns:
+            Human-readable Pacific time string (e.g., "Mon Jan 15, 12:00AM PT"),
+            or the original timestamp if parsing fails.
+        """
         if not iso_timestamp:
             return ""
         try:
@@ -430,7 +652,14 @@ class Orchestrator:
             return iso_timestamp
 
     def get_usage_state(self) -> dict:
-        """Load usage state (last notified thresholds)."""
+        """Load usage notification state from disk.
+
+        Tracks the last notified threshold percentages to avoid sending
+        duplicate notifications for the same usage level.
+
+        Returns:
+            Dict with 'last_notified_week_all' and 'last_notified_week_sonnet' keys.
+        """
         if USAGE_STATE_FILE.exists():
             try:
                 return json.loads(USAGE_STATE_FILE.read_text())
@@ -438,15 +667,27 @@ class Orchestrator:
                 pass
         return {"last_notified_week_all": 0, "last_notified_week_sonnet": 0}
 
-    def save_usage_state(self, state: dict):
-        """Save usage state."""
+    def save_usage_state(self, state: dict) -> None:
+        """Persist usage notification state to disk.
+
+        Args:
+            state: Dict with 'last_notified_week_all' and 'last_notified_week_sonnet'.
+        """
         try:
             USAGE_STATE_FILE.write_text(json.dumps(state, indent=2))
         except Exception as e:
             log.error(f"Failed to save usage state: {e}")
 
-    def check_usage(self):
-        """Check Claude usage and notify if thresholds crossed."""
+    def check_usage(self) -> None:
+        """Check Claude Code usage and send notifications if thresholds crossed.
+
+        Runs the usage script periodically (controlled by USAGE_POLL_INTERVAL)
+        or immediately if USAGE_FORCE_CHECK_FILE exists. Saves latest usage
+        data to USAGE_DATA_FILE for the dashboard.
+
+        Sends Discord notifications when usage crosses 10% thresholds
+        (10%, 20%, 30%, etc.) to avoid spamming with every small change.
+        """
         now = time.time()
 
         # Check for force check request
@@ -549,13 +790,28 @@ class Orchestrator:
         except Exception as e:
             log.error(f"Usage check error: {e}")
 
-    def send_usage_notification(self, channel: str, message: str):
-        """Send a usage notification to Discord."""
+    def send_usage_notification(self, channel: str, message: str) -> None:
+        """Send a usage alert notification to Discord.
+
+        Args:
+            channel: Discord channel ID.
+            message: Alert message content.
+        """
         if self._send_discord_message(channel, message):
             log.info("Sent usage notification to Discord")
 
-    def check_cancel_requests(self):
-        """Check for and process cancel requests."""
+    def check_cancel_requests(self) -> None:
+        """Check for and process task cancellation requests.
+
+        Reads CANCEL_FILE for task IDs that should be cancelled. For each
+        active agent matching a cancel request:
+        - Terminates the agent process
+        - Marks the task as failed in beads
+        - Sends completion notification
+        - Removes from active agents
+
+        Cleans up the cancel file after processing.
+        """
         if not CANCEL_FILE.exists():
             return
 
@@ -589,8 +845,13 @@ class Orchestrator:
         except (OSError, json.JSONDecodeError) as e:
             log.debug(f"Cancel file error: {e}")
 
-    def check_closed_tasks(self):
-        """Check if any running tasks have been closed via 'bd close' and kill them."""
+    def check_closed_tasks(self) -> None:
+        """Check if any running tasks were closed externally and kill their agents.
+
+        Handles the case where someone runs `bd close <task_id>` manually
+        while the agent is still running. Terminates the orphaned agent
+        and records it as cancelled.
+        """
         if not self.active_agents:
             return
 
@@ -611,8 +872,14 @@ class Orchestrator:
 
             del self.active_agents[task_id]
 
-    def init_beads(self):
-        """Initialize beads if not already initialized."""
+    def init_beads(self) -> bool:
+        """Initialize the beads task queue if not already initialized.
+
+        Runs `bd init` in BEADS_DIR if the .beads directory doesn't exist.
+
+        Returns:
+            True if beads is initialized (or was already), False on error.
+        """
         if (BEADS_DIR / ".beads").exists():
             return True
 
@@ -635,8 +902,22 @@ class Orchestrator:
             log.error(f"Failed to init beads: {e}")
             return False
 
-    def run(self):
-        """Main orchestrator loop."""
+    def run(self) -> None:
+        """Run the main orchestrator loop.
+
+        This is the entry point for the orchestrator. It:
+        1. Initializes beads if needed
+        2. Enters an infinite loop that:
+           - Checks for cancel requests
+           - Checks for externally closed tasks
+           - Polls running agents for completion/timeout
+           - Cleans up old log files
+           - Checks Claude usage (hourly)
+           - Fetches ready tasks and spawns agents up to concurrency limit
+        3. Sleeps for POLL_INTERVAL between iterations
+
+        This method runs forever until the process is killed.
+        """
         log.info(f"Orchestrator starting with concurrency={self.concurrency}")
         log.info(f"Working directory: {WORKING_DIR}")
         log.info(f"Poll interval: {POLL_INTERVAL}s")
@@ -696,7 +977,12 @@ class Orchestrator:
             time.sleep(POLL_INTERVAL)
 
 
-def main():
+def main() -> None:
+    """Entry point for the orchestrator process.
+
+    Creates an Orchestrator instance and starts the main loop.
+    Intended to be run as: python -m orchestrator.main
+    """
     orchestrator = Orchestrator()
     orchestrator.run()
 
