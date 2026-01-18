@@ -41,15 +41,41 @@ class WendyCog(commands.Cog):
         self.bot = bot
         self.generator = ClaudeCliTextGenerator()
 
-        # Channel whitelist
-        whitelist_str = os.getenv("WENDY_WHITELIST_CHANNELS", "")
+        # Channel configuration - maps channel_id to config dict
+        # Config format: {"id": "123", "name": "chat", "folder": "chat", "mode": "chat"}
+        self.channel_configs: dict[int, dict] = {}
         self.whitelist_channels: set[int] = set()
-        if whitelist_str:
-            for cid_str in whitelist_str.split(","):
-                try:
-                    self.whitelist_channels.add(int(cid_str.strip()))
-                except ValueError:
-                    pass
+
+        # Try new JSON config format first
+        config_json = os.getenv("WENDY_CHANNEL_CONFIG", "")
+        if config_json:
+            try:
+                configs = json.loads(config_json)
+                for cfg in configs:
+                    channel_id = int(cfg["id"])
+                    self.channel_configs[channel_id] = cfg
+                    self.whitelist_channels.add(channel_id)
+                _LOG.info("Loaded %d channel configs from WENDY_CHANNEL_CONFIG", len(self.channel_configs))
+            except (json.JSONDecodeError, KeyError, ValueError) as e:
+                _LOG.error("Failed to parse WENDY_CHANNEL_CONFIG: %s", e)
+
+        # Fallback to old comma-separated format for backwards compatibility
+        if not self.whitelist_channels:
+            whitelist_str = os.getenv("WENDY_WHITELIST_CHANNELS", "")
+            if whitelist_str:
+                for cid_str in whitelist_str.split(","):
+                    try:
+                        channel_id = int(cid_str.strip())
+                        self.whitelist_channels.add(channel_id)
+                        # Create default config for backwards compatibility
+                        self.channel_configs[channel_id] = {
+                            "id": str(channel_id),
+                            "name": "default",
+                            "folder": "wendys_folder",
+                            "mode": "full"
+                        }
+                    except ValueError:
+                        pass
 
         # Active generations (per channel)
         self._active_generations: dict[int, GenerationJob] = {}
@@ -236,10 +262,11 @@ class WendyCog(commands.Cog):
     async def _generate_response(self, message: discord.Message, job: GenerationJob) -> None:
         """Generate a response using Claude CLI."""
         channel = message.channel
+        channel_config = self.channel_configs.get(channel.id, {})
 
         try:
-            # Run Claude CLI
-            await self.generator.generate(channel_id=channel.id)
+            # Run Claude CLI with channel-specific config
+            await self.generator.generate(channel_id=channel.id, channel_config=channel_config)
             _LOG.info("Claude CLI completed for channel %s", channel.id)
 
         except ClaudeCliError as e:
@@ -325,8 +352,17 @@ Cache create: {stats.get('total_cache_create_tokens', 0):,}
                 c["seen_by_wendy"] = True
             TASK_COMPLETIONS_FILE.write_text(json.dumps(completions, indent=2))
 
-            # Use first whitelisted channel
-            channel_id = next(iter(self.whitelist_channels))
+            # Use coding channel for task completions (or first channel with full mode)
+            channel_id = None
+            for cid, cfg in self.channel_configs.items():
+                if cfg.get("mode") == "full":
+                    channel_id = cid
+                    break
+            if not channel_id:
+                channel_id = next(iter(self.whitelist_channels), None)
+            if not channel_id:
+                _LOG.warning("No channel available for task completion")
+                return
             channel = self.bot.get_channel(channel_id)
             if not channel:
                 _LOG.warning("Whitelist channel %d not found", channel_id)
@@ -354,8 +390,10 @@ Cache create: {stats.get('total_cache_create_tokens', 0):,}
 
     async def _generate_response_for_channel(self, channel: discord.TextChannel, job: GenerationJob) -> None:
         """Generate a response for a channel (used by task completion watcher)."""
+        channel_config = self.channel_configs.get(channel.id, {})
+
         try:
-            await self.generator.generate(channel_id=channel.id)
+            await self.generator.generate(channel_id=channel.id, channel_config=channel_config)
             _LOG.info("Claude CLI completed for channel %s (task wake)", channel.id)
 
         except ClaudeCliError as e:

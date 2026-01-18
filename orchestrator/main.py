@@ -23,7 +23,7 @@ from typing import Optional
 CONCURRENCY = int(os.getenv("ORCHESTRATOR_CONCURRENCY", "1"))
 POLL_INTERVAL = int(os.getenv("ORCHESTRATOR_POLL_INTERVAL", "30"))  # seconds
 WORKING_DIR = Path(os.getenv("ORCHESTRATOR_WORKING_DIR", "/data/wendy"))
-BEADS_DIR = WORKING_DIR  # Where .beads/ lives
+BEADS_DIR = WORKING_DIR / "coding"  # Where .beads/ lives (coding channel folder)
 LOG_DIR = WORKING_DIR / "orchestrator_logs"
 PROXY_URL = os.getenv("ORCHESTRATOR_PROXY_URL", "http://127.0.0.1:8945")
 NOTIFY_CHANNEL = os.getenv("ORCHESTRATOR_NOTIFY_CHANNEL", "")
@@ -184,7 +184,7 @@ Description:
 
 Instructions:
 1. Complete this task thoroughly
-2. Work in /data/wendy/wendys_folder/ unless the task specifies otherwise
+2. Work in /data/wendy/coding/ unless the task specifies otherwise
 3. Test your changes locally if applicable
 4. When done, summarize what you accomplished
 
@@ -237,7 +237,7 @@ Begin working on this task now."""
             with open(log_file, "a") as f:
                 process = subprocess.Popen(
                     cmd,
-                    cwd=WORKING_DIR / "wendys_folder",
+                    cwd=WORKING_DIR / "coding",
                     stdout=f,
                     stderr=subprocess.STDOUT,
                     text=True
@@ -459,12 +459,6 @@ Begin working on this task now."""
             log.debug("Usage script not found, skipping usage check")
             return
 
-        # Skip if no channel configured
-        channel = USAGE_NOTIFY_CHANNEL or NOTIFY_CHANNEL
-        if not channel:
-            log.debug("No usage notify channel configured, skipping")
-            return
-
         log.info("Checking Claude usage...")
 
         try:
@@ -503,38 +497,40 @@ Begin working on this task now."""
             except Exception as e:
                 log.error(f"Failed to save usage data: {e}")
 
-            # Check for threshold crossings
-            state = self.get_usage_state()
-            last_all = state.get("last_notified_week_all", 0)
-            last_sonnet = state.get("last_notified_week_sonnet", 0)
+            # Check for threshold crossings and notify (only if channel configured)
+            channel = USAGE_NOTIFY_CHANNEL or NOTIFY_CHANNEL
+            if channel:
+                state = self.get_usage_state()
+                last_all = state.get("last_notified_week_all", 0)
+                last_sonnet = state.get("last_notified_week_sonnet", 0)
 
-            # Calculate 10% thresholds
-            current_all_threshold = (week_all // 10) * 10
-            current_sonnet_threshold = (week_sonnet // 10) * 10
+                # Calculate 10% thresholds
+                current_all_threshold = (week_all // 10) * 10
+                current_sonnet_threshold = (week_sonnet // 10) * 10
 
-            messages = []
+                messages = []
 
-            # Get reset times formatted for Pacific
-            week_all_resets = self.format_reset_time_pacific(usage.get("week_all_resets", ""))
-            week_sonnet_resets = self.format_reset_time_pacific(usage.get("week_sonnet_resets", ""))
+                # Get reset times formatted for Pacific
+                week_all_resets = self.format_reset_time_pacific(usage.get("week_all_resets", ""))
+                week_sonnet_resets = self.format_reset_time_pacific(usage.get("week_sonnet_resets", ""))
 
-            # Check if we crossed a new 10% threshold for all models
-            if current_all_threshold > last_all and current_all_threshold > 0:
-                reset_str = f" (resets {week_all_resets})" if week_all_resets else ""
-                messages.append(f"Weekly usage (all models): {week_all}%{reset_str}")
-                state["last_notified_week_all"] = current_all_threshold
+                # Check if we crossed a new 10% threshold for all models
+                if current_all_threshold > last_all and current_all_threshold > 0:
+                    reset_str = f" (resets {week_all_resets})" if week_all_resets else ""
+                    messages.append(f"Weekly usage (all models): {week_all}%{reset_str}")
+                    state["last_notified_week_all"] = current_all_threshold
 
-            # Check if we crossed a new 10% threshold for Sonnet
-            if current_sonnet_threshold > last_sonnet and current_sonnet_threshold > 0:
-                reset_str = f" (resets {week_sonnet_resets})" if week_sonnet_resets else ""
-                messages.append(f"Weekly usage (Sonnet): {week_sonnet}%{reset_str}")
-                state["last_notified_week_sonnet"] = current_sonnet_threshold
+                # Check if we crossed a new 10% threshold for Sonnet
+                if current_sonnet_threshold > last_sonnet and current_sonnet_threshold > 0:
+                    reset_str = f" (resets {week_sonnet_resets})" if week_sonnet_resets else ""
+                    messages.append(f"Weekly usage (Sonnet): {week_sonnet}%{reset_str}")
+                    state["last_notified_week_sonnet"] = current_sonnet_threshold
 
-            # Send notification if thresholds crossed
-            if messages:
-                message = "Claude Code Usage Alert:\n" + "\n".join(messages)
-                self.send_usage_notification(channel, message)
-                self.save_usage_state(state)
+                # Send notification if thresholds crossed
+                if messages:
+                    message = "Claude Code Usage Alert:\n" + "\n".join(messages)
+                    self.send_usage_notification(channel, message)
+                    self.save_usage_state(state)
 
         except subprocess.TimeoutExpired:
             log.warning("Usage check timed out")
@@ -613,6 +609,37 @@ Begin working on this task now."""
         except (json.JSONDecodeError, IOError) as e:
             log.debug(f"Cancel file error: {e}")
 
+    def check_closed_tasks(self):
+        """Check if any running tasks have been closed via 'bd close' and kill them."""
+        if not self.active_agents:
+            return
+
+        to_kill = []
+        for task_id, agent in self.active_agents.items():
+            task = self.get_task_details(task_id)
+            if task and task.get("status") == "closed":
+                to_kill.append(task_id)
+
+        for task_id in to_kill:
+            agent = self.active_agents[task_id]
+            log.info(f"Task {task_id} was closed via 'bd close', killing agent")
+
+            try:
+                agent.process.terminate()
+                agent.process.wait(timeout=5)
+            except Exception:
+                agent.process.kill()
+
+            with open(agent.log_file, "a") as f:
+                f.write("\n" + "=" * 60 + "\n")
+                f.write(f"KILLED - task closed via 'bd close'\n")
+                f.write(f"Completed: {datetime.now().isoformat()}\n")
+
+            duration = datetime.now() - agent.started_at
+            self.notify_completion(task_id, agent.title, False, f"{duration} (CLOSED)")
+
+            del self.active_agents[task_id]
+
     def init_beads(self):
         """Initialize beads if not already initialized."""
         if (BEADS_DIR / ".beads").exists():
@@ -652,6 +679,9 @@ Begin working on this task now."""
             try:
                 # Check for cancel requests
                 self.check_cancel_requests()
+
+                # Check if any running tasks were closed via 'bd close'
+                self.check_closed_tasks()
 
                 # Check on running agents (and handle timeouts)
                 self.check_agents()

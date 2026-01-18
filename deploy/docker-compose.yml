@@ -14,7 +14,8 @@ services:
       - claude_config:/root/.claude
     environment:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
-      - WENDY_WHITELIST_CHANNELS=${WENDY_WHITELIST_CHANNELS}
+      - WENDY_CHANNEL_CONFIG=${WENDY_CHANNEL_CONFIG:-}
+      - WENDY_WHITELIST_CHANNELS=${WENDY_WHITELIST_CHANNELS:-}
       - WENDY_DB_PATH=/data/wendy/wendy.db
       - SYSTEM_PROMPT_FILE=/app/config/system_prompt.txt
       - CLAUDE_CLI_TIMEOUT=300

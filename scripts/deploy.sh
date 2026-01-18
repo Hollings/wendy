@@ -1,10 +1,10 @@
 #!/bin/bash
-# deploy.sh - Deploy a website or game server from wendys_folder to wendy.monster
+# deploy.sh - Deploy a website or game server to wendy.monster
 #
 # Usage: deploy.sh <project-path> [target-url]
 #
 # Arguments:
-#   project-path  - Path to project folder (relative to wendys_folder/)
+#   project-path  - Path to project folder (relative to current directory)
 #   target-url    - Optional. URL path on wendy.monster. Defaults to folder name.
 #
 # Auto-detection:
@@ -22,7 +22,8 @@ set -euo pipefail
 PROJECT_PATH="${1:-}"
 DEFAULT_TARGET=$(basename "$PROJECT_PATH")
 TARGET_URL="${2:-$DEFAULT_TARGET}"
-PROJECT_DIR="/data/wendy/wendys_folder/${PROJECT_PATH}"
+# Use current directory as base (Wendy runs from her channel folder)
+PROJECT_DIR="${PWD}/${PROJECT_PATH}"
 PROXY_URL="${WENDY_PROXY_URL:-http://localhost:8945}"
 
 # Colors for output
@@ -49,7 +50,7 @@ if [[ -z "$PROJECT_PATH" ]]; then
     echo "Usage: deploy.sh <project-path> [target-url]"
     echo ""
     echo "Arguments:"
-    echo "  project-path  - Path to project folder (relative to wendys_folder/)"
+    echo "  project-path  - Path to project folder (relative to your folder/)"
     echo "  target-url    - Optional. URL path on wendy.monster. Defaults to folder name."
     echo ""
     echo "Auto-detection:"
@@ -65,7 +66,7 @@ fi
 
 # Check project directory exists
 if [[ ! -d "$PROJECT_DIR" ]]; then
-    error "Project path '$PROJECT_PATH' not found in wendys_folder/"
+    error "Project path '$PROJECT_PATH' not found in your folder/"
 fi
 
 # Validate target URL
@@ -145,7 +146,7 @@ WS_URL=$(echo "$BODY" | grep -o '"ws"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/
 success "Deployment successful!"
 echo ""
 echo "  Type:   ${DEPLOY_TYPE}"
-echo "  Source: wendys_folder/${PROJECT_PATH}/"
+echo "  Source: your folder/${PROJECT_PATH}/"
 if [[ -n "$URL" ]]; then
     echo "  URL:    ${URL}"
 else

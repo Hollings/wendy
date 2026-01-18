@@ -9,9 +9,10 @@ REMOTE_BASE="/srv"
 
 echo "[$(date +%H:%M:%S)] Deploying $SERVICE..."
 
-# Create tarball
+# Create tarball (exclude .env to never overwrite server config)
 echo "[$(date +%H:%M:%S)] Packaging..."
 tar --exclude='__pycache__' --exclude='.git' --exclude='*.pyc' --exclude='*.egg-info' \
+    --exclude='deploy/.env' \
     -czf "/tmp/${SERVICE}.tar.gz" -C "$SCRIPT_DIR" .
 
 # Upload
@@ -22,11 +23,19 @@ scp "/tmp/${SERVICE}.tar.gz" "${REMOTE_HOST}:/tmp/"
 echo "[$(date +%H:%M:%S)] Deploying on remote..."
 ssh "$REMOTE_HOST" "
     mkdir -p ${REMOTE_BASE}/${SERVICE}
+
+    # Backup .env before extraction
+    if [ -f ${REMOTE_BASE}/${SERVICE}/deploy/.env ]; then
+        cp ${REMOTE_BASE}/${SERVICE}/deploy/.env /tmp/wendy-bot-env-backup
+    fi
+
     tar -xzf /tmp/${SERVICE}.tar.gz -C ${REMOTE_BASE}/${SERVICE}
     rm /tmp/${SERVICE}.tar.gz
 
-    # Create .env from example if not exists
-    if [ ! -f ${REMOTE_BASE}/${SERVICE}/deploy/.env ]; then
+    # Restore .env from backup if it was lost, or create from example
+    if [ -f /tmp/wendy-bot-env-backup ]; then
+        mv /tmp/wendy-bot-env-backup ${REMOTE_BASE}/${SERVICE}/deploy/.env
+    elif [ ! -f ${REMOTE_BASE}/${SERVICE}/deploy/.env ]; then
         cp ${REMOTE_BASE}/${SERVICE}/deploy/.env.example ${REMOTE_BASE}/${SERVICE}/deploy/.env
         echo 'Created .env from .env.example - please configure tokens'
     fi

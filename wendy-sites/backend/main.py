@@ -131,7 +131,7 @@ async def brain_beads():
     if not auth.is_configured():
         raise HTTPException(status_code=503, detail="Brain feed not configured")
 
-    jsonl_path = Path("/data/wendy/.beads/issues.jsonl")
+    jsonl_path = Path("/data/wendy/coding/.beads/issues.jsonl")
     beads = []
 
     if jsonl_path.exists():

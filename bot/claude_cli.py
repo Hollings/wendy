@@ -356,8 +356,12 @@ class ClaudeCliTextGenerator:
                     shutil.copy2(script, dest)
 
         (wendy_dir / "outbox").mkdir(exist_ok=True)
-        (wendy_dir / "wendys_folder").mkdir(exist_ok=True)
         (wendy_dir / "uploads").mkdir(exist_ok=True)
+
+    def _setup_channel_folder(self, wendy_dir: Path, folder: str) -> None:
+        """Create channel-specific folder if it doesn't exist."""
+        channel_folder = wendy_dir / folder
+        channel_folder.mkdir(exist_ok=True)
 
         # Set up Claude Code settings (hooks to block Task tool)
         claude_settings_src = Path("/app/config/claude_settings.json")
@@ -368,28 +372,28 @@ class ClaudeCliTextGenerator:
             if not settings_dest.exists() or settings_dest.stat().st_mtime < claude_settings_src.stat().st_mtime:
                 shutil.copy2(claude_settings_src, settings_dest)
 
-        # Copy BD_USAGE.md for reference
+        # Copy BD_USAGE.md for reference (to coding folder where beads work)
         bd_usage_src = Path("/app/config/BD_USAGE.md")
-        bd_usage_dest = wendy_dir / "BD_USAGE.md"
+        bd_usage_dest = wendy_dir / "coding" / "BD_USAGE.md"
         if bd_usage_src.exists():
             if not bd_usage_dest.exists() or bd_usage_dest.stat().st_mtime < bd_usage_src.stat().st_mtime:
                 shutil.copy2(bd_usage_src, bd_usage_dest)
 
-    def _get_wendys_notes(self) -> str:
+    def _get_wendys_notes(self, folder: str = "wendys_folder") -> str:
         """Load Wendy's self-editable notes from her personal CLAUDE.md."""
-        notes_path = Path("/data/wendy/wendys_folder/CLAUDE.md")
+        notes_path = Path(f"/data/wendy/{folder}/CLAUDE.md")
         if not notes_path.exists():
             return ""
         try:
             content = notes_path.read_text().strip()
             if content:
-                return f"\n\n---\nYOUR PERSONAL NOTES (from wendys_folder/CLAUDE.md - you can edit this!):\n{content}\n---"
+                return f"\n\n---\nYOUR PERSONAL NOTES (from {folder}/CLAUDE.md - you can edit this!):\n{content}\n---"
             return ""
         except Exception as e:
             _LOG.warning("Failed to read Wendy's notes: %s", e)
             return ""
 
-    def _get_tool_instructions(self, channel_id: int) -> str:
+    def _get_tool_instructions(self, channel_id: int, folder: str = "wendys_folder") -> str:
         """Get instructions for Wendy's API tools."""
         return f"""
 
@@ -438,10 +442,10 @@ When users upload files (images, documents, code, etc.), the check_messages resp
 - Always check for the "attachments" field in message JSON when users seem to be sharing something.
 
 PERSONAL FOLDER:
-You have a personal folder at /data/wendy/wendys_folder/ where you can save notes or files. This persists between conversations.
+You have a personal folder at /data/wendy/{folder}/ where you can save notes or files. This persists between conversations.
 
 SELF-CUSTOMIZATION:
-You can edit /data/wendy/wendys_folder/CLAUDE.md to customize your own behavior. Anything you write there becomes part of your system instructions on the next message. Use this to remember things, set personal preferences, or adjust how you behave. Changes take effect immediately - no restart needed.
+You can edit /data/wendy/{folder}/CLAUDE.md to customize your own behavior. Anything you write there becomes part of your system instructions on the next message. Use this to remember things, set personal preferences, or adjust how you behave. Changes take effect immediately - no restart needed.
 
 MESSAGE HISTORY DATABASE:
 You have full read access to the message history at /data/wendy.db. Use query_db.py to search messages, check past conversations, or find old content.
@@ -545,7 +549,7 @@ Key tables:
 
             enriched_event = {
                 "ts": int(time.time() * 1000),
-                "channel_id": channel_id,
+                "channel_id": str(channel_id) if channel_id else None,
                 "event": event,
             }
 
@@ -571,9 +575,33 @@ Key tables:
         except Exception as e:
             _LOG.error("Failed to trim stream log: %s", e)
 
+    def _get_permissions_for_channel(self, channel_config: dict) -> tuple[str, str]:
+        """Get allowedTools and disallowedTools based on channel mode.
+
+        Args:
+            channel_config: Channel config dict with 'mode' and 'folder' keys
+
+        Returns:
+            Tuple of (allowedTools, disallowedTools) strings
+        """
+        mode = channel_config.get("mode", "full")
+        folder = channel_config.get("folder", "wendys_folder")
+
+        if mode == "chat":
+            # Chat mode: restricted access, no beads, can't touch coding folder
+            allowed = f"Read,WebSearch,WebFetch,Bash,Edit(//data/wendy/{folder}/**),Write(//data/wendy/{folder}/**)"
+            disallowed = "Read(//data/wendy/coding/**),Edit(//data/wendy/*.sh),Edit(//data/wendy/*.py),Edit(//app/**),Write(//app/**),Edit(//data/wendy/coding/**),Write(//data/wendy/coding/**)"
+        else:
+            # Full mode: full access to folder, uploads, beads
+            allowed = f"Read,WebSearch,WebFetch,Bash,Edit(//data/wendy/{folder}/**),Write(//data/wendy/{folder}/**),Write(//data/wendy/uploads/**)"
+            disallowed = "Edit(//app/**),Write(//app/**)"
+
+        return allowed, disallowed
+
     async def generate(
         self,
         channel_id: int,
+        channel_config: dict = None,
         **kwargs,
     ) -> str:
         """Generate response using Claude CLI with persistent sessions.
@@ -583,12 +611,17 @@ Key tables:
 
         Args:
             channel_id: Discord channel ID (required for session management)
+            channel_config: Optional channel config dict with mode and folder
 
         Returns:
             Empty string (Wendy's responses go through send_message API)
         """
         if not channel_id:
             raise ValueError("channel_id is required for Claude CLI sessions")
+
+        # Default config if not provided
+        if channel_config is None:
+            channel_config = {"mode": "full", "folder": "wendys_folder", "name": "default"}
 
         # Get or create session for this channel
         force_new = kwargs.get("_force_new_session", False)
@@ -602,10 +635,15 @@ Key tables:
 
         nudge_prompt = f"<new messages - you MUST call curl -s http://localhost:8945/api/check_messages/{channel_id} before any other action. Do not assume what the messages contain.>"
 
-        system_prompt = self._get_base_system_prompt()
-        system_prompt += self._get_wendys_notes()
-        system_prompt += self._get_tool_instructions(channel_id)
-        system_prompt += self._get_active_beads_warning()
+        folder = channel_config.get("folder", "wendys_folder")
+        mode = channel_config.get("mode", "full")
+
+        system_prompt = self._get_base_system_prompt(folder, mode)
+        system_prompt += self._get_wendys_notes(folder)
+        system_prompt += self._get_tool_instructions(channel_id, folder)
+        # Only include beads warning for full mode (coding channel)
+        if mode == "full":
+            system_prompt += self._get_active_beads_warning()
 
         cmd = [
             self.cli_path,
@@ -627,11 +665,13 @@ Key tables:
         if system_prompt:
             cmd.extend(["--append-system-prompt", system_prompt])
 
+        # Get permissions based on channel mode
+        allowed_tools, disallowed_tools = self._get_permissions_for_channel(channel_config)
         cmd.extend([
             "--allowedTools",
-            "Read,WebSearch,WebFetch,Bash,Edit(//data/wendy/wendys_folder/**),Write(//data/wendy/wendys_folder/**),Write(//data/wendy/uploads/**)",
+            allowed_tools,
             "--disallowedTools",
-            "Edit(//data/wendy/*.sh),Edit(//data/wendy/*.py),Edit(//app/**),Write(//app/**)",
+            disallowed_tools,
         ])
 
         _LOG.info(
@@ -644,6 +684,7 @@ Key tables:
         wendy_dir = Path("/data/wendy")
         wendy_dir.mkdir(parents=True, exist_ok=True)
         self._setup_wendy_scripts(wendy_dir)
+        self._setup_channel_folder(wendy_dir, folder)
 
         proc = None
         try:
@@ -660,13 +701,19 @@ Key tables:
             }
             cli_env = {k: v for k, v in os.environ.items() if k not in sensitive_vars}
 
+            # Set BEADS_DIR for full mode so bd command can find .beads
+            if mode == "full":
+                cli_env["BEADS_DIR"] = str(wendy_dir / "coding")
+
+            # Use channel-specific folder as cwd for isolation
+            channel_cwd = wendy_dir / folder
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 limit=10 * 1024 * 1024,  # 10MB line buffer
-                cwd=wendy_dir,
+                cwd=channel_cwd,
                 env=cli_env,
             )
 
@@ -750,21 +797,64 @@ Key tables:
         finally:
             self._cleanup_temp_files()
 
-    def _get_base_system_prompt(self) -> str:
-        """Get the base system prompt for Wendy."""
+    def _get_base_system_prompt(self, folder: str = "wendys_folder", mode: str = "full") -> str:
+        """Get the base system prompt for Wendy.
+
+        Args:
+            folder: The channel's folder name for path substitution
+            mode: 'chat' for limited permissions, 'full' for coding channel
+        """
         system_prompt_file = os.getenv("SYSTEM_PROMPT_FILE", "/app/config/system_prompt.txt")
-        if Path(system_prompt_file).exists():
-            try:
-                return Path(system_prompt_file).read_text().strip()
-            except Exception as e:
-                _LOG.warning("Failed to read system prompt file: %s", e)
-        return ""
+        if not Path(system_prompt_file).exists():
+            return ""
+
+        try:
+            content = Path(system_prompt_file).read_text().strip()
+
+            # Replace folder placeholder
+            content = content.replace("{folder}", folder)
+
+            # For chat mode, strip out deployment and task system instructions
+            if mode == "chat":
+                # Remove "Writing code and tasks" through "Progress updates" sections
+                # Remove "Deployment" section entirely (to end of file)
+                lines = content.split("\n")
+                filtered_lines = []
+                skip_until_section = None
+                skip_to_end = False
+
+                for line in lines:
+                    # Check for section headers we want to skip in chat mode
+                    if line.strip() == "Writing code and tasks":
+                        skip_until_section = "Progress updates"
+                        continue
+                    if line.strip() == "Deployment":
+                        skip_to_end = True  # Skip everything from here to end
+                        continue
+
+                    # If we found the end of a skipped section, stop skipping
+                    if skip_until_section and line.strip() == skip_until_section:
+                        skip_until_section = None
+                        # Keep this line (it's the start of an included section)
+
+                    # Skip lines while in a skipped section or skipping to end
+                    if skip_until_section or skip_to_end:
+                        continue
+
+                    filtered_lines.append(line)
+
+                content = "\n".join(filtered_lines)
+
+            return content
+        except Exception as e:
+            _LOG.warning("Failed to read system prompt file: %s", e)
+            return ""
 
     def _get_active_beads_warning(self) -> str:
         """Check for in-progress beads and return a warning if any are active."""
         try:
             # Read directly from beads JSONL file instead of shelling out
-            jsonl_path = Path("/data/wendy/.beads/issues.jsonl")
+            jsonl_path = Path("/data/wendy/coding/.beads/issues.jsonl")
             if not jsonl_path.exists():
                 return ""
 
