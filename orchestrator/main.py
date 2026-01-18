@@ -59,6 +59,20 @@ WORKING_DIR: Path = Path(os.getenv("ORCHESTRATOR_WORKING_DIR", "/data/wendy"))
 BEADS_DIR: Path = WORKING_DIR / "coding"
 """Directory containing the .beads/ task queue (coding channel folder)."""
 
+CURRENT_SESSION_FILE: Path = BEADS_DIR / ".current_session"
+"""File containing Wendy's current session ID for forking."""
+
+SESSION_DIR: Path = Path(os.getenv(
+    "CLAUDE_SESSION_DIR",
+    "/root/.claude/projects/-data-wendy"
+))
+"""Directory where Claude CLI session JSONL files are stored.
+
+By default, Claude CLI stores sessions in ~/.claude/projects/<encoded-path>/
+where the working directory path is encoded (e.g., /data/wendy -> -data-wendy).
+Override with CLAUDE_SESSION_DIR environment variable if needed.
+"""
+
 LOG_DIR: Path = WORKING_DIR / "orchestrator_logs"
 """Directory for agent execution log files."""
 
@@ -102,24 +116,34 @@ USAGE_FORCE_CHECK_FILE: Path = WORKING_DIR / "usage_force_check"
 USAGE_SCRIPT_PATH: Path = Path("/app/scripts/get_usage.sh")
 """Path to shell script that fetches Claude Code usage statistics."""
 
-AGENT_PROMPT_TEMPLATE: str = """You have been assigned a task from the work queue.
+AGENT_PROMPT_TEMPLATE: str = """================================================================================
+FORKED SESSION - BACKGROUND AGENT MODE
+================================================================================
 
-Task ID: {task_id}
-Title: {title}
+The conversation above is from Wendy's session BEFORE this fork.
+You are now a BACKGROUND AGENT working on a specific task.
 
-Description:
+TASK ID: {task_id}
+TITLE: {title}
+
+TASK DESCRIPTION:
 {description}
 
-Instructions:
-1. Complete this task thoroughly
-2. Work in /data/wendy/coding/ unless the task specifies otherwise
-3. Test your changes locally if applicable
-4. When done, summarize what you accomplished
+--------------------------------------------------------------------------------
+YOUR ROLE:
+- You have Wendy's context from before the fork - use it
+- You are working in the BACKGROUND - Wendy continues separately
+- You CANNOT send Discord messages or deploy
+- You CAN read/write files, run bash, etc.
 
-IMPORTANT: Do NOT deploy anything. Your job is to write the code only.
-Wendy will review your work and handle deployment separately.
+WHEN DONE:
+- Use `bd comment {task_id} "your notes"` to leave context for Wendy
+- Run `bd close {task_id}` when successfully completed
+- If stuck, leave a comment explaining why
 
-Begin working on this task now."""
+GO.
+================================================================================
+"""
 """Template for agent task prompts.
 
 Placeholders:
@@ -442,19 +466,43 @@ class Orchestrator:
                 f.write(f"Prompt:\n{prompt}\n")
                 f.write("=" * 60 + "\n\n")
 
+            # Check if we can fork from Wendy's session
+            fork_session_id = None
+            if CURRENT_SESSION_FILE.exists():
+                try:
+                    fork_session_id = CURRENT_SESSION_FILE.read_text().strip()
+                    # Verify session file exists
+                    session_file = SESSION_DIR / f"{fork_session_id}.jsonl"
+                    if not session_file.exists():
+                        log.warning(f"Session {fork_session_id[:8]} not found, using fresh agent")
+                        fork_session_id = None
+                    else:
+                        log.info(f"Forking from Wendy's session {fork_session_id[:8]} for task {task_id}")
+                except Exception as e:
+                    log.warning(f"Failed to read session file: {e}")
+                    fork_session_id = None
+
             # Build CLI command
             # Note: Can't use --dangerously-skip-permissions or --permission-mode bypassPermissions
             # when running as root. Use --allowedTools to whitelist required tools instead.
             # -p = print mode (non-interactive), prompt is positional arg
             # --verbose required for stream-json output
-            cmd = [
-                "claude",
+            cmd = ["claude"]
+
+            # Add session forking if available
+            if fork_session_id:
+                cmd.extend(["--resume", fork_session_id, "--fork-session"])
+            else:
+                log.info(f"No session to fork from, spawning fresh agent for task {task_id}")
+
+            # Common arguments for all agents
+            cmd.extend([
                 "-p", prompt,
                 "--max-turns", "9999",
                 "--allowedTools", "Read", "Write", "Edit", "Bash", "Glob", "Grep", "TodoWrite",
                 "--output-format", "stream-json",
                 "--verbose"
-            ]
+            ])
 
             # Add agent system prompt if available
             if AGENT_SYSTEM_PROMPT_FILE.exists():

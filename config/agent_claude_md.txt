@@ -1,31 +1,14 @@
-# Background Agent Context
+# Agent Reference
 
-You are a background worker agent spawned by the orchestrator to complete a specific task.
+This file contains reference information for background agents.
+Role-specific instructions are provided in the task prompt.
 
 ## Environment
 
-- Working directory: /data/wendy/wendys_folder/
-- You have full file system access within this directory
-- You can run bash commands, write code, and create files
+- Working directory: /data/wendy/coding/wendys_folder/
+- Full file system access within this directory
 
-## What you CAN do
-
-- Write code (any language)
-- Create/edit files in wendys_folder/
-- Run tests locally
-- Install dependencies if needed
-- Create new project folders
-
-## What you CANNOT do
-
-- Deploy anything (Wendy will deploy after reviewing your work)
-- Send Discord messages
-- Access the internet (no curl to external sites)
-- Modify files outside wendys_folder/
-
-## Project Structure
-
-Projects for wendy.monster typically follow this structure:
+## Project Templates
 
 ### Static sites (index.html detected):
 ```
@@ -33,6 +16,11 @@ project-name/
 ├── index.html
 ├── style.css
 └── script.js
+```
+
+Deploy to wendy.monster with:
+```bash
+./scripts/wendy/deploy.sh project-name
 ```
 
 ### Game servers (server.ts detected):
@@ -44,7 +32,12 @@ game-name/
     └── game.js
 ```
 
-## Game Server Helper
+Deploy to wendy.monster/game/<name>/ with:
+```bash
+./scripts/wendy/deploy.sh game-name
+```
+
+## Game Server Helper Library
 
 For multiplayer games, use the helper library:
 
@@ -52,21 +45,52 @@ For multiplayer games, use the helper library:
 import { createGameServer, loadState, saveState } from "/app/lib.ts";
 
 const game = createGameServer({
-  onConnect: (ws, id) => { /* player joined */ },
-  onMessage: (ws, id, data) => { /* handle message */ },
-  onDisconnect: (id) => { /* player left */ },
+  onConnect: (ws, id) => {
+    console.log(`Player ${id} connected`);
+  },
+  onMessage: (ws, id, data) => {
+    // Handle player messages
+  },
+  onDisconnect: (id) => {
+    console.log(`Player ${id} disconnected`);
+  },
 });
 
-// State persists across redeploys
-const state = await loadState({ players: {}, scores: [] });
+// State persists across redeploys in state.json
+const state = await loadState({
+  players: {},
+  gameStarted: false
+});
+
+// Update and save state
+state.players[playerId] = { name: "Alice", score: 0 };
 await saveState(state);
 
 // Messaging
-game.broadcast({ type: "update", data: state });
-game.send(playerId, { type: "welcome" });
+game.broadcast({ type: "update", data: state });  // To all players
+game.send(playerId, { type: "welcome" });         // To one player
 ```
 
-## When Done
+The helper library automatically:
+- Serves files from ./public/
+- Provides WebSocket at wss://wendy.monster/game/<name>/ws
+- Manages player connections and cleanup
 
-Summarize what you accomplished. Wendy will review your work and deploy if it looks good.
-Do NOT attempt to deploy yourself.
+Frontend WebSocket connection:
+```javascript
+const ws = new WebSocket(`wss://${location.host}${location.pathname}ws`);
+ws.onmessage = (e) => {
+  const msg = JSON.parse(e.data);
+  // Handle message
+};
+ws.send(JSON.stringify({ type: "action", data: {...} }));
+```
+
+## Deployment Notes
+
+**DO NOT deploy from background agents** - only write the code.
+Wendy will review and deploy after the task is complete.
+
+Max sizes:
+- Static sites: 50 MB
+- Game servers: 10 MB
