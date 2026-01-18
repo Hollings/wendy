@@ -18,7 +18,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Sequence, Union
+from typing import Any
 
 _LOG = logging.getLogger(__name__)
 
@@ -27,6 +27,84 @@ SESSION_DIR = Path("/root/.claude/projects/-data-wendy")
 STREAM_LOG_FILE = Path("/data/wendy/stream.jsonl")
 MAX_DISCORD_MESSAGES = 50  # Actual Discord messages, not API turns
 MAX_STREAM_LOG_LINES = 5000  # Rolling log limit
+
+# Sensitive env vars to filter from CLI subprocess
+SENSITIVE_ENV_VARS = {
+    "DISCORD_TOKEN",
+    "WEBHOOK_URL",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "REPLICATE_API_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "WENDY_DEPLOY_TOKEN",
+    "WENDY_GAMES_TOKEN",
+}
+
+# Tool instructions template - {channel_id} and {folder} are substituted
+TOOL_INSTRUCTIONS_TEMPLATE = """
+---
+REAL-TIME CHANNEL TOOLS (Channel ID: {channel_id})
+
+CRITICAL: You are running in HEADLESS MODE. Your final output is NOT sent to Discord.
+You MUST use the send_message API to respond - this is the ONLY way users will see your messages!
+
+RESPONSE EXPECTATIONS:
+- You should ALMOST ALWAYS respond. Users expect you to participate in conversation.
+- If you don't call send_message, users see NOTHING - it looks like you ignored them.
+- Only skip responding if users EXPLICITLY say they don't want your input (e.g., "wendy stop", "shut up", "go away").
+- In ambiguous situations, neutral chats, or when unsure: RESPOND. Err on the side of engaging.
+- Even a brief acknowledgment ("gotcha!", "nice", "haha") is better than silence.
+
+1. SEND A MESSAGE (REQUIRED to respond):
+   curl -X POST http://localhost:8945/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "your message here"}}'
+
+   With attachment (file must be in /data/wendy/):
+   curl -X POST http://localhost:8945/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "check this out", "attachment": "/data/wendy/uploads/file.png"}}'
+
+   This is the ONLY way to send messages to users. Your final output goes nowhere.
+
+2. CHECK FOR NEW MESSAGES (optional, use before responding):
+   curl -s http://localhost:8945/api/check_messages/{channel_id}
+
+   Shows the last 10 messages to see if anyone sent new messages while you were thinking.
+   Note: Always use -s flag with curl for cleaner output.
+
+WORKFLOW:
+1. Read/process the user's request
+2. Do any work needed (read files, search, etc.)
+3. ALWAYS call the send_message API to reply (unless explicitly told not to)
+4. You can send multiple messages if needed
+
+LONG TASKS:
+Before doing something that might take a while (writing code, researching, reading multiple files, etc.), send a quick message to let users know. Otherwise they might think you froze or crashed. Send a quick "gimme a sec..." then do the work, then send your actual response.
+
+ATTACHMENTS:
+When users upload files (images, documents, code, etc.), the check_messages response includes an "attachments" array with file paths:
+  {{"author": "someone", "content": "look at this", "attachments": ["/data/wendy/attachments/msg_123_0_photo.jpg"]}}
+- You CANNOT see attachments without using the Read tool on the file path. The path is just a reference.
+- If a message has an "attachments" array, you MUST call Read on each path to actually see the content.
+- Do NOT describe or comment on files you haven't actually Read - you will hallucinate.
+- Always check for the "attachments" field in message JSON when users seem to be sharing something.
+
+PERSONAL FOLDER:
+You have a personal folder at /data/wendy/{folder}/ where you can save notes or files. This persists between conversations.
+
+SELF-CUSTOMIZATION:
+You can edit /data/wendy/{folder}/CLAUDE.md to customize your own behavior. Anything you write there becomes part of your system instructions on the next message. Use this to remember things, set personal preferences, or adjust how you behave. Changes take effect immediately - no restart needed.
+
+MESSAGE HISTORY DATABASE:
+You have full read access to the message history at /data/wendy.db. Use query_db.py to search messages, check past conversations, or find old content.
+
+Usage:
+  python3 /data/wendy/query_db.py "SELECT * FROM message_history WHERE content LIKE '%keyword%' LIMIT 20"
+  python3 /data/wendy/query_db.py --schema    # Show all tables
+
+Key tables:
+- message_history: Full raw messages (message_id, channel_id, author_nickname, content, timestamp, reactions, attachment_urls)
+  - message_id is the Discord message ID - you can make jump links: https://discord.com/channels/{{guild_id}}/{{channel_id}}/{{message_id}}
+- cached_messages: Recent messages used for LLM context (lighter schema)
+"""
 
 
 def _count_discord_messages_in_tool_result(content: str) -> int:
@@ -83,9 +161,9 @@ class ClaudeCliTextGenerator:
         self.cli_path = self._find_cli_path()
         self.timeout = int(os.getenv("CLAUDE_CLI_TIMEOUT", "300"))
         self._temp_dir: Path | None = None
-        self._temp_files: List[Path] = []
+        self._temp_files: list[Path] = []
 
-    def _load_session_state(self) -> Dict[str, Any]:
+    def _load_session_state(self) -> dict[str, Any]:
         """Load session state from file."""
         if SESSION_STATE_FILE.exists():
             try:
@@ -94,12 +172,12 @@ class ClaudeCliTextGenerator:
                 pass
         return {}
 
-    def _save_session_state(self, state: Dict[str, Any]) -> None:
+    def _save_session_state(self, state: dict[str, Any]) -> None:
         """Save session state to file."""
         SESSION_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         SESSION_STATE_FILE.write_text(json.dumps(state, indent=2))
 
-    def _get_channel_session(self, channel_id: int) -> Dict[str, Any] | None:
+    def _get_channel_session(self, channel_id: int) -> dict[str, Any] | None:
         """Get session info for a channel."""
         state = self._load_session_state()
         return state.get(str(channel_id))
@@ -121,7 +199,7 @@ class ClaudeCliTextGenerator:
         _LOG.info("Created new session %s for channel %d", session_id, channel_id)
         return session_id
 
-    def _update_session_stats(self, channel_id: int, usage: Dict[str, Any]) -> None:
+    def _update_session_stats(self, channel_id: int, usage: dict[str, Any]) -> None:
         """Update session stats after a run."""
         state = self._load_session_state()
         channel_key = str(channel_id)
@@ -217,7 +295,7 @@ class ClaudeCliTextGenerator:
         except Exception as e:
             _LOG.error("Failed to truncate session %s: %s", session_id[:8], e)
 
-    def get_session_stats(self, channel_id: int) -> Dict[str, Any] | None:
+    def get_session_stats(self, channel_id: int) -> dict[str, Any] | None:
         """Get session stats for a channel."""
         return self._get_channel_session(channel_id)
 
@@ -286,7 +364,7 @@ class ClaudeCliTextGenerator:
             self._temp_dir = Path(tempfile.mkdtemp(prefix="claude_cli_"))
         return self._temp_dir
 
-    def _save_images_to_temp(self, images: List[Dict[str, Any]]) -> List[Path]:
+    def _save_images_to_temp(self, images: list[dict[str, Any]]) -> list[Path]:
         """Save base64 images to Wendy's images folder."""
         paths = []
         images_dir = Path("/data/wendy/images")
@@ -316,7 +394,7 @@ class ClaudeCliTextGenerator:
 
         return paths
 
-    def _format_image_references(self, images: List[Dict[str, Any]]) -> str:
+    def _format_image_references(self, images: list[dict[str, Any]]) -> str:
         """Format image references for the prompt."""
         paths = self._save_images_to_temp(images)
         if not paths:
@@ -395,70 +473,7 @@ class ClaudeCliTextGenerator:
 
     def _get_tool_instructions(self, channel_id: int, folder: str = "wendys_folder") -> str:
         """Get instructions for Wendy's API tools."""
-        return f"""
-
----
-REAL-TIME CHANNEL TOOLS (Channel ID: {channel_id})
-
-CRITICAL: You are running in HEADLESS MODE. Your final output is NOT sent to Discord.
-You MUST use the send_message API to respond - this is the ONLY way users will see your messages!
-
-RESPONSE EXPECTATIONS:
-- You should ALMOST ALWAYS respond. Users expect you to participate in conversation.
-- If you don't call send_message, users see NOTHING - it looks like you ignored them.
-- Only skip responding if users EXPLICITLY say they don't want your input (e.g., "wendy stop", "shut up", "go away").
-- In ambiguous situations, neutral chats, or when unsure: RESPOND. Err on the side of engaging.
-- Even a brief acknowledgment ("gotcha!", "nice", "haha") is better than silence.
-
-1. SEND A MESSAGE (REQUIRED to respond):
-   curl -X POST http://localhost:8945/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "your message here"}}'
-
-   With attachment (file must be in /data/wendy/):
-   curl -X POST http://localhost:8945/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "check this out", "attachment": "/data/wendy/uploads/file.png"}}'
-
-   This is the ONLY way to send messages to users. Your final output goes nowhere.
-
-2. CHECK FOR NEW MESSAGES (optional, use before responding):
-   curl -s http://localhost:8945/api/check_messages/{channel_id}
-
-   Shows the last 10 messages to see if anyone sent new messages while you were thinking.
-   Note: Always use -s flag with curl for cleaner output.
-
-WORKFLOW:
-1. Read/process the user's request
-2. Do any work needed (read files, search, etc.)
-3. ALWAYS call the send_message API to reply (unless explicitly told not to)
-4. You can send multiple messages if needed
-
-LONG TASKS:
-Before doing something that might take a while (writing code, researching, reading multiple files, etc.), send a quick message to let users know. Otherwise they might think you froze or crashed. Send a quick "gimme a sec..." then do the work, then send your actual response.
-
-ATTACHMENTS:
-When users upload files (images, documents, code, etc.), the check_messages response includes an "attachments" array with file paths:
-  {{"author": "someone", "content": "look at this", "attachments": ["/data/wendy/attachments/msg_123_0_photo.jpg"]}}
-- You CANNOT see attachments without using the Read tool on the file path. The path is just a reference.
-- If a message has an "attachments" array, you MUST call Read on each path to actually see the content.
-- Do NOT describe or comment on files you haven't actually Read - you will hallucinate.
-- Always check for the "attachments" field in message JSON when users seem to be sharing something.
-
-PERSONAL FOLDER:
-You have a personal folder at /data/wendy/{folder}/ where you can save notes or files. This persists between conversations.
-
-SELF-CUSTOMIZATION:
-You can edit /data/wendy/{folder}/CLAUDE.md to customize your own behavior. Anything you write there becomes part of your system instructions on the next message. Use this to remember things, set personal preferences, or adjust how you behave. Changes take effect immediately - no restart needed.
-
-MESSAGE HISTORY DATABASE:
-You have full read access to the message history at /data/wendy.db. Use query_db.py to search messages, check past conversations, or find old content.
-
-Usage:
-  python3 /data/wendy/query_db.py "SELECT * FROM message_history WHERE content LIKE '%keyword%' LIMIT 20"
-  python3 /data/wendy/query_db.py --schema    # Show all tables
-
-Key tables:
-- message_history: Full raw messages (message_id, channel_id, author_nickname, content, timestamp, reactions, attachment_urls)
-  - message_id is the Discord message ID - you can make jump links: https://discord.com/channels/{{guild_id}}/{{channel_id}}/{{message_id}}
-- cached_messages: Recent messages used for LLM context (lighter schema)
-"""
+        return TOOL_INSTRUCTIONS_TEMPLATE.format(channel_id=channel_id, folder=folder)
 
     def _parse_stream_json(self, output: str, channel_id: int | None = None) -> str:
         """Parse stream-json output from Claude CLI and save debug log."""
@@ -482,7 +497,7 @@ Key tables:
         self._save_debug_log(events, channel_id)
         return result_text
 
-    def _save_debug_log(self, events: List[Dict], channel_id: int | None) -> None:
+    def _save_debug_log(self, events: list[dict], channel_id: int | None) -> None:
         """Save CLI events to debug log file."""
         try:
             debug_dir = Path("/data/wendy/debug_logs")
@@ -509,7 +524,7 @@ Key tables:
         except Exception as e:
             _LOG.error("Failed to save debug log: %s", e)
 
-    def _summarize_events(self, events: List[Dict]) -> Dict:
+    def _summarize_events(self, events: list[dict]) -> dict:
         """Extract summary info from events for quick debugging."""
         summary = {
             "tool_uses": [],
@@ -542,7 +557,7 @@ Key tables:
 
         return summary
 
-    def _append_to_stream_log(self, event: Dict, channel_id: int | None) -> None:
+    def _append_to_stream_log(self, event: dict, channel_id: int | None) -> None:
         """Append a single event to the rolling stream log file."""
         try:
             STREAM_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -574,6 +589,47 @@ Key tables:
                 _LOG.info("Trimmed stream log from %d to %d lines", len(lines), MAX_STREAM_LOG_LINES)
         except Exception as e:
             _LOG.error("Failed to trim stream log: %s", e)
+
+    def _build_system_prompt(self, channel_id: int, folder: str, mode: str) -> str:
+        """Build the complete system prompt for a channel."""
+        prompt = self._get_base_system_prompt(folder, mode)
+        prompt += self._get_wendys_notes(folder)
+        prompt += self._get_tool_instructions(channel_id, folder)
+        if mode == "full":
+            prompt += self._get_active_beads_warning()
+        return prompt
+
+    def _build_cli_command(
+        self,
+        session_id: str,
+        is_new_session: bool,
+        system_prompt: str,
+        channel_config: dict,
+    ) -> list[str]:
+        """Build the Claude CLI command with all flags."""
+        cmd = [
+            self.cli_path,
+            "-p",
+            "--output-format", "stream-json",
+            "--verbose",
+            "--model", self.model,
+        ]
+
+        if is_new_session:
+            cmd.extend(["--session-id", session_id])
+        else:
+            cmd.extend(["--resume", session_id])
+
+        if system_prompt:
+            cmd.extend(["--append-system-prompt", system_prompt])
+
+        allowed_tools, disallowed_tools = self._get_permissions_for_channel(channel_config)
+        cmd.extend([
+            "--allowedTools", allowed_tools,
+            "--disallowedTools", disallowed_tools,
+        ])
+
+        return cmd
 
     def _get_permissions_for_channel(self, channel_config: dict) -> tuple[str, str]:
         """Get allowedTools and disallowedTools based on channel mode.
@@ -633,53 +689,18 @@ Key tables:
         else:
             session_id = session_info["session_id"]
 
-        nudge_prompt = f"<new messages - you MUST call curl -s http://localhost:8945/api/check_messages/{channel_id} before any other action. Do not assume what the messages contain.>"
-
         folder = channel_config.get("folder", "wendys_folder")
         mode = channel_config.get("mode", "full")
 
-        system_prompt = self._get_base_system_prompt(folder, mode)
-        system_prompt += self._get_wendys_notes(folder)
-        system_prompt += self._get_tool_instructions(channel_id, folder)
-        # Only include beads warning for full mode (coding channel)
-        if mode == "full":
-            system_prompt += self._get_active_beads_warning()
+        # Build system prompt and CLI command
+        system_prompt = self._build_system_prompt(channel_id, folder, mode)
+        cmd = self._build_cli_command(session_id, is_new_session, system_prompt, channel_config)
 
-        cmd = [
-            self.cli_path,
-            "-p",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--model",
-            self.model,
-        ]
+        session_action = "starting new" if is_new_session else "resuming"
+        _LOG.info("ClaudeCLI: %s session %s for channel %d (model=%s)",
+                  session_action, session_id[:8], channel_id, self.model)
 
-        if not is_new_session:
-            cmd.extend(["--resume", session_id])
-            _LOG.info("ClaudeCLI: resuming session %s for channel %d", session_id, channel_id)
-        else:
-            cmd.extend(["--session-id", session_id])
-            _LOG.info("ClaudeCLI: starting new session %s for channel %d", session_id, channel_id)
-
-        if system_prompt:
-            cmd.extend(["--append-system-prompt", system_prompt])
-
-        # Get permissions based on channel mode
-        allowed_tools, disallowed_tools = self._get_permissions_for_channel(channel_config)
-        cmd.extend([
-            "--allowedTools",
-            allowed_tools,
-            "--disallowedTools",
-            disallowed_tools,
-        ])
-
-        _LOG.info(
-            "ClaudeCLI: model=%s, session=%s, is_new=%s",
-            self.model,
-            session_id[:8],
-            is_new_session,
-        )
+        nudge_prompt = f"<new messages - you MUST call curl -s http://localhost:8945/api/check_messages/{channel_id} before any other action. Do not assume what the messages contain.>"
 
         wendy_dir = Path("/data/wendy")
         wendy_dir.mkdir(parents=True, exist_ok=True)
@@ -688,18 +709,7 @@ Key tables:
 
         proc = None
         try:
-            sensitive_vars = {
-                "DISCORD_TOKEN",
-                "WEBHOOK_URL",
-                "ANTHROPIC_API_KEY",
-                "OPENAI_API_KEY",
-                "REPLICATE_API_TOKEN",
-                "GITHUB_TOKEN",
-                "GH_TOKEN",
-                "WENDY_DEPLOY_TOKEN",
-                "WENDY_GAMES_TOKEN",
-            }
-            cli_env = {k: v for k, v in os.environ.items() if k not in sensitive_vars}
+            cli_env = {k: v for k, v in os.environ.items() if k not in SENSITIVE_ENV_VARS}
 
             # Set BEADS_DIR for full mode so bd command can find .beads
             if mode == "full":
