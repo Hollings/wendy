@@ -62,8 +62,16 @@ BEADS_DIR: Path = WORKING_DIR / "coding"
 CURRENT_SESSION_FILE: Path = BEADS_DIR / ".current_session"
 """File containing Wendy's current session ID for forking."""
 
-SESSION_DIR: Path = Path("/root/.claude/projects/-data-wendy")
-"""Directory where Claude CLI session JSONL files are stored."""
+SESSION_DIR: Path = Path(os.getenv(
+    "CLAUDE_SESSION_DIR",
+    "/root/.claude/projects/-data-wendy"
+))
+"""Directory where Claude CLI session JSONL files are stored.
+
+By default, Claude CLI stores sessions in ~/.claude/projects/<encoded-path>/
+where the working directory path is encoded (e.g., /data/wendy -> -data-wendy).
+Override with CLAUDE_SESSION_DIR environment variable if needed.
+"""
 
 LOG_DIR: Path = WORKING_DIR / "orchestrator_logs"
 """Directory for agent execution log files."""
@@ -108,8 +116,7 @@ USAGE_FORCE_CHECK_FILE: Path = WORKING_DIR / "usage_force_check"
 USAGE_SCRIPT_PATH: Path = Path("/app/scripts/get_usage.sh")
 """Path to shell script that fetches Claude Code usage statistics."""
 
-AGENT_PROMPT_TEMPLATE: str = """
-================================================================================
+AGENT_PROMPT_TEMPLATE: str = """================================================================================
 FORKED SESSION - BACKGROUND AGENT MODE
 ================================================================================
 
@@ -480,28 +487,22 @@ class Orchestrator:
             # when running as root. Use --allowedTools to whitelist required tools instead.
             # -p = print mode (non-interactive), prompt is positional arg
             # --verbose required for stream-json output
+            cmd = ["claude"]
+
+            # Add session forking if available
             if fork_session_id:
-                # Fork from Wendy's session - agent inherits her context
-                cmd = [
-                    "claude",
-                    "--resume", fork_session_id,
-                    "--fork-session",
-                    "-p", prompt,
-                    "--max-turns", "9999",
-                    "--allowedTools", "Read", "Write", "Edit", "Bash", "Glob", "Grep", "TodoWrite",
-                    "--output-format", "stream-json",
-                    "--verbose"
-                ]
+                cmd.extend(["--resume", fork_session_id, "--fork-session"])
             else:
-                # Fallback: fresh agent (backwards compatible)
-                cmd = [
-                    "claude",
-                    "-p", prompt,
-                    "--max-turns", "9999",
-                    "--allowedTools", "Read", "Write", "Edit", "Bash", "Glob", "Grep", "TodoWrite",
-                    "--output-format", "stream-json",
-                    "--verbose"
-                ]
+                log.info(f"No session to fork from, spawning fresh agent for task {task_id}")
+
+            # Common arguments for all agents
+            cmd.extend([
+                "-p", prompt,
+                "--max-turns", "9999",
+                "--allowedTools", "Read", "Write", "Edit", "Bash", "Glob", "Grep", "TodoWrite",
+                "--output-format", "stream-json",
+                "--verbose"
+            ])
 
             # Add agent system prompt if available
             if AGENT_SYSTEM_PROMPT_FILE.exists():

@@ -44,25 +44,7 @@ Include:
 bd create "make it better"
 ```
 
-### Old way (before forking - overly verbose)
-```
-bd create "Improve snake game performance in /data/wendy/wendys_folder/snake-game/
-
-Current issue: The game feels sluggish, especially when the snake gets long.
-
-Goals:
-- Smooth 60fps gameplay
-- No lag when snake has 50+ segments
-- Keep the same visual style
-
-The game uses vanilla JS with canvas. Look at public/game.js for the main loop.
-Consider: requestAnimationFrame timing, efficient collision detection,
-maybe only redraw changed segments instead of full redraws.
-
-Test by playing the game and checking that movement feels responsive."
-```
-
-### New way (with forking - agent already has context)
+### Good task (leverages inherited context)
 ```
 bd create "Fix the performance issue in the snake game we discussed.
 

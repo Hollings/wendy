@@ -808,10 +808,14 @@ class ClaudeCliTextGenerator:
             channel_cwd = wendy_dir / folder
 
             # Write session ID to .current_session for orchestrator to fork
+            # Use atomic write to prevent race conditions
             if folder == "coding":
                 current_session_file = wendy_dir / "coding" / ".current_session"
                 try:
-                    current_session_file.write_text(session_id)
+                    # Write to temp file then atomically rename
+                    temp_file = current_session_file.with_suffix(".tmp")
+                    temp_file.write_text(session_id)
+                    temp_file.replace(current_session_file)
                     _LOG.debug("Wrote session ID %s to %s", session_id[:8], current_session_file)
                 except Exception as e:
                     _LOG.warning("Failed to write current session file: %s", e)
