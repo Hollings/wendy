@@ -64,12 +64,12 @@ CURRENT_SESSION_FILE: Path = BEADS_DIR / ".current_session"
 
 SESSION_DIR: Path = Path(os.getenv(
     "CLAUDE_SESSION_DIR",
-    "/root/.claude/projects/-data-wendy"
+    "/root/.claude/projects/-data-wendy-coding"
 ))
 """Directory where Claude CLI session JSONL files are stored.
 
 By default, Claude CLI stores sessions in ~/.claude/projects/<encoded-path>/
-where the working directory path is encoded (e.g., /data/wendy -> -data-wendy).
+where the working directory path is encoded (e.g., /data/wendy/coding -> -data-wendy-coding).
 Override with CLAUDE_SESSION_DIR environment variable if needed.
 """
 
