@@ -899,24 +899,34 @@ class Orchestrator:
         Handles the case where someone runs `bd close <task_id>` manually
         while the agent is still running. Terminates the orphaned agent
         and records it as cancelled.
+
+        Note: If the agent process has already exited, we skip killing it
+        and let the normal completion flow mark it as successful.
         """
         if not self.active_agents:
             return
 
         to_kill = []
         for task_id in self.active_agents:
+            agent = self.active_agents[task_id]
+
+            # Check if agent process has already finished
+            if agent.process.poll() is not None:
+                # Process already exited, let normal completion flow handle it
+                continue
+
             task = self.get_task_details(task_id)
             if task and task.get("status") == "closed":
                 to_kill.append(task_id)
 
         for task_id in to_kill:
             agent = self.active_agents[task_id]
-            log.info(f"Task {task_id} was closed via 'bd close', killing agent")
+            log.info(f"Task {task_id} was closed externally, killing agent")
 
-            self._terminate_agent(agent, "KILLED - task closed via 'bd close'")
+            self._terminate_agent(agent, "KILLED - task closed externally")
 
             duration = datetime.now() - agent.started_at
-            self.notify_completion(task_id, agent.title, False, f"{duration} (CLOSED)")
+            self.notify_completion(task_id, agent.title, False, f"{duration} (CANCELLED)")
 
             del self.active_agents[task_id]
 
