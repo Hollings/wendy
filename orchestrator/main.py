@@ -461,7 +461,7 @@ class Orchestrator:
             with open(log_file, "w") as f:
                 f.write(f"Task: {task_id} - {title}\n")
                 f.write(f"Priority: P{priority}\n")
-                f.write(f"Model: {model or 'default'}\n")
+                f.write(f"Model: {model or 'opus (default)'}\n")
                 f.write(f"Started: {datetime.now().isoformat()}\n")
                 f.write(f"Prompt:\n{prompt}\n")
                 f.write("=" * 60 + "\n\n")
@@ -513,9 +513,9 @@ class Orchestrator:
                 except Exception as e:
                     log.warning(f"Failed to read agent system prompt: {e}")
 
-            # Add model if specified
-            if model:
-                cmd.extend(["--model", model])
+            # Add model (default to opus)
+            model = model or "opus"
+            cmd.extend(["--model", model])
 
             # Spawn Claude Code CLI
             with open(log_file, "a") as f:

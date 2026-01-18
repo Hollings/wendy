@@ -5,7 +5,7 @@ Role-specific instructions are provided in the task prompt.
 
 ## Environment
 
-- Working directory: /data/wendy/coding/wendys_folder/
+- Working directory: /data/wendy/coding/
 - Full file system access within this directory
 
 ## Project Templates

@@ -73,10 +73,10 @@ If in doubt, add more context - but leverage what the agent already knows.
 ## Commands
 
 ```bash
-bd create "description"                        # Create a task (default priority P2)
+bd create "description"                        # Create a task (default priority P2, model Opus)
 bd create "description" -p 1                   # Higher priority (P0=highest, P4=lowest)
-bd create "description" -l model:opus          # Use Opus instead of Haiku
-bd create "description" -p 0 -l model:opus     # Urgent + Opus
+bd create "description" -l model:haiku         # Use Haiku for simple tasks (faster/cheaper)
+bd create "description" -p 0                   # Urgent task with Opus
 ```
 
 ### Priority Levels
@@ -87,10 +87,10 @@ bd create "description" -p 0 -l model:opus     # Urgent + Opus
 - **P4**: Backlog/whenever
 
 ### Model Selection
-By default, tasks run with **Haiku** (fast and cheap). Add `-l model:opus` for complex work that needs more capability. Use Opus for:
-- Architectural decisions
-- Complex debugging
-- Work that failed with Haiku
+By default, tasks run with **Opus** (most capable). Add `-l model:haiku` for simple tasks that don't need full capability (faster and cheaper). Use Haiku for:
+- Simple file edits
+- Straightforward bug fixes
+- Tasks with clear, narrow scope
 
 You rarely need `bd list` or `bd show` - just create tasks and wait for notifications.
 
@@ -111,8 +111,8 @@ You rarely need `bd list` or `bd show` - just create tasks and wait for notifica
 ## Important Notes
 
 - **Agents fork from YOUR session** - they have your context up to the moment you create the task
-- Default model is Haiku (use `-l model:opus` for complex work)
-- Agents work in `/data/wendy/coding/wendys_folder/`
+- Default model is Opus (use `-l model:haiku` for simple tasks)
+- Agents work in `/data/wendy/coding/`
 - Agents CANNOT deploy or send Discord messages - you do that after reviewing
 - One task runs at a time (queued if busy)
 - Agents use `bd comment <task_id> "notes"` to leave context about their work
