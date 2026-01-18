@@ -168,7 +168,7 @@ class ClaudeCliTextGenerator:
         if SESSION_STATE_FILE.exists():
             try:
                 return json.loads(SESSION_STATE_FILE.read_text())
-            except (json.JSONDecodeError, IOError):
+            except (OSError, json.JSONDecodeError):
                 pass
         return {}
 
@@ -226,7 +226,7 @@ class ClaudeCliTextGenerator:
         try:
             # Read all messages
             messages = []
-            with open(session_file, "r") as f:
+            with open(session_file) as f:
                 for line in f:
                     line = line.strip()
                     if line:
@@ -580,7 +580,7 @@ class ClaudeCliTextGenerator:
             if not STREAM_LOG_FILE.exists():
                 return
 
-            with open(STREAM_LOG_FILE, "r") as f:
+            with open(STREAM_LOG_FILE) as f:
                 lines = f.readlines()
 
             if len(lines) > MAX_STREAM_LOG_LINES:
@@ -757,7 +757,7 @@ class ClaudeCliTextGenerator:
 
             try:
                 await asyncio.wait_for(read_stream_with_timeout(), timeout=self.timeout)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 _LOG.error("Claude CLI stdout read timed out after %ds", self.timeout)
                 raise
 
@@ -796,7 +796,7 @@ class ClaudeCliTextGenerator:
             _LOG.info("ClaudeCLI: response_len=%d, events_streamed=%d", len(result_text), len(events))
             return ""
 
-        except asyncio.TimeoutError as e:
+        except TimeoutError as e:
             _LOG.error("Claude CLI timed out after %ds", self.timeout)
             if proc:
                 try:

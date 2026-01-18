@@ -5,10 +5,9 @@ import json
 import logging
 import sqlite3
 from pathlib import Path
-from typing import Set
 
 from fastapi import WebSocket
-from watchfiles import awatch, Change
+from watchfiles import Change, awatch
 
 _LOG = logging.getLogger(__name__)
 
@@ -20,7 +19,7 @@ MAX_HISTORY = 50
 MAX_CLIENTS = 100
 CONTEXT_WINDOW = 200000  # Claude's context window
 
-connected_clients: Set[WebSocket] = set()
+connected_clients: set[WebSocket] = set()
 _watcher_task: asyncio.Task | None = None
 
 # Track latest stats from stream events
@@ -81,7 +80,7 @@ async def broadcast(message: str) -> None:
     if not connected_clients:
         return
 
-    dead: Set[WebSocket] = set()
+    dead: set[WebSocket] = set()
     tasks = []
 
     for ws in connected_clients:
@@ -138,14 +137,14 @@ async def tail_stream() -> None:
                             try:
                                 pos = STREAM_FILE.stat().st_size
                                 _LOG.info("After truncation settle, pos now %d", pos)
-                            except:
+                            except OSError:
                                 pass
                             continue
 
                         if current_size <= pos:
                             continue
 
-                        with open(STREAM_FILE, "r") as f:
+                        with open(STREAM_FILE) as f:
                             f.seek(pos)
                             new_lines = f.readlines()
                             pos = f.tell()
@@ -204,7 +203,7 @@ def get_stats() -> dict:
         if SESSION_STATE_FILE.exists():
             state = json.loads(SESSION_STATE_FILE.read_text())
             # Get first (and usually only) channel's stats
-            for channel_id, session in state.items():
+            for _channel_id, session in state.items():
                 stats["session_messages"] = session.get("message_count", 0)
                 stats["session_id"] = session.get("session_id", "")[:8]
                 stats["total_input"] = session.get("total_input_tokens", 0)
@@ -281,7 +280,7 @@ def get_subagents_dir() -> Path | None:
         if not SESSION_STATE_FILE.exists():
             return None
         state = json.loads(SESSION_STATE_FILE.read_text())
-        for channel_id, session in state.items():
+        for _channel_id, session in state.items():
             session_id = session.get("session_id")
             if session_id:
                 subagents_dir = CLAUDE_DIR / "projects" / "-data-wendy" / session_id / "subagents"
@@ -309,7 +308,7 @@ def list_agents() -> list[dict]:
             slug = None
             task = None
             try:
-                with open(f, "r") as fp:
+                with open(f) as fp:
                     first_line = fp.readline()
                     if first_line:
                         data = json.loads(first_line)
@@ -320,7 +319,7 @@ def list_agents() -> list[dict]:
                         if isinstance(content, str) and content:
                             # Get first line of prompt, truncated
                             task = content.split("\n")[0][:60]
-            except:
+            except (OSError, json.JSONDecodeError, KeyError):
                 pass
 
             agents.append({

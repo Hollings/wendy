@@ -1,6 +1,7 @@
 """Unit tests for channel configuration parsing."""
 
 import json
+
 import pytest
 
 

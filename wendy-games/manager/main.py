@@ -14,7 +14,6 @@ import shutil
 import subprocess
 import tarfile
 from pathlib import Path
-from typing import Optional
 
 import httpx
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket
@@ -73,7 +72,7 @@ def allocate_port(game_name: str) -> int:
     raise HTTPException(status_code=503, detail="No available ports")
 
 
-def verify_token(authorization: Optional[str]) -> None:
+def verify_token(authorization: str | None) -> None:
     """Verify the deploy token."""
     if not DEPLOY_TOKEN:
         raise HTTPException(status_code=500, detail="Server not configured")
@@ -139,7 +138,7 @@ async def health():
 async def deploy_game(
     name: str = Form(...),
     files: UploadFile = File(...),
-    authorization: Optional[str] = Header(None),
+    authorization: str | None = Header(None),
 ):
     """Deploy a game server."""
     verify_token(authorization)
@@ -230,7 +229,7 @@ async def deploy_game(
 
 
 @app.get("/api/games")
-async def list_games(authorization: Optional[str] = Header(None)):
+async def list_games(authorization: str | None = Header(None)):
     """List all deployed games."""
     verify_token(authorization)
 
@@ -251,7 +250,7 @@ async def list_games(authorization: Optional[str] = Header(None)):
 
 
 @app.get("/api/games/{name}")
-async def get_game(name: str, authorization: Optional[str] = Header(None)):
+async def get_game(name: str, authorization: str | None = Header(None)):
     """Get game status."""
     verify_token(authorization)
     validate_game_name(name)
@@ -273,7 +272,7 @@ async def get_game(name: str, authorization: Optional[str] = Header(None)):
 
 
 @app.post("/api/games/{name}/restart")
-async def restart_game(name: str, authorization: Optional[str] = Header(None)):
+async def restart_game(name: str, authorization: str | None = Header(None)):
     """Restart a game server."""
     verify_token(authorization)
     validate_game_name(name)
@@ -289,7 +288,7 @@ async def restart_game(name: str, authorization: Optional[str] = Header(None)):
 
 
 @app.delete("/api/games/{name}")
-async def delete_game(name: str, authorization: Optional[str] = Header(None)):
+async def delete_game(name: str, authorization: str | None = Header(None)):
     """Delete a game."""
     verify_token(authorization)
     validate_game_name(name)
@@ -319,7 +318,7 @@ async def delete_game(name: str, authorization: Optional[str] = Header(None)):
 async def get_logs(
     name: str,
     lines: int = 50,
-    authorization: Optional[str] = Header(None)
+    authorization: str | None = Header(None)
 ):
     """Get game server logs."""
     verify_token(authorization)
@@ -355,6 +354,7 @@ def get_game_port(name: str) -> int:
 async def proxy_websocket(websocket: WebSocket, name: str):
     """Proxy WebSocket connections to game containers."""
     import asyncio
+
     import websockets
 
     get_game_port(name)  # Validates game exists

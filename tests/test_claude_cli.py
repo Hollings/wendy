@@ -1,12 +1,11 @@
 """Unit tests for bot/claude_cli.py functions."""
 
 import json
-import pytest
 
 from bot.claude_cli import (
-    _count_discord_messages_in_tool_result,
-    _count_discord_messages,
     ClaudeCliTextGenerator,
+    _count_discord_messages,
+    _count_discord_messages_in_tool_result,
 )
 
 

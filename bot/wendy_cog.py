@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sqlite3
-import time
 from pathlib import Path
-from typing import Any
-
-import json
 
 import discord
 from discord.ext import commands, tasks
 
-from .claude_cli import ClaudeCliTextGenerator, ClaudeCliError
+from .claude_cli import ClaudeCliError, ClaudeCliTextGenerator
 
 _LOG = logging.getLogger(__name__)
 
@@ -177,7 +174,6 @@ class WendyCog(commands.Cog):
         for i, attachment in enumerate(message.attachments):
             try:
                 # Create filename with message ID for lookup
-                ext = Path(attachment.filename).suffix or ".bin"
                 filename = f"msg_{message.id}_{i}_{attachment.filename}"
                 filepath = ATTACHMENTS_DIR / filename
 

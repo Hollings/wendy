@@ -1,7 +1,6 @@
 """Unit tests for bot/wendy_outbox.py functions."""
 
 import re
-import pytest
 
 
 def extract_outbox_timestamp(filename: str) -> int | None:

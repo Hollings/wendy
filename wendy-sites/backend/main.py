@@ -10,15 +10,13 @@ import re
 import shutil
 import tarfile
 from pathlib import Path
-from typing import Optional
-
-from fastapi import FastAPI, File, Form, HTTPException, Header, UploadFile, WebSocket, Query
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from pydantic import BaseModel
-from starlette.websockets import WebSocketDisconnect
 
 import auth
 import brain
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile, WebSocket
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from pydantic import BaseModel
+from starlette.websockets import WebSocketDisconnect
 
 app = FastAPI(title="Wendy Sites", version="2.0.0")
 
@@ -158,7 +156,7 @@ async def brain_beads():
                     "created": data.get("created"),
                     "labels": data.get("labels", []),
                 })
-        except IOError:
+        except OSError:
             pass
 
     # Sort: in_progress first, then open, then closed
@@ -204,7 +202,7 @@ async def brain_task_log(task_id: str, offset: int = 0):
             "offset": new_offset,
             "complete": complete,
         }
-    except IOError:
+    except OSError:
         return {"task_id": task_id, "log": "", "offset": 0, "complete": False}
 
 
@@ -245,7 +243,7 @@ async def brain_websocket(websocket: WebSocket, token: str = Query("")):
             try:
                 # Wait for any message (keepalive)
                 await asyncio.wait_for(websocket.receive_text(), timeout=60)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Send ping to check if client is alive
                 await websocket.send_text('{"type":"ping"}')
 
@@ -272,7 +270,7 @@ async def health():
 
 # ==================== Site Deployment ====================
 
-def verify_deploy_token(authorization: Optional[str]) -> None:
+def verify_deploy_token(authorization: str | None) -> None:
     """Verify the deploy token."""
     if not DEPLOY_TOKEN:
         raise HTTPException(status_code=500, detail="Server not configured with deploy token")
@@ -332,7 +330,7 @@ def safe_extract_tarball(tar_path: Path, dest_dir: Path) -> None:
 async def deploy_site(
     name: str = Form(...),
     files: UploadFile = File(...),
-    authorization: Optional[str] = Header(None),
+    authorization: str | None = Header(None),
 ):
     """Deploy a site from a tarball."""
     verify_deploy_token(authorization)
@@ -386,7 +384,7 @@ async def deploy_site(
 
 
 @app.get("/api/sites")
-async def list_sites(authorization: Optional[str] = Header(None)):
+async def list_sites(authorization: str | None = Header(None)):
     """List all deployed sites."""
     verify_deploy_token(authorization)
 
@@ -402,7 +400,7 @@ async def list_sites(authorization: Optional[str] = Header(None)):
 
 
 @app.delete("/api/sites/{name}")
-async def delete_site(name: str, authorization: Optional[str] = Header(None)):
+async def delete_site(name: str, authorization: str | None = Header(None)):
     """Delete a deployed site."""
     verify_deploy_token(authorization)
     validate_site_name(name)

@@ -1,7 +1,6 @@
 """Unit tests for bot/conversation.py dataclasses."""
 
-import pytest
-from bot.conversation import ImageAttachment, ConversationTurn, ModelTurn
+from bot.conversation import ConversationTurn, ImageAttachment, ModelTurn
 
 
 class TestImageAttachment:

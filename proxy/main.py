@@ -10,7 +10,6 @@ import os
 import sqlite3
 import time
 from pathlib import Path
-from typing import Optional
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -28,9 +27,9 @@ TASK_COMPLETIONS_FILE = Path("/data/wendy/task_completions.json")
 
 class SendMessageRequest(BaseModel):
     channel_id: str
-    content: Optional[str] = None
-    message: Optional[str] = None  # Legacy field name
-    attachment: Optional[str] = None
+    content: str | None = None
+    message: str | None = None  # Legacy field name
+    attachment: str | None = None
 
 
 class SendMessageResponse(BaseModel):
@@ -49,7 +48,7 @@ class MessageInfo(BaseModel):
     author: str
     content: str
     timestamp: int | str
-    attachments: Optional[list[str]] = None
+    attachments: list[str] | None = None
 
 
 class TaskUpdate(BaseModel):
@@ -67,14 +66,14 @@ class CheckMessagesResponse(BaseModel):
 
 # ==================== State Management ====================
 
-def get_last_seen(channel_id: int) -> Optional[int]:
+def get_last_seen(channel_id: int) -> int | None:
     """Get the last seen message_id for a channel."""
     if not STATE_FILE.exists():
         return None
     try:
         state = json.loads(STATE_FILE.read_text())
         return state.get("last_seen", {}).get(str(channel_id))
-    except (json.JSONDecodeError, IOError):
+    except (OSError, json.JSONDecodeError):
         return None
 
 
@@ -84,7 +83,7 @@ def update_last_seen(channel_id: int, message_id: int) -> None:
     if STATE_FILE.exists():
         try:
             state = json.loads(STATE_FILE.read_text())
-        except (json.JSONDecodeError, IOError):
+        except (OSError, json.JSONDecodeError):
             state = {}
 
     if "last_seen" not in state:
@@ -239,7 +238,7 @@ async def send_message(request: SendMessageRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/api/check_messages/{channel_id}")
@@ -400,10 +399,10 @@ async def get_usage():
             message=message
         )
 
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail="Failed to parse usage data")
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail="Failed to parse usage data") from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.post("/api/usage/refresh")
@@ -417,7 +416,7 @@ async def refresh_usage():
         USAGE_FORCE_CHECK_FILE.touch()
         return {"success": True, "message": "Usage refresh requested. Check back in ~30 seconds."}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ==================== Site Deployment ====================
@@ -430,7 +429,7 @@ WENDY_GAMES_TOKEN = os.getenv("WENDY_GAMES_TOKEN", "")
 
 class DeploySiteResponse(BaseModel):
     success: bool
-    url: Optional[str] = None
+    url: str | None = None
     message: str
 
 
@@ -480,20 +479,20 @@ async def deploy_site(
         raise HTTPException(
             status_code=502,
             detail=f"Failed to connect to wendy-sites service: {str(e)}"
-        )
+        ) from e
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ==================== Game Deployment ====================
 
 class DeployGameResponse(BaseModel):
     success: bool
-    url: Optional[str] = None
-    ws: Optional[str] = None
-    port: Optional[int] = None
+    url: str | None = None
+    ws: str | None = None
+    port: int | None = None
     message: str
 
 
@@ -568,11 +567,11 @@ async def deploy_game(
         raise HTTPException(
             status_code=502,
             detail=f"Failed to connect to wendy-games service: {str(e)}"
-        )
+        ) from e
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 if __name__ == "__main__":

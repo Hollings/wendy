@@ -11,10 +11,10 @@ import os
 import subprocess
 import sys
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Configuration
@@ -313,7 +313,7 @@ class Orchestrator:
             if completions_file.exists():
                 try:
                     completions = json.loads(completions_file.read_text())
-                except (json.JSONDecodeError, IOError):
+                except (OSError, json.JSONDecodeError):
                     completions = []
 
             # Add new completion (keep last 50)
@@ -434,7 +434,7 @@ class Orchestrator:
         if USAGE_STATE_FILE.exists():
             try:
                 return json.loads(USAGE_STATE_FILE.read_text())
-            except (json.JSONDecodeError, IOError):
+            except (OSError, json.JSONDecodeError):
                 pass
         return {"last_notified_week_all": 0, "last_notified_week_sonnet": 0}
 
@@ -586,7 +586,7 @@ class Orchestrator:
             else:
                 CANCEL_FILE.unlink()
 
-        except (json.JSONDecodeError, IOError) as e:
+        except (OSError, json.JSONDecodeError) as e:
             log.debug(f"Cancel file error: {e}")
 
     def check_closed_tasks(self):
@@ -595,7 +595,7 @@ class Orchestrator:
             return
 
         to_kill = []
-        for task_id, agent in self.active_agents.items():
+        for task_id in self.active_agents:
             task = self.get_task_details(task_id)
             if task and task.get("status") == "closed":
                 to_kill.append(task_id)
