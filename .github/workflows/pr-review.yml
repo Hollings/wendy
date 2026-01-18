@@ -50,8 +50,8 @@ jobs:
 
           cat /tmp/pr_diff.txt >> /tmp/review_prompt.txt
 
-          # Run Claude CLI in non-interactive mode
-          claude -p --output-format text "$(cat /tmp/review_prompt.txt)" > /tmp/review_output.txt 2>&1 || true
+          # Run Claude CLI in non-interactive mode with Opus
+          claude -p --model opus --output-format text "$(cat /tmp/review_prompt.txt)" > /tmp/review_output.txt 2>&1 || true
 
           # Save output for the comment step
           echo "review<<EOF" >> $GITHUB_OUTPUT
