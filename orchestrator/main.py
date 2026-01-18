@@ -16,8 +16,6 @@ import urllib.error
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from threading import Thread
-from typing import Optional
 
 # Configuration
 CONCURRENCY = int(os.getenv("ORCHESTRATOR_CONCURRENCY", "1"))
@@ -39,6 +37,26 @@ USAGE_STATE_FILE = WORKING_DIR / "usage_state.json"
 USAGE_DATA_FILE = WORKING_DIR / "usage_data.json"  # Latest usage for proxy to read
 USAGE_FORCE_CHECK_FILE = WORKING_DIR / "usage_force_check"  # Trigger immediate check
 USAGE_SCRIPT_PATH = Path("/app/scripts/get_usage.sh")
+
+# Agent prompt template - {task_id}, {title}, {description} are substituted
+AGENT_PROMPT_TEMPLATE = """You have been assigned a task from the work queue.
+
+Task ID: {task_id}
+Title: {title}
+
+Description:
+{description}
+
+Instructions:
+1. Complete this task thoroughly
+2. Work in /data/wendy/coding/ unless the task specifies otherwise
+3. Test your changes locally if applicable
+4. When done, summarize what you accomplished
+
+IMPORTANT: Do NOT deploy anything. Your job is to write the code only.
+Wendy will review your work and handle deployment separately.
+
+Begin working on this task now."""
 
 # Logging setup
 logging.basicConfig(
@@ -67,6 +85,44 @@ class Orchestrator:
         self.concurrency = CONCURRENCY
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         self.last_usage_check = 0.0  # timestamp of last usage check
+
+    def _send_discord_message(self, channel: str, content: str) -> bool:
+        """Send a message to Discord via the proxy API."""
+        try:
+            data = json.dumps({
+                "channel_id": channel,
+                "content": content
+            }).encode("utf-8")
+
+            req = urllib.request.Request(
+                f"{PROXY_URL}/api/send_message",
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status == 200
+
+        except urllib.error.URLError as e:
+            log.warning(f"Failed to send Discord message: {e}")
+            return False
+        except Exception as e:
+            log.error(f"Discord message error: {e}")
+            return False
+
+    def _terminate_agent(self, agent: RunningAgent, reason: str) -> None:
+        """Terminate an agent process and write to its log file."""
+        try:
+            agent.process.terminate()
+            agent.process.wait(timeout=5)
+        except Exception:
+            agent.process.kill()
+
+        with open(agent.log_file, "a") as f:
+            f.write("\n" + "=" * 60 + "\n")
+            f.write(f"{reason}\n")
+            f.write(f"Completed: {datetime.now().isoformat()}\n")
 
     def get_ready_tasks(self) -> list[dict]:
         """Get list of ready, unassigned tasks from beads, sorted by priority."""
@@ -129,7 +185,7 @@ class Orchestrator:
             log.error(f"Failed to complete task {task_id}: {e}")
             return False
 
-    def get_task_details(self, task_id: str) -> Optional[dict]:
+    def get_task_details(self, task_id: str) -> dict | None:
         """Get full task details."""
         try:
             result = subprocess.run(
@@ -149,14 +205,14 @@ class Orchestrator:
             log.debug(f"Failed to get task details: {e}")
         return None
 
-    def parse_model_from_labels(self, labels: list) -> Optional[str]:
+    def parse_model_from_labels(self, labels: list) -> str | None:
         """Extract model from labels like 'model:opus' -> 'opus'."""
         for label in labels or []:
             if label.startswith("model:"):
                 return label.split(":", 1)[1]
         return None
 
-    def spawn_agent(self, task: dict) -> Optional[RunningAgent]:
+    def spawn_agent(self, task: dict) -> RunningAgent | None:
         """Spawn a Claude Code agent to work on a task."""
         task_id = task.get("id", "unknown")
         title = task.get("title", "Untitled task")
@@ -174,24 +230,11 @@ class Orchestrator:
         model = self.parse_model_from_labels(labels)
 
         # Build the prompt for the agent
-        prompt = f"""You have been assigned a task from the work queue.
-
-Task ID: {task_id}
-Title: {title}
-
-Description:
-{description}
-
-Instructions:
-1. Complete this task thoroughly
-2. Work in /data/wendy/coding/ unless the task specifies otherwise
-3. Test your changes locally if applicable
-4. When done, summarize what you accomplished
-
-IMPORTANT: Do NOT deploy anything. Your job is to write the code only.
-Wendy will review your work and handle deployment separately.
-
-Begin working on this task now."""
+        prompt = AGENT_PROMPT_TEMPLATE.format(
+            task_id=task_id,
+            title=title,
+            description=description
+        )
 
         # Create log file for this agent
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -301,38 +344,17 @@ Begin working on this task now."""
         else:
             message += "Check logs for errors. Use `bd reopen` to retry."
 
-        try:
-            data = json.dumps({
-                "channel_id": NOTIFY_CHANNEL,
-                "content": message
-            }).encode("utf-8")
-
-            req = urllib.request.Request(
-                f"{PROXY_URL}/api/send_message",
-                data=data,
-                headers={"Content-Type": "application/json"},
-                method="POST"
-            )
-
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                if resp.status == 200:
-                    log.info(f"Sent Discord notification for {task_id}")
-                    # Mark as notified
-                    try:
-                        completions = json.loads(completions_file.read_text())
-                        for c in completions:
-                            if c["task_id"] == task_id:
-                                c["notified"] = True
-                        completions_file.write_text(json.dumps(completions, indent=2))
-                    except Exception:
-                        pass
-                else:
-                    log.warning(f"Notification failed with status {resp.status}")
-
-        except urllib.error.URLError as e:
-            log.warning(f"Failed to send Discord notification: {e}")
-        except Exception as e:
-            log.error(f"Notification error: {e}")
+        if self._send_discord_message(NOTIFY_CHANNEL, message):
+            log.info(f"Sent Discord notification for {task_id}")
+            # Mark as notified
+            try:
+                completions = json.loads(completions_file.read_text())
+                for c in completions:
+                    if c["task_id"] == task_id:
+                        c["notified"] = True
+                completions_file.write_text(json.dumps(completions, indent=2))
+            except Exception:
+                pass
 
     def check_agents(self):
         """Check status of running agents, handle timeouts, and clean up finished ones."""
@@ -345,20 +367,8 @@ Begin working on this task now."""
             # Check for timeout
             if retcode is None and duration.total_seconds() > AGENT_TIMEOUT:
                 log.warning(f"Agent for task {task_id} timed out after {duration}")
-                try:
-                    agent.process.terminate()
-                    agent.process.wait(timeout=5)
-                except Exception:
-                    agent.process.kill()
-
-                # Mark as failed due to timeout
+                self._terminate_agent(agent, f"TIMEOUT: Agent killed after {duration}")
                 self.complete_task(task_id, success=False)
-
-                with open(agent.log_file, "a") as f:
-                    f.write("\n" + "=" * 60 + "\n")
-                    f.write(f"TIMEOUT: Agent killed after {duration}\n")
-                    f.write(f"Completed: {datetime.now().isoformat()}\n")
-
                 self.notify_completion(task_id, agent.title, False, f"{duration} (TIMEOUT)")
                 finished.append(task_id)
                 continue
@@ -541,27 +551,8 @@ Begin working on this task now."""
 
     def send_usage_notification(self, channel: str, message: str):
         """Send a usage notification to Discord."""
-        try:
-            data = json.dumps({
-                "channel_id": channel,
-                "content": message
-            }).encode("utf-8")
-
-            req = urllib.request.Request(
-                f"{PROXY_URL}/api/send_message",
-                data=data,
-                headers={"Content-Type": "application/json"},
-                method="POST"
-            )
-
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                if resp.status == 200:
-                    log.info("Sent usage notification to Discord")
-                else:
-                    log.warning(f"Usage notification failed with status {resp.status}")
-
-        except Exception as e:
-            log.error(f"Failed to send usage notification: {e}")
+        if self._send_discord_message(channel, message):
+            log.info("Sent usage notification to Discord")
 
     def check_cancel_requests(self):
         """Check for and process cancel requests."""
@@ -579,19 +570,8 @@ Begin working on this task now."""
                     agent = self.active_agents[task_id]
                     log.info(f"Canceling task {task_id} by request")
 
-                    try:
-                        agent.process.terminate()
-                        agent.process.wait(timeout=5)
-                    except Exception:
-                        agent.process.kill()
-
-                    # Mark as failed (canceled)
+                    self._terminate_agent(agent, "CANCELED by user request")
                     self.complete_task(task_id, success=False)
-
-                    with open(agent.log_file, "a") as f:
-                        f.write("\n" + "=" * 60 + "\n")
-                        f.write(f"CANCELED by user request\n")
-                        f.write(f"Completed: {datetime.now().isoformat()}\n")
 
                     duration = datetime.now() - agent.started_at
                     self.notify_completion(task_id, agent.title, False, f"{duration} (CANCELED)")
@@ -624,16 +604,7 @@ Begin working on this task now."""
             agent = self.active_agents[task_id]
             log.info(f"Task {task_id} was closed via 'bd close', killing agent")
 
-            try:
-                agent.process.terminate()
-                agent.process.wait(timeout=5)
-            except Exception:
-                agent.process.kill()
-
-            with open(agent.log_file, "a") as f:
-                f.write("\n" + "=" * 60 + "\n")
-                f.write(f"KILLED - task closed via 'bd close'\n")
-                f.write(f"Completed: {datetime.now().isoformat()}\n")
+            self._terminate_agent(agent, "KILLED - task closed via 'bd close'")
 
             duration = datetime.now() - agent.started_at
             self.notify_completion(task_id, agent.title, False, f"{duration} (CLOSED)")
