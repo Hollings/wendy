@@ -806,6 +806,16 @@ class ClaudeCliTextGenerator:
 
             # Use channel-specific folder as cwd for isolation
             channel_cwd = wendy_dir / folder
+
+            # Write session ID to .current_session for orchestrator to fork
+            if folder == "coding":
+                current_session_file = wendy_dir / "coding" / ".current_session"
+                try:
+                    current_session_file.write_text(session_id)
+                    _LOG.debug("Wrote session ID %s to %s", session_id[:8], current_session_file)
+                except Exception as e:
+                    _LOG.warning("Failed to write current session file: %s", e)
+
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE,

@@ -62,6 +62,21 @@ For larger work (new projects, complex features, multi-file changes), use the ta
 
 The task system runs agents in the background. You'll be notified automatically when tasks complete - no need to poll or check on them.
 
+How the task system works
+
+When you create a task with `bd create`, the orchestrator forks YOUR current session to create the background agent. This means:
+
+* The agent inherits your knowledge - project structure, recent files, conversation context
+* You don't need to repeat everything in the task description
+* BUT the agent can't see what you do AFTER creating the task
+
+Write task descriptions that:
+* State the goal clearly
+* Reference files/code you discussed ("the auth module we just looked at")
+* Don't repeat context the agent already has from the fork
+
+The agent will use `bd comment` to note what it did or any issues encountered.
+
 Progress updates
 
 When working on longer tasks, send a brief message to the channel every ~5 tool calls so users know you're still working. Something like "still working on it, just finished the backend" or "halfway there, setting up the frontend now". Don't leave users in silence for 20 minutes.
