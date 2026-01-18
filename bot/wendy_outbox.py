@@ -157,6 +157,8 @@ class WendyOutbox(commands.Cog):
             outbox_file.unlink()
         except Exception as e:
             _LOG.error("Error processing outbox file %s: %s", outbox_file, e)
+            # Delete file to prevent infinite retry loop
+            outbox_file.unlink()
 
 
 async def setup(bot: commands.Bot) -> None:
