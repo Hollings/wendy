@@ -1,0 +1,73 @@
+name: PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Get PR diff
+        id: diff
+        run: |
+          git diff origin/${{ github.base_ref }}...HEAD > /tmp/pr_diff.txt
+          echo "Generated diff file"
+
+      - name: Review PR with Claude
+        id: review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Create a prompt for the review
+          cat << 'PROMPT' > /tmp/review_prompt.txt
+          Review this pull request diff. Focus on:
+          - Potential bugs or issues
+          - Code quality concerns
+          - Security considerations
+          - Suggestions for improvement
+
+          Keep the review concise and actionable. Format as markdown.
+
+          Here's the diff:
+          PROMPT
+
+          cat /tmp/pr_diff.txt >> /tmp/review_prompt.txt
+
+          # Run Claude CLI in non-interactive mode
+          claude -p --output-format text "$(cat /tmp/review_prompt.txt)" > /tmp/review_output.txt 2>&1 || true
+
+          # Save output for the comment step
+          echo "review<<EOF" >> $GITHUB_OUTPUT
+          cat /tmp/review_output.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Post review comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const review = `${{ steps.review.outputs.review }}`;
+            if (review && review.trim()) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `## Claude Code Review\n\n${review}\n\n---\n*Automated review by Claude Code CLI*`
+              });
+            }
