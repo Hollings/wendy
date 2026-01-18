@@ -42,7 +42,7 @@ wendy-bot/
 
 3. **Configure**
    ```bash
-   ssh 100.120.250.100
+   ssh your-server
    cd /srv/wendy-bot/deploy
    cp .env.example .env
    # Edit .env with your Discord token and channel IDs
