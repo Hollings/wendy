@@ -336,9 +336,13 @@ Cache create: {stats.get('total_cache_create_tokens', 0):,}
                 return
 
             # Orchestrator writes completions as a list directly
-            completions = json.loads(TASK_COMPLETIONS_FILE.read_text())
-            if not isinstance(completions, list):
-                completions = completions.get("completions", [])
+            data = json.loads(TASK_COMPLETIONS_FILE.read_text())
+            if isinstance(data, list):
+                completions = data
+            elif isinstance(data, dict):
+                completions = data.get("completions", [])
+            else:
+                completions = []
 
             # Find unseen completions
             unseen = [c for c in completions if not c.get("seen_by_wendy", False)]
