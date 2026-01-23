@@ -1,0 +1,436 @@
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    background: #0a0a0a;
+    color: #e0e0e0;
+    font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+    font-size: 14px;
+    overflow: hidden;
+}
+
+.screen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+}
+
+.hidden {
+    display: none !important;
+}
+
+/* Auth Screen */
+#auth-screen {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #0a0a0a;
+}
+
+.auth-box {
+    text-align: center;
+}
+
+.auth-box h1 {
+    font-size: 24px;
+    font-weight: normal;
+    margin-bottom: 8px;
+}
+
+.auth-box p {
+    color: #666;
+    margin-bottom: 24px;
+}
+
+#auth-form {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+}
+
+#auth-form input {
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 6px;
+    color: #fff;
+    font-family: inherit;
+    font-size: 14px;
+    padding: 10px 14px;
+    width: 160px;
+}
+
+#auth-form input:focus {
+    outline: none;
+    border-color: #555;
+}
+
+#auth-form button {
+    background: #222;
+    border: 1px solid #333;
+    border-radius: 6px;
+    color: #fff;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 14px;
+    padding: 10px 20px;
+}
+
+#auth-form button:hover {
+    background: #333;
+}
+
+#auth-error {
+    color: #f87171;
+    margin-top: 12px;
+    font-size: 13px;
+    min-height: 20px;
+}
+
+/* Scene Container */
+#scene-container {
+    background: #111;
+}
+
+#scene-container canvas {
+    display: block;
+}
+
+/* Monitor content is now rendered via Canvas 2D to a 3D texture */
+/* Old DOM-based styles removed */
+
+/* Thought Bubble - positioned dynamically above Wendy's head */
+#thought-bubble {
+    position: fixed;
+    max-width: 400px;
+    padding: 12px 16px;
+    background: rgba(30, 30, 30, 0.95);
+    border: 1px solid #444;
+    border-radius: 12px;
+    color: #ccc;
+    font-size: 13px;
+    line-height: 1.4;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+    pointer-events: none;
+    z-index: 100;
+}
+
+#thought-bubble::after {
+    content: '';
+    position: absolute;
+    bottom: -10px;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 10px solid transparent;
+    border-top-color: rgba(30, 30, 30, 0.95);
+    border-bottom: none;
+}
+
+#thought-text {
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+/* Debug Panel */
+#debug-panel {
+    position: fixed;
+    bottom: 10px;
+    left: 10px;
+    padding: 10px;
+    background: rgba(0, 0, 0, 0.8);
+    border: 1px solid #333;
+    border-radius: 4px;
+    font-size: 11px;
+    color: #888;
+    z-index: 1000;
+}
+
+#debug-panel div {
+    margin: 2px 0;
+}
+
+#debug-state {
+    color: #4ade80;
+}
+
+#debug-connected {
+    color: #f87171;
+}
+
+#debug-panel.connected #debug-connected {
+    color: #4ade80;
+}
+
+.debug-buttons {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid #333;
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.debug-buttons button {
+    background: #222;
+    border: 1px solid #444;
+    border-radius: 3px;
+    color: #aaa;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 10px;
+    padding: 4px 8px;
+}
+
+.debug-buttons button:hover {
+    background: #333;
+    color: #fff;
+}
+
+/* Arm Tuner Panel */
+#tuner-toggle {
+    position: fixed;
+    bottom: 10px;
+    right: 10px;
+    background: #222;
+    border: 1px solid #444;
+    border-radius: 4px;
+    color: #aaa;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+    padding: 6px 12px;
+    z-index: 1000;
+}
+
+#tuner-toggle:hover {
+    background: #333;
+    color: #fff;
+}
+
+#arm-tuner {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    width: 260px;
+    max-height: 90vh;
+    overflow-y: auto;
+    padding: 12px;
+    background: rgba(0, 0, 0, 0.9);
+    border: 1px solid #444;
+    border-radius: 6px;
+    font-size: 11px;
+    color: #ccc;
+    z-index: 1001;
+}
+
+.tuner-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #333;
+}
+
+.tuner-header button {
+    background: transparent;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+.tuner-header button:hover {
+    color: #fff;
+}
+
+.tuner-section {
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #222;
+}
+
+.tuner-section label {
+    display: block;
+    margin: 4px 0 2px;
+    color: #888;
+}
+
+.tuner-section input[type="range"] {
+    width: 100%;
+    margin-bottom: 4px;
+}
+
+.tuner-section span {
+    color: #4ade80;
+    font-family: monospace;
+}
+
+.tuner-output {
+    margin-top: 8px;
+}
+
+.tuner-output button {
+    background: #333;
+    border: 1px solid #555;
+    border-radius: 3px;
+    color: #ccc;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 10px;
+    padding: 4px 10px;
+    margin-bottom: 8px;
+}
+
+.tuner-output button:hover {
+    background: #444;
+}
+
+.tuner-output pre {
+    background: #111;
+    padding: 8px;
+    border-radius: 3px;
+    font-size: 10px;
+    color: #888;
+    white-space: pre-wrap;
+    max-height: 100px;
+    overflow-y: auto;
+}
+
+/* Scene Tuner Panel */
+#scene-tuner-toggle {
+    position: fixed;
+    bottom: 10px;
+    right: 100px;
+    background: #222;
+    border: 1px solid #444;
+    border-radius: 4px;
+    color: #aaa;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+    padding: 6px 12px;
+    z-index: 1000;
+}
+
+#scene-tuner-toggle:hover {
+    background: #333;
+    color: #fff;
+}
+
+#scene-tuner {
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    width: 280px;
+    max-height: 90vh;
+    overflow-y: auto;
+    padding: 12px;
+    background: rgba(0, 0, 0, 0.9);
+    border: 1px solid #444;
+    border-radius: 6px;
+    font-size: 11px;
+    color: #ccc;
+    z-index: 1001;
+}
+
+/* Keyboard Debug Panel */
+#keyboard-panel {
+    position: fixed;
+    bottom: 10px;
+    right: 10px;
+    width: 240px;
+    padding: 12px;
+    background: rgba(0, 0, 0, 0.9);
+    border: 1px solid #444;
+    border-radius: 6px;
+    font-size: 11px;
+    color: #ccc;
+    z-index: 1001;
+}
+
+#keyboard-panel input[type="text"] {
+    width: 100%;
+    padding: 8px;
+    background: #222;
+    border: 1px solid #444;
+    border-radius: 4px;
+    color: #fff;
+    font-family: inherit;
+    font-size: 12px;
+    margin-bottom: 8px;
+}
+
+#keyboard-panel input[type="text"]:focus {
+    outline: none;
+    border-color: #666;
+}
+
+.keyboard-buttons {
+    display: flex;
+    gap: 6px;
+}
+
+.keyboard-buttons button {
+    flex: 1;
+    padding: 6px 10px;
+    background: #333;
+    border: 1px solid #555;
+    border-radius: 4px;
+    color: #ccc;
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.keyboard-buttons button:hover {
+    background: #444;
+    color: #fff;
+}
+
+/* IK Debug Panel */
+#ik-panel {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    width: 240px;
+    padding: 12px;
+    background: rgba(0, 0, 0, 0.9);
+    border: 1px solid #444;
+    border-radius: 6px;
+    font-size: 11px;
+    color: #ccc;
+    z-index: 1001;
+}
+
+#ik-panel .tuner-header {
+    margin-bottom: 8px;
+    padding-bottom: 8px;
+}
+
+#ik-panel .tuner-header label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: #aaa;
+    font-size: 10px;
+}
+
+#ik-panel .tuner-header input[type="checkbox"] {
+    margin: 0;
+}
+
+#ik-panel select {
+    background: #222;
+    border: 1px solid #444;
+    border-radius: 3px;
+    color: #ccc;
+    font-family: inherit;
+    font-size: 11px;
+    padding: 4px 8px;
+    margin-left: 8px;
+}

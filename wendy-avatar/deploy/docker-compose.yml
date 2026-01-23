@@ -1,0 +1,13 @@
+services:
+  avatar:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "0.0.0.0:8915:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
