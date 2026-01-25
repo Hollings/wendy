@@ -191,52 +191,6 @@ class WendyCog(commands.Cog):
         conn.close()
         _LOG.info("Database initialized at %s", DB_PATH)
 
-    def _cache_message(self, message: discord.Message) -> None:
-        """Cache a Discord message to the database.
-
-        Stores the message in both cached_messages (for interrupt detection)
-        and message_history (for full context). Uses INSERT OR REPLACE to
-        handle edits.
-
-        Args:
-            message: Discord message object to cache.
-        """
-        try:
-            conn = sqlite3.connect(DB_PATH)
-            conn.execute("""
-                INSERT OR REPLACE INTO cached_messages
-                (message_id, channel_id, author_id, author_name, content, timestamp, has_images)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                message.id,
-                message.channel.id,
-                message.author.id,
-                message.author.display_name,
-                message.content,
-                int(message.created_at.timestamp()),
-                1 if message.attachments else 0,
-            ))
-
-            # Also store in message_history for full history queries
-            attachment_urls = ",".join(a.url for a in message.attachments) if message.attachments else None
-            conn.execute("""
-                INSERT OR REPLACE INTO message_history
-                (message_id, channel_id, author_nickname, content, timestamp, attachment_urls)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                message.id,
-                message.channel.id,
-                message.author.display_name,
-                message.content,
-                int(message.created_at.timestamp()),
-                attachment_urls,
-            ))
-
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            _LOG.error("Failed to cache message: %s", e)
-
     async def _save_attachments(self, message: discord.Message) -> list[str]:
         """Download and save message attachments to local filesystem.
 
@@ -306,9 +260,6 @@ class WendyCog(commands.Cog):
         if not message.content.strip() and not message.attachments:
             return
 
-        # Cache the message
-        self._cache_message(message)
-
         # Save any attachments
         await self._save_attachments(message)
 
@@ -316,7 +267,12 @@ class WendyCog(commands.Cog):
         if not await self._should_respond(message):
             return
 
-        _LOG.info("Processing message from %s: %s...", message.author.display_name, message.content[:50])
+        # Use haiku for webhook messages (cheaper for automated triggers)
+        is_webhook = message.webhook_id is not None
+        if is_webhook:
+            _LOG.info("Processing WEBHOOK message from %s: %s...", message.author.display_name, message.content[:50])
+        else:
+            _LOG.info("Processing message from %s: %s...", message.author.display_name, message.content[:50])
 
         # Check for existing generation
         existing_job = self._active_generations.get(message.channel.id)
@@ -325,9 +281,10 @@ class WendyCog(commands.Cog):
             _LOG.info("Claude CLI already running in channel %s, skipping", message.channel.id)
             return
 
-        # Start generation
+        # Start generation (use haiku for webhooks to save costs)
         job = GenerationJob()
-        task = self.bot.loop.create_task(self._generate_response(message, job))
+        model_override = "haiku" if is_webhook else None
+        task = self.bot.loop.create_task(self._generate_response(message, job, model_override=model_override))
         job.task = task
         self._active_generations[message.channel.id] = job
 
@@ -369,7 +326,9 @@ class WendyCog(commands.Cog):
         # Respond in whitelisted channels
         return message.channel.id in self.whitelist_channels
 
-    async def _generate_response(self, message: discord.Message, job: GenerationJob) -> None:
+    async def _generate_response(
+        self, message: discord.Message, job: GenerationJob, model_override: str = None
+    ) -> None:
         """Generate and send a response using Claude CLI.
 
         Runs the Claude CLI with the channel's configuration. Handles OAuth
@@ -378,13 +337,18 @@ class WendyCog(commands.Cog):
         Args:
             message: The triggering Discord message.
             job: GenerationJob tracking this generation.
+            model_override: Optional model to use (e.g., "haiku" for webhooks).
         """
         channel = message.channel
         channel_config = self.channel_configs.get(channel.id, {})
 
         try:
             # Run Claude CLI with channel-specific config
-            await self.generator.generate(channel_id=channel.id, channel_config=channel_config)
+            await self.generator.generate(
+                channel_id=channel.id,
+                channel_config=channel_config,
+                model_override=model_override,
+            )
             _LOG.info("Claude CLI completed for channel %s", channel.id)
 
         except ClaudeCliError as e:

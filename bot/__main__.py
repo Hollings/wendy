@@ -50,6 +50,7 @@ def get_bot() -> commands.Bot:
 async def load_extensions(bot: commands.Bot) -> None:
     """Load all bot extensions/cogs."""
     extensions = [
+        "bot.message_logger",
         "bot.wendy_cog",
         "bot.wendy_outbox",
     ]
