@@ -26,8 +26,8 @@ _LOG = logging.getLogger(__name__)
 SESSION_STATE_FILE: Path = Path("/data/wendy/session_state.json")
 """Path to JSON file storing per-channel session state (session IDs, token counts, etc.)."""
 
-SESSION_DIR: Path = Path("/root/.claude/projects/-data-wendy")
-"""Directory where Claude CLI stores conversation history files (.jsonl per session)."""
+# Session directories are per-folder: /root/.claude/projects/-data-wendy-{folder}/
+# e.g., /data/wendy/coding -> /root/.claude/projects/-data-wendy-coding/
 
 STREAM_LOG_FILE: Path = Path("/data/wendy/stream.jsonl")
 """Rolling log file for real-time event streaming from Claude CLI."""
@@ -117,9 +117,8 @@ Usage:
   python3 /data/wendy/query_db.py --schema    # Show all tables
 
 Key tables:
-- message_history: Full raw messages (message_id, channel_id, author_nickname, content, timestamp, reactions, attachment_urls)
+- message_history: Full raw messages (message_id, channel_id, guild_id, author_id, author_nickname, is_bot, content, timestamp, attachment_urls, reply_to_id)
   - message_id is the Discord message ID - you can make jump links: https://discord.com/channels/{{guild_id}}/{{channel_id}}/{{message_id}}
-- cached_messages: Recent messages used for LLM context (lighter schema)
 """
 
 
@@ -246,11 +245,13 @@ class ClaudeCliTextGenerator:
         state = self._load_session_state()
         return state.get(str(channel_id))
 
-    def _create_channel_session(self, channel_id: int) -> str:
+    def _create_channel_session(self, channel_id: int, folder: str = "wendys_folder") -> str:
         """Create a new Claude CLI session for a Discord channel.
 
         Args:
             channel_id: The Discord channel ID to create a session for.
+            folder: The folder name used for this session's working directory.
+                    This is stored to detect folder changes on resume.
 
         Returns:
             The newly generated UUID session ID.
@@ -259,6 +260,7 @@ class ClaudeCliTextGenerator:
         state = self._load_session_state()
         state[str(channel_id)] = {
             "session_id": session_id,
+            "folder": folder,
             "created_at": int(time.time()),
             "message_count": 0,
             "total_input_tokens": 0,
@@ -267,7 +269,7 @@ class ClaudeCliTextGenerator:
             "total_cache_create_tokens": 0,
         }
         self._save_session_state(state)
-        _LOG.info("Created new session %s for channel %d", session_id, channel_id)
+        _LOG.info("Created new session %s for channel %d (folder=%s)", session_id, channel_id, folder)
         return session_id
 
     def _update_session_stats(self, channel_id: int, usage: dict[str, Any]) -> None:
@@ -295,9 +297,10 @@ class ClaudeCliTextGenerator:
         self._save_session_state(state)
 
         # Check if session needs truncation
-        self._truncate_session_if_needed(state[channel_key]["session_id"])
+        folder = state[channel_key].get("folder", "wendys_folder")
+        self._truncate_session_if_needed(state[channel_key]["session_id"], folder)
 
-    def _truncate_session_if_needed(self, session_id: str) -> None:
+    def _truncate_session_if_needed(self, session_id: str, folder: str = "wendys_folder") -> None:
         """Truncate session history if Discord messages exceed MAX_DISCORD_MESSAGES.
 
         This prevents sessions from growing indefinitely by removing older messages
@@ -307,8 +310,12 @@ class ClaudeCliTextGenerator:
 
         Args:
             session_id: The UUID session ID to check and potentially truncate.
+            folder: The folder name used for this session (determines project directory).
         """
-        session_file = SESSION_DIR / f"{session_id}.jsonl"
+        # Claude CLI stores sessions in project directories based on cwd path
+        # e.g., /data/wendy/coding -> /root/.claude/projects/-data-wendy-coding
+        session_dir = Path("/root/.claude/projects") / f"-data-wendy-{folder}"
+        session_file = session_dir / f"{session_id}.jsonl"
         if not session_file.exists():
             return
 
@@ -524,6 +531,7 @@ class ClaudeCliTextGenerator:
 
         (wendy_dir / "outbox").mkdir(exist_ok=True)
         (wendy_dir / "uploads").mkdir(exist_ok=True)
+        (wendy_dir / "secrets").mkdir(exist_ok=True, mode=0o700)
 
     def _setup_channel_folder(self, wendy_dir: Path, folder: str) -> None:
         """Create channel-specific folder if it doesn't exist."""
@@ -694,6 +702,7 @@ class ClaudeCliTextGenerator:
         is_new_session: bool,
         system_prompt: str,
         channel_config: dict,
+        model: str = None,
     ) -> list[str]:
         """Build the Claude CLI command with all flags."""
         cmd = [
@@ -701,7 +710,7 @@ class ClaudeCliTextGenerator:
             "-p",
             "--output-format", "stream-json",
             "--verbose",
-            "--model", self.model,
+            "--model", model or self.model,
         ]
 
         if is_new_session:
@@ -734,7 +743,8 @@ class ClaudeCliTextGenerator:
 
         if mode == "chat":
             # Chat mode: restricted access, no beads, can't touch coding folder
-            allowed = f"Read,WebSearch,WebFetch,Bash,Edit(//data/wendy/{folder}/**),Write(//data/wendy/{folder}/**)"
+            # Note: uploads folder is needed for sending attachments via send_message API
+            allowed = f"Read,WebSearch,WebFetch,Bash,Edit(//data/wendy/{folder}/**),Write(//data/wendy/{folder}/**),Write(//data/wendy/uploads/**)"
             disallowed = "Read(//data/wendy/coding/**),Edit(//data/wendy/*.sh),Edit(//data/wendy/*.py),Edit(//app/**),Write(//app/**),Edit(//data/wendy/coding/**),Write(//data/wendy/coding/**)"
         else:
             # Full mode: full access to folder, uploads, beads
@@ -747,6 +757,7 @@ class ClaudeCliTextGenerator:
         self,
         channel_id: int,
         channel_config: dict = None,
+        model_override: str = None,
         **kwargs,
     ) -> str:
         """Generate response using Claude CLI with persistent sessions.
@@ -757,6 +768,7 @@ class ClaudeCliTextGenerator:
         Args:
             channel_id: Discord channel ID (required for session management)
             channel_config: Optional channel config dict with mode and folder
+            model_override: Optional model to use instead of default (e.g., "haiku" for webhooks)
 
         Returns:
             Empty string (Wendy's responses go through send_message API)
@@ -768,26 +780,40 @@ class ClaudeCliTextGenerator:
         if channel_config is None:
             channel_config = {"mode": "full", "folder": "wendys_folder", "name": "default"}
 
-        # Get or create session for this channel
-        force_new = kwargs.get("_force_new_session", False)
-        session_info = self._get_channel_session(channel_id)
-        is_new_session = session_info is None or force_new
-
-        if is_new_session:
-            session_id = self._create_channel_session(channel_id)
-        else:
-            session_id = session_info["session_id"]
-
         folder = channel_config.get("folder", "wendys_folder")
         mode = channel_config.get("mode", "full")
 
+        # Get or create session for this channel
+        force_new = kwargs.get("_force_new_session", False)
+        session_info = self._get_channel_session(channel_id)
+
+        # Check if folder changed - if so, we need a new session since Claude CLI
+        # stores sessions per-project (based on cwd)
+        folder_changed = (
+            session_info is not None
+            and session_info.get("folder") != folder
+        )
+        if folder_changed:
+            _LOG.warning(
+                "Folder changed for channel %d: %s -> %s, creating new session",
+                channel_id, session_info.get("folder"), folder
+            )
+
+        is_new_session = session_info is None or force_new or folder_changed
+
+        if is_new_session:
+            session_id = self._create_channel_session(channel_id, folder)
+        else:
+            session_id = session_info["session_id"]
+
         # Build system prompt and CLI command
+        effective_model = model_override or self.model
         system_prompt = self._build_system_prompt(channel_id, folder, mode)
-        cmd = self._build_cli_command(session_id, is_new_session, system_prompt, channel_config)
+        cmd = self._build_cli_command(session_id, is_new_session, system_prompt, channel_config, model=effective_model)
 
         session_action = "starting new" if is_new_session else "resuming"
         _LOG.info("ClaudeCLI: %s session %s for channel %d (model=%s)",
-                  session_action, session_id[:8], channel_id, self.model)
+                  session_action, session_id[:8], channel_id, effective_model)
 
         nudge_prompt = f"<new messages - you MUST call curl -s http://localhost:8945/api/check_messages/{channel_id} before any other action. Do not assume what the messages contain.>"
 

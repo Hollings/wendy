@@ -28,12 +28,16 @@ import json
 import logging
 import os
 import re
+import sqlite3
 from pathlib import Path
 
 import discord
 from discord.ext import commands, tasks
 
 _LOG = logging.getLogger(__name__)
+
+# Database path (same as wendy_cog.py)
+DB_PATH: Path = Path(os.getenv("WENDY_DB_PATH", "/data/wendy.db"))
 
 # =============================================================================
 # Configuration Constants
@@ -77,6 +81,43 @@ class WendyOutbox(commands.Cog):
     def _ensure_outbox_dir(self) -> None:
         """Create the outbox directory if it doesn't exist."""
         OUTBOX_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _cache_sent_message(self, sent_msg: discord.Message) -> None:
+        """Cache Wendy's sent message to the database.
+
+        This ensures Wendy's own messages appear in her conversation history,
+        since on_message filters out bot messages before caching.
+
+        Args:
+            sent_msg: The Discord message object returned from channel.send().
+        """
+        try:
+            conn = sqlite3.connect(DB_PATH)
+
+            # Store in message_history table (unified with message_logger cog)
+            attachment_urls = ",".join(a.url for a in sent_msg.attachments) if sent_msg.attachments else None
+            conn.execute("""
+                INSERT OR REPLACE INTO message_history
+                (message_id, channel_id, guild_id, author_id, author_nickname,
+                 is_bot, content, timestamp, attachment_urls)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                sent_msg.id,
+                sent_msg.channel.id,
+                sent_msg.guild.id if sent_msg.guild else None,
+                sent_msg.author.id,
+                sent_msg.author.display_name,
+                1,  # is_bot = True for Wendy's own messages
+                sent_msg.content,
+                sent_msg.created_at.isoformat(),
+                attachment_urls,
+            ))
+
+            conn.commit()
+            conn.close()
+            _LOG.debug("Cached Wendy's sent message %d to database", sent_msg.id)
+        except Exception as e:
+            _LOG.error("Failed to cache sent message: %s", e)
 
     def _log_sent_message(
         self,
@@ -216,6 +257,9 @@ class WendyOutbox(commands.Cog):
 
             _LOG.info("Sent Wendy outbox message to channel %s (msg_id=%s): %s...",
                      channel_id, sent_msg.id, message_text[:50])
+
+            # Cache Wendy's message to database (so she has memory of her own responses)
+            self._cache_sent_message(sent_msg)
 
             # Log the message correlation
             outbox_ts = self._extract_outbox_timestamp(outbox_file.name)

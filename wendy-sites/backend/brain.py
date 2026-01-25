@@ -324,15 +324,15 @@ def get_stats() -> dict:
     except Exception as e:
         _LOG.debug("Failed to read session state: %s", e)
 
-    # Get cached messages count
+    # Get message history count
     try:
         if DB_PATH.exists():
             conn = sqlite3.connect(DB_PATH)
-            count = conn.execute("SELECT COUNT(*) FROM cached_messages").fetchone()[0]
+            count = conn.execute("SELECT COUNT(*) FROM message_history").fetchone()[0]
             conn.close()
-            stats["cached_messages"] = count
+            stats["cached_messages"] = count  # Keep key for backwards compat
     except Exception as e:
-        _LOG.debug("Failed to count cached messages: %s", e)
+        _LOG.debug("Failed to count message history: %s", e)
 
     return stats
 

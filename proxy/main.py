@@ -272,16 +272,18 @@ def check_for_new_messages(channel_id: int) -> list[dict]:
     conn.row_factory = sqlite3.Row
 
     try:
+        # Filter out Wendy's own messages by bot ID (771821437199581204)
+        wendy_bot_id = 771821437199581204
         query = """
-            SELECT message_id, author_name, content, timestamp
-            FROM cached_messages
+            SELECT message_id, author_nickname, content, timestamp
+            FROM message_history
             WHERE channel_id = ? AND message_id > ?
-            AND LOWER(author_name) NOT LIKE '%wendy%'
+            AND author_id != ?
             AND content NOT LIKE '!%'
             AND content NOT LIKE '-%'
             ORDER BY message_id ASC
         """
-        rows = conn.execute(query, (channel_id, last_seen)).fetchall()
+        rows = conn.execute(query, (channel_id, last_seen, wendy_bot_id)).fetchall()
 
         if rows:
             # Auto-update last_seen so retry will succeed
@@ -291,7 +293,7 @@ def check_for_new_messages(channel_id: int) -> list[dict]:
             return [
                 {
                     "message_id": row["message_id"],
-                    "author": row["author_name"],
+                    "author": row["author_nickname"],
                     "content": row["content"],
                     "timestamp": row["timestamp"],
                 }
@@ -430,36 +432,41 @@ async def check_messages(
             conn.row_factory = sqlite3.Row
 
             try:
+                # Filter out Wendy's own messages by bot ID (771821437199581204)
+                # Don't filter by name - webhooks like "Wendy's Minecraft Tulpa" should be included
+                wendy_bot_id = 771821437199581204
                 if since_id:
                     query = """
-                        SELECT message_id, channel_id, author_name, content, timestamp, has_images
-                        FROM cached_messages
+                        SELECT message_id, channel_id, author_nickname, content, timestamp,
+                               CASE WHEN attachment_urls IS NOT NULL THEN 1 ELSE 0 END as has_images
+                        FROM message_history
                         WHERE channel_id = ? AND message_id > ?
-                        AND LOWER(author_name) NOT LIKE '%wendy%'
+                        AND author_id != ?
                         AND content NOT LIKE '!%'
                         AND content NOT LIKE '-%'
                         ORDER BY message_id DESC
                         LIMIT ?
                     """
-                    rows = conn.execute(query, (channel_id, since_id, limit)).fetchall()
+                    rows = conn.execute(query, (channel_id, since_id, wendy_bot_id, limit)).fetchall()
                 else:
                     query = """
-                        SELECT message_id, channel_id, author_name, content, timestamp, has_images
-                        FROM cached_messages
+                        SELECT message_id, channel_id, author_nickname, content, timestamp,
+                               CASE WHEN attachment_urls IS NOT NULL THEN 1 ELSE 0 END as has_images
+                        FROM message_history
                         WHERE channel_id = ?
-                        AND LOWER(author_name) NOT LIKE '%wendy%'
+                        AND author_id != ?
                         AND content NOT LIKE '!%'
                         AND content NOT LIKE '-%'
                         ORDER BY message_id DESC
                         LIMIT ?
                     """
-                    rows = conn.execute(query, (channel_id, limit)).fetchall()
+                    rows = conn.execute(query, (channel_id, wendy_bot_id, limit)).fetchall()
 
                 for row in rows:
                     attachments = find_attachments_for_message(row["message_id"])
                     msg = MessageInfo(
                         message_id=row["message_id"],
-                        author=row["author_name"],
+                        author=row["author_nickname"],
                         content=row["content"],
                         timestamp=row["timestamp"],
                         attachments=attachments if attachments else None,

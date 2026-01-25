@@ -28,7 +28,6 @@ import asyncio
 import json
 import logging
 import os
-import sqlite3
 from pathlib import Path
 
 import discord
@@ -149,47 +148,14 @@ class WendyCog(commands.Cog):
         _LOG.info("WendyCog initialized with %d whitelisted channels", len(self.whitelist_channels))
 
     def _init_db(self) -> None:
-        """Initialize the SQLite database schema for message caching.
+        """Initialize the SQLite database schema.
 
-        Creates two tables:
-        - cached_messages: Recent messages for interrupt detection
-        - message_history: Full history with reactions and attachments
+        Note: message_history table is created by the message_logger cog.
+        This method ensures the database directory exists and creates any
+        wendy-specific tables if needed.
         """
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS cached_messages (
-                message_id INTEGER PRIMARY KEY,
-                channel_id INTEGER NOT NULL,
-                author_id INTEGER NOT NULL,
-                author_name TEXT NOT NULL,
-                content TEXT NOT NULL,
-                timestamp INTEGER NOT NULL,
-                has_images INTEGER DEFAULT 0
-            )
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_cached_messages_channel
-            ON cached_messages(channel_id, message_id DESC)
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS message_history (
-                message_id INTEGER PRIMARY KEY,
-                channel_id INTEGER NOT NULL,
-                author_nickname TEXT NOT NULL,
-                content TEXT NOT NULL,
-                timestamp INTEGER NOT NULL,
-                reactions TEXT,
-                attachment_urls TEXT
-            )
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_message_history_channel
-            ON message_history(channel_id, message_id DESC)
-        """)
-        conn.commit()
-        conn.close()
-        _LOG.info("Database initialized at %s", DB_PATH)
+        _LOG.info("Database path verified at %s", DB_PATH)
 
     async def _save_attachments(self, message: discord.Message) -> list[str]:
         """Download and save message attachments to local filesystem.
