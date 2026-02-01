@@ -108,12 +108,43 @@ You rarely need `bd list` or `bd show` - just create tasks and wait for notifica
 - Simple questions or lookups
 - Anything you can do in under a minute
 
+## Task Dependencies
+
+Multiple tasks can run at the same time (up to 3 concurrent agents). When tasks need to run in a specific order, use dependencies:
+
+```bash
+# Create first task
+bd create "Set up database schema" -p 1
+# Returns: Created task bd-abc123
+
+# Create dependent task that waits for the first
+bd create "Write API endpoints using the schema" -p 1
+# Returns: Created task bd-def456
+
+bd dep add bd-def456 bd-abc123   # def456 waits for abc123 to complete
+```
+
+The second task won't start until the first completes.
+
+### Dependency Commands
+- `bd dep add <child> <parent>` - Child waits for parent to complete
+- `bd dep list <task-id>` - Show dependencies for a task
+
+### When to Use Dependencies
+- Tasks that build on each other's output (schema -> API -> frontend)
+- Sequential multi-step projects
+- When task B needs files/changes from task A
+
+### When NOT to Use Dependencies
+- Independent tasks that don't share state - let them run in parallel
+- Tasks in different projects or directories
+
 ## Important Notes
 
 - **Agents fork from YOUR session** - they have your context up to the moment you create the task
 - Default model is Opus (use `-l model:haiku` for simple tasks)
 - Agents work in `/data/wendy/coding/`
 - Agents CANNOT deploy or send Discord messages - you do that after reviewing
-- One task runs at a time (queued if busy)
+- **Up to 3 tasks run concurrently** - use dependencies when order matters
 - Agents use `bd comment <task_id> "notes"` to leave context about their work
 - **Task created = session forked** - the agent won't see what you do AFTER creating the task

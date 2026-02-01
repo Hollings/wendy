@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 import time
 from pathlib import Path
 
@@ -38,26 +39,60 @@ import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
+# Add bot module to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from bot.paths import (
+    DB_PATH,
+    OUTBOX_DIR,
+    WENDY_BASE,
+    attachments_dir,
+    ensure_shared_dirs,
+)
+from bot.state_manager import state as state_manager
+
 app = FastAPI(title="Wendy Proxy API")
 
+# Ensure shared directories exist at startup
+ensure_shared_dirs()
+
 # =============================================================================
-# Configuration Constants
+# Channel Config (for channel_id -> channel_name mapping)
 # =============================================================================
 
-DB_PATH: str = os.getenv("WENDY_DB_PATH", "/data/wendy.db")
-"""Path to the SQLite database containing cached Discord messages."""
+_CHANNEL_CONFIG: dict[int, dict] = {}
+"""Map of channel_id -> channel config (parsed from WENDY_CHANNEL_CONFIG)."""
 
-OUTBOX_DIR: Path = Path("/data/wendy/outbox")
-"""Directory where queued outgoing messages are written as JSON files."""
 
-STATE_FILE: Path = Path("/data/wendy/message_check_state.json")
-"""JSON file tracking last-seen message IDs per channel for interrupt detection."""
+def _load_channel_config() -> None:
+    """Load channel config from WENDY_CHANNEL_CONFIG env var."""
+    global _CHANNEL_CONFIG
+    config_str = os.getenv("WENDY_CHANNEL_CONFIG", "")
+    if not config_str:
+        return
 
-ATTACHMENTS_DIR: Path = Path("/data/wendy/attachments")
-"""Directory where downloaded Discord attachments are stored."""
+    try:
+        configs = json.loads(config_str)
+        for cfg in configs:
+            channel_id = int(cfg.get("id", 0))
+            if channel_id:
+                _CHANNEL_CONFIG[channel_id] = cfg
+    except (json.JSONDecodeError, ValueError, TypeError):
+        pass
 
-TASK_COMPLETIONS_FILE: Path = Path("/data/wendy/task_completions.json")
-"""JSON file where orchestrator writes task completion notifications."""
+
+def get_channel_name(channel_id: int) -> str | None:
+    """Get channel name for a channel ID from config.
+
+    Returns the channel's folder name (_folder key takes precedence over name).
+    """
+    cfg = _CHANNEL_CONFIG.get(channel_id)
+    if not cfg:
+        return None
+    return cfg.get("_folder") or cfg.get("name")
+
+
+# Load config at startup
+_load_channel_config()
 
 
 # =============================================================================
@@ -107,6 +142,20 @@ class NewMessagesError(BaseModel):
     guidance: str
 
 
+class ReplyContext(BaseModel):
+    """Context for a message that is a reply to another message.
+
+    Attributes:
+        message_id: Discord message ID of the original message.
+        author: Display name of the original message author.
+        content: Text content of the original message.
+    """
+
+    message_id: int
+    author: str
+    content: str
+
+
 class MessageInfo(BaseModel):
     """Information about a single Discord message.
 
@@ -116,6 +165,7 @@ class MessageInfo(BaseModel):
         content: Message text content.
         timestamp: Unix timestamp (int) or ISO string.
         attachments: List of local file paths for any attachments.
+        reply_to: Context of the message being replied to, if this is a reply.
     """
 
     message_id: int
@@ -123,6 +173,7 @@ class MessageInfo(BaseModel):
     content: str
     timestamp: int | str
     attachments: list[str] | None = None
+    reply_to: ReplyContext | None = None
 
 
 class TaskUpdate(BaseModel):
@@ -173,13 +224,7 @@ def get_last_seen(channel_id: int) -> int | None:
     Returns:
         Last seen message ID, or None if no state exists for this channel.
     """
-    if not STATE_FILE.exists():
-        return None
-    try:
-        state = json.loads(STATE_FILE.read_text())
-        return state.get("last_seen", {}).get(str(channel_id))
-    except (OSError, json.JSONDecodeError):
-        return None
+    return state_manager.get_last_seen(channel_id)
 
 
 def update_last_seen(channel_id: int, message_id: int) -> None:
@@ -192,19 +237,7 @@ def update_last_seen(channel_id: int, message_id: int) -> None:
         channel_id: Discord channel ID.
         message_id: Newest message ID seen.
     """
-    state: dict = {}
-    if STATE_FILE.exists():
-        try:
-            state = json.loads(STATE_FILE.read_text())
-        except (OSError, json.JSONDecodeError):
-            state = {}
-
-    if "last_seen" not in state:
-        state["last_seen"] = {}
-
-    state["last_seen"][str(channel_id)] = message_id
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(state, indent=2))
+    state_manager.update_last_seen(channel_id, message_id)
 
 
 # =============================================================================
@@ -212,23 +245,31 @@ def update_last_seen(channel_id: int, message_id: int) -> None:
 # =============================================================================
 
 
-def find_attachments_for_message(message_id: int) -> list[str]:
+def find_attachments_for_message(message_id: int, channel_name: str | None = None) -> list[str]:
     """Find local attachment files for a Discord message.
 
     The Discord bot saves attachments as msg_{message_id}_{index}_{filename}.
     This function finds all attachments associated with a message.
 
+    Attachments are stored per-channel to ensure isolation between channels.
+    If channel_name is not provided, no attachments will be found.
+
     Args:
         message_id: Discord message snowflake ID.
+        channel_name: Channel name (folder name) where attachments are stored.
 
     Returns:
         Sorted list of absolute file paths for attachments.
     """
-    if not ATTACHMENTS_DIR.exists():
+    if not channel_name:
+        return []
+
+    att_dir = attachments_dir(channel_name)
+    if not att_dir.exists():
         return []
 
     matching: list[str] = []
-    for att_file in ATTACHMENTS_DIR.glob(f"msg_{message_id}_*"):
+    for att_file in att_dir.glob(f"msg_{message_id}_*"):
         matching.append(str(att_file))
 
     return sorted(matching)
@@ -264,41 +305,56 @@ def check_for_new_messages(channel_id: int) -> list[dict]:
     if last_seen is None:
         return []
 
-    db_path = Path(DB_PATH)
-    if not db_path.exists():
+    if not DB_PATH.exists():
         return []  # Fail open if DB unavailable
 
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
 
     try:
         # Filter out Wendy's own messages by bot ID (771821437199581204)
         wendy_bot_id = 771821437199581204
         query = """
-            SELECT message_id, author_nickname, content, timestamp
-            FROM message_history
-            WHERE channel_id = ? AND message_id > ?
-            AND author_id != ?
-            AND content NOT LIKE '!%'
-            AND content NOT LIKE '-%'
-            ORDER BY message_id ASC
+            SELECT m.message_id, m.author_nickname, m.content, m.timestamp,
+                   m.reply_to_id,
+                   r.author_nickname as reply_author,
+                   r.content as reply_content
+            FROM message_history m
+            LEFT JOIN message_history r ON m.reply_to_id = r.message_id
+            WHERE m.channel_id = ? AND m.message_id > ?
+            AND m.author_id != ?
+            AND m.content NOT LIKE '!%'
+            AND m.content NOT LIKE '-%'
+            ORDER BY m.message_id ASC
         """
         rows = conn.execute(query, (channel_id, last_seen, wendy_bot_id)).fetchall()
 
-        if rows:
-            # Auto-update last_seen so retry will succeed
-            newest_id = max(r["message_id"] for r in rows)
+        # Filter out synthetic messages (ID >= 9 * 10^18) - they're one-time
+        # notifications that shouldn't trigger the "new message interrupt"
+        SYNTHETIC_ID_THRESHOLD = 9_000_000_000_000_000_000
+        real_rows = [r for r in rows if r["message_id"] < SYNTHETIC_ID_THRESHOLD]
+
+        if real_rows:
+            # Update last_seen with newest real message
+            newest_id = max(r["message_id"] for r in real_rows)
             update_last_seen(channel_id, newest_id)
 
-            return [
-                {
+            result = []
+            for row in real_rows:
+                msg = {
                     "message_id": row["message_id"],
                     "author": row["author_nickname"],
                     "content": row["content"],
                     "timestamp": row["timestamp"],
                 }
-                for row in rows
-            ]
+                if row["reply_to_id"] and row["reply_author"]:
+                    msg["reply_to"] = {
+                        "message_id": row["reply_to_id"],
+                        "author": row["reply_author"],
+                        "content": row["reply_content"] or "",
+                    }
+                result.append(msg)
+            return result
 
         return []
     finally:
@@ -361,13 +417,14 @@ async def send_message(request: SendMessageRequest) -> dict:
             )
 
         # Validate attachment path if provided
+        # Allow files from anywhere under /data/wendy/ or /tmp/
         if request.attachment:
             att_path = Path(request.attachment)
-            allowed_prefixes = ["/data/wendy/", "/tmp/"]
+            allowed_prefixes = [str(WENDY_BASE) + "/", "/tmp/"]
             if not any(request.attachment.startswith(p) for p in allowed_prefixes):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Attachment must be in /data/wendy/ or /tmp/, got: {request.attachment}"
+                    detail=f"Attachment must be in {WENDY_BASE}/ or /tmp/, got: {request.attachment}"
                 )
             if not att_path.exists():
                 raise HTTPException(
@@ -401,7 +458,8 @@ async def send_message(request: SendMessageRequest) -> dict:
 async def check_messages(
     channel_id: int,
     limit: int = 10,
-    all_messages: bool = False
+    all_messages: bool = False,
+    count: int | None = None,
 ) -> CheckMessagesResponse:
     """Check for new Discord messages and orchestrator task updates.
 
@@ -415,20 +473,29 @@ async def check_messages(
         channel_id: Discord channel ID to check.
         limit: Maximum number of messages to return (default 10).
         all_messages: If True, return all messages regardless of last_seen.
+        count: If provided, fetch exactly this many messages regardless of
+            last_seen state. Use count=20 after session continuation to
+            restore conversation context.
 
     Returns:
         CheckMessagesResponse with messages (oldest first) and task_updates.
     """
+    # Look up channel name from config for finding attachments
+    channel_name = get_channel_name(channel_id)
     messages: list[MessageInfo] = []
     task_updates: list[TaskUpdate] = []
 
     # Get messages from database
     try:
-        db_path = Path(DB_PATH)
-        if db_path.exists():
-            since_id = None if all_messages else get_last_seen(channel_id)
+        if DB_PATH.exists():
+            # If count is specified, ignore last_seen and fetch exactly N messages
+            if count is not None:
+                since_id = None
+                limit = count
+            else:
+                since_id = None if all_messages else get_last_seen(channel_id)
 
-            conn = sqlite3.connect(db_path)
+            conn = sqlite3.connect(str(DB_PATH))
             conn.row_factory = sqlite3.Row
 
             try:
@@ -437,49 +504,84 @@ async def check_messages(
                 wendy_bot_id = 771821437199581204
                 if since_id:
                     query = """
-                        SELECT message_id, channel_id, author_nickname, content, timestamp,
-                               CASE WHEN attachment_urls IS NOT NULL THEN 1 ELSE 0 END as has_images
-                        FROM message_history
-                        WHERE channel_id = ? AND message_id > ?
-                        AND author_id != ?
-                        AND content NOT LIKE '!%'
-                        AND content NOT LIKE '-%'
-                        ORDER BY message_id DESC
+                        SELECT m.message_id, m.channel_id, m.author_nickname, m.content, m.timestamp,
+                               CASE WHEN m.attachment_urls IS NOT NULL THEN 1 ELSE 0 END as has_images,
+                               m.reply_to_id,
+                               r.author_nickname as reply_author,
+                               r.content as reply_content
+                        FROM message_history m
+                        LEFT JOIN message_history r ON m.reply_to_id = r.message_id
+                        WHERE m.channel_id = ? AND m.message_id > ?
+                        AND m.author_id != ?
+                        AND m.content NOT LIKE '!%'
+                        AND m.content NOT LIKE '-%'
+                        ORDER BY m.message_id DESC
                         LIMIT ?
                     """
                     rows = conn.execute(query, (channel_id, since_id, wendy_bot_id, limit)).fetchall()
                 else:
                     query = """
-                        SELECT message_id, channel_id, author_nickname, content, timestamp,
-                               CASE WHEN attachment_urls IS NOT NULL THEN 1 ELSE 0 END as has_images
-                        FROM message_history
-                        WHERE channel_id = ?
-                        AND author_id != ?
-                        AND content NOT LIKE '!%'
-                        AND content NOT LIKE '-%'
-                        ORDER BY message_id DESC
+                        SELECT m.message_id, m.channel_id, m.author_nickname, m.content, m.timestamp,
+                               CASE WHEN m.attachment_urls IS NOT NULL THEN 1 ELSE 0 END as has_images,
+                               m.reply_to_id,
+                               r.author_nickname as reply_author,
+                               r.content as reply_content
+                        FROM message_history m
+                        LEFT JOIN message_history r ON m.reply_to_id = r.message_id
+                        WHERE m.channel_id = ?
+                        AND m.author_id != ?
+                        AND m.content NOT LIKE '!%'
+                        AND m.content NOT LIKE '-%'
+                        ORDER BY m.message_id DESC
                         LIMIT ?
                     """
                     rows = conn.execute(query, (channel_id, wendy_bot_id, limit)).fetchall()
 
                 for row in rows:
-                    attachments = find_attachments_for_message(row["message_id"])
+                    attachments = find_attachments_for_message(row["message_id"], channel_name)
+
+                    # Build reply context if this message is a reply
+                    reply_to = None
+                    if row["reply_to_id"] and row["reply_author"]:
+                        reply_to = ReplyContext(
+                            message_id=row["reply_to_id"],
+                            author=row["reply_author"],
+                            content=row["reply_content"] or "",
+                        )
+
                     msg = MessageInfo(
                         message_id=row["message_id"],
                         author=row["author_nickname"],
                         content=row["content"],
                         timestamp=row["timestamp"],
                         attachments=attachments if attachments else None,
+                        reply_to=reply_to,
                     )
                     messages.append(msg)
 
                 # Return in chronological order (oldest first)
                 messages = list(reversed(messages))
 
-                # Update last_seen with the newest message_id
-                if messages:
-                    newest_id = max(m.message_id for m in messages)
+                # Separate synthetic messages (ID >= 9 * 10^18) from real messages
+                # Synthetic messages are one-time notifications (webhooks, etc.) that
+                # should be shown to Claude once then deleted
+                SYNTHETIC_ID_THRESHOLD = 9_000_000_000_000_000_000
+                synthetic_ids = [m.message_id for m in messages if m.message_id >= SYNTHETIC_ID_THRESHOLD]
+                real_messages = [m for m in messages if m.message_id < SYNTHETIC_ID_THRESHOLD]
+
+                # Update last_seen with newest REAL message ID only
+                if real_messages:
+                    newest_id = max(m.message_id for m in real_messages)
                     update_last_seen(channel_id, newest_id)
+
+                # Delete synthetic messages after they've been read (they're one-time)
+                if synthetic_ids:
+                    placeholders = ",".join("?" * len(synthetic_ids))
+                    conn.execute(
+                        f"DELETE FROM message_history WHERE message_id IN ({placeholders})",
+                        synthetic_ids
+                    )
+                    conn.commit()
 
             finally:
                 conn.close()
@@ -488,33 +590,30 @@ async def check_messages(
         # Log but don't fail - still return task updates
         print(f"Error reading messages: {e}")
 
-    # Get task completions
+    # Get task completion notifications from SQLite
     try:
-        if TASK_COMPLETIONS_FILE.exists():
-            completions = json.loads(TASK_COMPLETIONS_FILE.read_text())
-            if not isinstance(completions, list):
-                completions = completions.get("completions", [])
+        unseen_notifications = state_manager.get_unseen_notifications_for_proxy()
 
-            # Find unseen completions
-            unseen = [c for c in completions if not c.get("seen_by_proxy", False)]
+        # Filter for task_completion type and build TaskUpdate objects
+        notification_ids = []
+        for n in unseen_notifications:
+            notification_ids.append(n.id)
 
-            for c in unseen:
+            if n.type == "task_completion" and n.payload:
                 task_updates.append(TaskUpdate(
-                    task_id=c.get("task_id", "unknown"),
-                    title=c.get("title", "Unknown task"),
-                    status=c.get("status", "completed"),  # Read status string directly
-                    duration=c.get("duration", "unknown"),
-                    completed_at=c.get("completed_at", ""),
+                    task_id=n.payload.get("task_id", "unknown"),
+                    title=n.title,
+                    status=n.payload.get("status", "completed"),
+                    duration=n.payload.get("duration", "unknown"),
+                    completed_at=n.created_at,
                 ))
 
-            # Mark as seen by proxy
-            if unseen:
-                for c in completions:
-                    c["seen_by_proxy"] = True
-                TASK_COMPLETIONS_FILE.write_text(json.dumps(completions, indent=2))
+        # Mark all as seen by proxy
+        if notification_ids:
+            state_manager.mark_notifications_seen_by_proxy(notification_ids)
 
     except Exception as e:
-        print(f"Error reading task completions: {e}")
+        print(f"Error reading notifications: {e}")
 
     return CheckMessagesResponse(messages=messages, task_updates=task_updates)
 
@@ -529,10 +628,10 @@ async def health() -> dict:
 # Usage Statistics
 # =============================================================================
 
-USAGE_DATA_FILE: Path = Path("/data/wendy/usage_data.json")
+USAGE_DATA_FILE: Path = WENDY_BASE / "usage_data.json"
 """JSON file where orchestrator writes latest Claude Code usage statistics."""
 
-USAGE_FORCE_CHECK_FILE: Path = Path("/data/wendy/usage_force_check")
+USAGE_FORCE_CHECK_FILE: Path = WENDY_BASE / "usage_force_check"
 """Sentinel file - touching this triggers immediate usage refresh."""
 
 

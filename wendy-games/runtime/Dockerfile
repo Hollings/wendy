@@ -19,4 +19,4 @@ ENV STATE_FILE=/data/state.json
 EXPOSE 8000
 
 # Default command - game files mounted at /app/game
-CMD ["run", "--allow-net=0.0.0.0:8000", "--allow-read=/data,/app", "--allow-write=/data", "--allow-env=PORT,STATE_FILE", "/app/game/server.ts"]
+CMD ["run", "--no-lock", "--allow-net=0.0.0.0:8000", "--allow-read=/data,/app", "--allow-write=/data", "--allow-env=PORT,STATE_FILE", "/app/game/server.ts"]

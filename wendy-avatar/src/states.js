@@ -27,22 +27,19 @@ export const STATES = {
     DONE: 'done',
 };
 
+// Timeout for pending send_message (prevents stuck state if result never arrives)
+const SEND_MESSAGE_TIMEOUT_MS = 30000;
+
 export class StateMachine extends EventTarget {
-    /**
-     * @param {TypingAnimator} typingAnimator - Shared typing animator instance
-     */
-    constructor(typingAnimator) {
+    constructor() {
         super();
         this.state = STATES.IDLE;
         this.stateData = {};
-        this.lastActivity = Date.now();
         this.idleTimeout = null;
 
         // Pending send_message (waiting for success response)
         this.pendingSendMessage = null;
-
-        // Typing animator for blocking transitions
-        this.typingAnimator = typingAnimator;
+        this.pendingSendMessageTimeout = null;
     }
 
     /**
@@ -56,17 +53,9 @@ export class StateMachine extends EventTarget {
      * Transition to a new state
      */
     transition(newState, data = {}) {
-        // Block transitions while typing animation is playing
-        if (this.typingAnimator?.isBlocking() && newState !== STATES.SEND_MESSAGE) {
-            const remaining = this.typingAnimator.getRemainingTime();
-            setTimeout(() => this.transition(newState, data), remaining + 100);
-            return;
-        }
-
         const oldState = this.state;
         this.state = newState;
         this.stateData = data;
-        this.lastActivity = Date.now();
 
         // Clear idle timeout on activity
         if (this.idleTimeout) {
@@ -128,10 +117,22 @@ export class StateMachine extends EventTarget {
 
             case 'send_message':
                 // Don't transition yet - wait for success response
+                // Clear any existing timeout
+                if (this.pendingSendMessageTimeout) {
+                    clearTimeout(this.pendingSendMessageTimeout);
+                }
                 this.pendingSendMessage = {
                     command: input?.command,
                     messageContent: classified.messageContent
                 };
+                // Set timeout to prevent stuck state if result never arrives
+                this.pendingSendMessageTimeout = setTimeout(() => {
+                    if (this.pendingSendMessage) {
+                        console.warn('[StateMachine] send_message timeout - no result received');
+                        this.pendingSendMessage = null;
+                        this.pendingSendMessageTimeout = null;
+                    }
+                }, SEND_MESSAGE_TIMEOUT_MS);
                 break;
 
             case 'Bash':
@@ -185,9 +186,20 @@ export class StateMachine extends EventTarget {
             const sendData = this.pendingSendMessage;
             this.pendingSendMessage = null;
 
+            // Clear the timeout since we got a result
+            if (this.pendingSendMessageTimeout) {
+                clearTimeout(this.pendingSendMessageTimeout);
+                this.pendingSendMessageTimeout = null;
+            }
+
             // Check if message was sent successfully
-            const isSuccess = !isError && content &&
-                (content.includes('success') || content.includes('queued'));
+            // More robust detection: look for exact patterns from the proxy response
+            const isSuccess = !isError && content && (
+                content.includes('"success": true') ||      // JSON response
+                content.includes('"success":true') ||       // JSON without space
+                content.includes('Message queued:') ||      // Direct success message
+                /\bsuccess["']?\s*:\s*true/i.test(content)  // Flexible JSON pattern
+            );
 
             if (isSuccess) {
                 this.transition(STATES.SEND_MESSAGE, {

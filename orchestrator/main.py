@@ -1,7 +1,7 @@
 """Bead Orchestrator - Autonomous task execution system using Claude Code agents.
 
 This module implements a task orchestrator that:
-- Polls the beads task queue for ready, unassigned tasks
+- Polls the beads task queue for ready, unassigned tasks (from multiple channels)
 - Spawns Claude Code CLI agents to work on tasks autonomously
 - Manages concurrent agent execution up to a configurable limit
 - Handles agent timeouts, cancellations, and completions
@@ -39,6 +39,17 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+# Add bot module to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from bot.paths import (
+    WENDY_BASE,
+    beads_dir,
+    channel_dir,
+    current_session_file,
+    session_dir,
+)
+from bot.state_manager import state as state_manager
+
 # =============================================================================
 # Configuration Constants
 # =============================================================================
@@ -53,25 +64,8 @@ overwhelming the system. Higher values (2-4) can be used if tasks are I/O bound.
 POLL_INTERVAL: int = int(os.getenv("ORCHESTRATOR_POLL_INTERVAL", "30"))
 """Seconds between polling for new tasks. Default 30 seconds."""
 
-WORKING_DIR: Path = Path(os.getenv("ORCHESTRATOR_WORKING_DIR", "/data/wendy"))
+WORKING_DIR: Path = WENDY_BASE
 """Base working directory for orchestrator data and outputs."""
-
-BEADS_DIR: Path = WORKING_DIR / "coding"
-"""Directory containing the .beads/ task queue (coding channel folder)."""
-
-CURRENT_SESSION_FILE: Path = BEADS_DIR / ".current_session"
-"""File containing Wendy's current session ID for forking."""
-
-SESSION_DIR: Path = Path(os.getenv(
-    "CLAUDE_SESSION_DIR",
-    "/root/.claude/projects/-data-wendy-coding"
-))
-"""Directory where Claude CLI session JSONL files are stored.
-
-By default, Claude CLI stores sessions in ~/.claude/projects/<encoded-path>/
-where the working directory path is encoded (e.g., /data/wendy/coding -> -data-wendy-coding).
-Override with CLAUDE_SESSION_DIR environment variable if needed.
-"""
 
 LOG_DIR: Path = WORKING_DIR / "orchestrator_logs"
 """Directory for agent execution log files."""
@@ -103,9 +97,6 @@ USAGE_POLL_INTERVAL: int = int(os.getenv("ORCHESTRATOR_USAGE_POLL_INTERVAL", "36
 
 USAGE_NOTIFY_CHANNEL: str = os.getenv("ORCHESTRATOR_USAGE_NOTIFY_CHANNEL", "")
 """Discord channel for usage threshold alerts. Falls back to NOTIFY_CHANNEL if empty."""
-
-USAGE_STATE_FILE: Path = WORKING_DIR / "usage_state.json"
-"""JSON file tracking last notified usage thresholds to avoid duplicate alerts."""
 
 USAGE_DATA_FILE: Path = WORKING_DIR / "usage_data.json"
 """JSON file with latest usage data for the proxy dashboard to read."""
@@ -169,6 +160,22 @@ log = logging.getLogger("orchestrator")
 
 
 @dataclass
+class ChannelBeadsConfig:
+    """Configuration for a channel with beads enabled.
+
+    Attributes:
+        name: Channel name (also the folder name).
+        beads_path: Path to the channel's .beads directory.
+        session_path: Path to the channel's Claude CLI session directory.
+        current_session_path: Path to the .current_session file.
+    """
+    name: str
+    beads_path: Path
+    session_path: Path
+    current_session_path: Path
+
+
+@dataclass
 class RunningAgent:
     """Tracks state for a running Claude Code agent subprocess.
 
@@ -180,6 +187,7 @@ class RunningAgent:
     Attributes:
         task_id: The beads task ID (e.g., "abc123").
         title: Human-readable task title for logging and notifications.
+        channel_name: The channel this task came from.
         process: The subprocess.Popen object for the Claude CLI process.
         started_at: When the agent was spawned (for timeout tracking).
         log_file: Path to the log file capturing agent stdout/stderr.
@@ -187,6 +195,7 @@ class RunningAgent:
 
     task_id: str
     title: str
+    channel_name: str
     process: subprocess.Popen
     started_at: datetime
     log_file: Path
@@ -200,10 +209,14 @@ class Orchestrator:
     execution, handles timeouts and cancellations, and sends Discord notifications
     for status updates.
 
+    Supports multiple channels with beads_enabled - each channel has its own
+    .beads directory and session forking.
+
     Attributes:
         active_agents: Map of task_id to RunningAgent for in-progress work.
         concurrency: Maximum number of concurrent agents allowed.
         last_usage_check: Timestamp of last Claude usage check (for rate limiting).
+        beads_channels: List of channel configs with beads enabled.
 
     Example:
         >>> orchestrator = Orchestrator()
@@ -214,12 +227,56 @@ class Orchestrator:
         """Initialize the orchestrator.
 
         Creates the log directory if needed and sets up initial state.
+        Loads channel configs to find channels with beads enabled.
         Does not start the main loop - call run() for that.
         """
         self.active_agents: dict[str, RunningAgent] = {}
         self.concurrency: int = CONCURRENCY
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         self.last_usage_check: float = 0.0
+        self.beads_channels: list[ChannelBeadsConfig] = self._load_beads_channels()
+
+    def _load_beads_channels(self) -> list[ChannelBeadsConfig]:
+        """Load channel configs and find channels with beads_enabled.
+
+        Reads WENDY_CHANNEL_CONFIG environment variable and extracts
+        channels that have beads_enabled: true.
+
+        Returns:
+            List of ChannelBeadsConfig for channels with beads enabled.
+        """
+        channels = []
+        config_json = os.getenv("WENDY_CHANNEL_CONFIG", "")
+
+        if not config_json:
+            log.warning("WENDY_CHANNEL_CONFIG not set, no beads channels configured")
+            return channels
+
+        try:
+            configs = json.loads(config_json)
+            for cfg in configs:
+                if cfg.get("beads_enabled", False):
+                    # Support legacy 'folder' field, otherwise use 'name'
+                    name = cfg.get("folder", cfg.get("name"))
+                    if not name:
+                        log.warning("Channel config missing name: %s", cfg)
+                        continue
+
+                    channels.append(ChannelBeadsConfig(
+                        name=name,
+                        beads_path=beads_dir(name),
+                        session_path=session_dir(name),
+                        current_session_path=current_session_file(name),
+                    ))
+                    log.info("Found beads-enabled channel: %s", name)
+
+        except json.JSONDecodeError as e:
+            log.error("Failed to parse WENDY_CHANNEL_CONFIG: %s", e)
+
+        if not channels:
+            log.warning("No channels with beads_enabled found in config")
+
+        return channels
 
     def _send_discord_message(self, channel: str, content: str) -> bool:
         """Send a message to Discord via the proxy API.
@@ -275,43 +332,55 @@ class Orchestrator:
             f.write(f"{reason}\n")
             f.write(f"Completed: {datetime.now().isoformat()}\n")
 
-    def get_ready_tasks(self) -> list[dict]:
+    def get_ready_tasks(self, channel: ChannelBeadsConfig) -> list[dict]:
         """Get list of ready, unassigned tasks from beads, sorted by priority.
 
         Runs `bd ready --unassigned --sort priority --json` to fetch tasks
         that are ready to be worked on and haven't been claimed yet.
 
+        Args:
+            channel: The channel config to poll for tasks.
+
         Returns:
             List of task dicts with keys like 'id', 'title', 'priority', 'labels'.
+            Each task dict is augmented with '_channel_name' for tracking.
             Returns empty list on any error (command failure, parse error, timeout).
         """
+        # Check if beads is initialized for this channel
+        if not (channel.beads_path / "issues.jsonl").exists():
+            return []
+
         try:
             result = subprocess.run(
                 ["bd", "ready", "--unassigned", "--sort", "priority", "--json"],
                 capture_output=True,
                 text=True,
-                cwd=BEADS_DIR,
+                cwd=channel_dir(channel.name),
                 timeout=30
             )
             if result.returncode != 0:
-                log.warning(f"bd ready failed: {result.stderr}")
+                log.warning(f"bd ready failed for {channel.name}: {result.stderr}")
                 return []
 
             if not result.stdout.strip():
                 return []
 
-            return json.loads(result.stdout)
+            tasks = json.loads(result.stdout)
+            # Augment each task with channel info
+            for task in tasks:
+                task["_channel_name"] = channel.name
+            return tasks
         except subprocess.TimeoutExpired:
-            log.error("bd ready timed out")
+            log.error(f"bd ready timed out for {channel.name}")
             return []
         except json.JSONDecodeError as e:
-            log.error(f"Failed to parse bd ready output: {e}")
+            log.error(f"Failed to parse bd ready output for {channel.name}: {e}")
             return []
         except FileNotFoundError:
             log.error("bd command not found - is beads installed?")
             return []
 
-    def claim_task(self, task_id: str) -> bool:
+    def claim_task(self, task_id: str, channel_name: str) -> bool:
         """Atomically claim a task by marking it as in-progress.
 
         Runs `bd update <task_id> --claim` which sets the task assignee
@@ -319,6 +388,7 @@ class Orchestrator:
 
         Args:
             task_id: The beads task ID to claim.
+            channel_name: The channel the task belongs to.
 
         Returns:
             True if claim succeeded, False on any error.
@@ -328,7 +398,7 @@ class Orchestrator:
                 ["bd", "update", task_id, "--claim"],
                 capture_output=True,
                 text=True,
-                cwd=BEADS_DIR,
+                cwd=channel_dir(channel_name),
                 timeout=10
             )
             if result.returncode != 0:
@@ -338,11 +408,12 @@ class Orchestrator:
             log.error(f"Failed to claim task {task_id}: {e}")
             return False
 
-    def complete_task(self, task_id: str, success: bool = True) -> bool:
+    def complete_task(self, task_id: str, channel_name: str, success: bool = True) -> bool:
         """Mark a task as complete or failed in beads.
 
         Args:
             task_id: The beads task ID.
+            channel_name: The channel the task belongs to.
             success: If True, runs `bd close`; if False, runs `bd reopen`.
 
         Returns:
@@ -354,7 +425,7 @@ class Orchestrator:
                 cmd,
                 capture_output=True,
                 text=True,
-                cwd=BEADS_DIR,
+                cwd=channel_dir(channel_name),
                 timeout=10
             )
             return result.returncode == 0
@@ -362,7 +433,7 @@ class Orchestrator:
             log.error(f"Failed to complete task {task_id}: {e}")
             return False
 
-    def get_task_details(self, task_id: str) -> dict | None:
+    def get_task_details(self, task_id: str, channel_name: str) -> dict | None:
         """Fetch full task details from beads.
 
         Runs `bd show <task_id> --json` to get the complete task record
@@ -370,6 +441,7 @@ class Orchestrator:
 
         Args:
             task_id: The beads task ID.
+            channel_name: The channel the task belongs to.
 
         Returns:
             Task dict with full details, or None if task not found or on error.
@@ -379,7 +451,7 @@ class Orchestrator:
                 ["bd", "show", task_id, "--json"],
                 capture_output=True,
                 text=True,
-                cwd=BEADS_DIR,
+                cwd=channel_dir(channel_name),
                 timeout=10
             )
             if result.returncode == 0:
@@ -422,7 +494,7 @@ class Orchestrator:
 
         Args:
             task: Task dict from beads with keys: id, title, description,
-                priority, labels.
+                priority, labels, _channel_name.
 
         Returns:
             RunningAgent instance for tracking, or None if spawn failed.
@@ -436,9 +508,10 @@ class Orchestrator:
         description = task.get("description", "")
         priority = task.get("priority", 2)
         labels = task.get("labels", [])
+        channel_name = task.get("_channel_name", "coding")  # Fallback for compatibility
 
         # Get more details if available
-        details = self.get_task_details(task_id)
+        details = self.get_task_details(task_id, channel_name)
         if details:
             description = details.get("description", description)
             labels = details.get("labels", labels)
@@ -457,29 +530,35 @@ class Orchestrator:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_file = LOG_DIR / f"agent_{task_id}_{timestamp}.log"
 
+        # Get channel-specific paths
+        chan_dir = channel_dir(channel_name)
+        sess_dir = session_dir(channel_name)
+        current_sess_file = current_session_file(channel_name)
+
         try:
             with open(log_file, "w") as f:
                 f.write(f"Task: {task_id} - {title}\n")
+                f.write(f"Channel: {channel_name}\n")
                 f.write(f"Priority: P{priority}\n")
                 f.write(f"Model: {model or 'opus (default)'}\n")
                 f.write(f"Started: {datetime.now().isoformat()}\n")
                 f.write(f"Prompt:\n{prompt}\n")
                 f.write("=" * 60 + "\n\n")
 
-            # Check if we can fork from Wendy's session
+            # Check if we can fork from Wendy's session for this channel
             fork_session_id = None
-            if CURRENT_SESSION_FILE.exists():
+            if current_sess_file.exists():
                 try:
-                    fork_session_id = CURRENT_SESSION_FILE.read_text().strip()
+                    fork_session_id = current_sess_file.read_text().strip()
                     # Verify session file exists
-                    session_file = SESSION_DIR / f"{fork_session_id}.jsonl"
+                    session_file = sess_dir / f"{fork_session_id}.jsonl"
                     if not session_file.exists():
-                        log.warning(f"Session {fork_session_id[:8]} not found, using fresh agent")
+                        log.warning(f"Session {fork_session_id[:8]} not found for {channel_name}, using fresh agent")
                         fork_session_id = None
                     else:
-                        log.info(f"Forking from Wendy's session {fork_session_id[:8]} for task {task_id}")
+                        log.info(f"Forking from Wendy's session {fork_session_id[:8]} for task {task_id} ({channel_name})")
                 except Exception as e:
-                    log.warning(f"Failed to read session file: {e}")
+                    log.warning(f"Failed to read session file for {channel_name}: {e}")
                     fork_session_id = None
 
             # Build CLI command
@@ -493,7 +572,7 @@ class Orchestrator:
             if fork_session_id:
                 cmd.extend(["--resume", fork_session_id, "--fork-session"])
             else:
-                log.info(f"No session to fork from, spawning fresh agent for task {task_id}")
+                log.info(f"No session to fork from, spawning fresh agent for task {task_id} ({channel_name})")
 
             # Common arguments for all agents
             cmd.extend([
@@ -517,22 +596,23 @@ class Orchestrator:
             model = model or "opus"
             cmd.extend(["--model", model])
 
-            # Spawn Claude Code CLI
+            # Spawn Claude Code CLI in the channel's directory
             with open(log_file, "a") as f:
                 process = subprocess.Popen(
                     cmd,
-                    cwd=WORKING_DIR / "coding",
+                    cwd=chan_dir,
                     stdout=f,
                     stderr=subprocess.STDOUT,
                     text=True
                 )
 
             model_str = f" (model: {model})" if model else ""
-            log.info(f"Spawned agent for task {task_id}: {title}{model_str}")
+            log.info(f"Spawned agent for task {task_id} in {channel_name}: {title}{model_str}")
 
             return RunningAgent(
                 task_id=task_id,
                 title=title,
+                channel_name=channel_name,
                 process=process,
                 started_at=datetime.now(),
                 log_file=log_file
@@ -545,7 +625,7 @@ class Orchestrator:
     def notify_completion(self, task_id: str, title: str, success: bool, duration: str) -> None:
         """Record task completion and optionally send Discord notification.
 
-        Always writes to task_completions.json (which Wendy can poll for updates).
+        Always writes to SQLite notifications table (which Wendy polls for updates).
         If NOTIFY_CHANNEL is configured, also sends a Discord message.
 
         Args:
@@ -555,32 +635,23 @@ class Orchestrator:
             duration: Human-readable duration string (e.g., "0:05:32").
         """
         status = "completed" if success else "failed"
-        timestamp = datetime.now().isoformat()
 
-        # Always write to completions file (Wendy can check this)
-        completions_file = WORKING_DIR / "task_completions.json"
+        # Record completion in unified notifications table
         try:
-            completions = []
-            if completions_file.exists():
-                try:
-                    completions = json.loads(completions_file.read_text())
-                except (OSError, json.JSONDecodeError):
-                    completions = []
-
-            # Add new completion (keep last 50)
-            completions.append({
-                "task_id": task_id,
-                "title": title,
-                "status": status,
-                "duration": duration,
-                "timestamp": timestamp,
-                "notified": False
-            })
-            completions = completions[-50:]
-
-            completions_file.write_text(json.dumps(completions, indent=2))
-            log.info(f"Recorded completion for {task_id}")
-
+            channel_id = int(NOTIFY_CHANNEL) if NOTIFY_CHANNEL else None
+            state_manager.add_notification(
+                type="task_completion",
+                source="orchestrator",
+                title=title,
+                channel_id=channel_id,
+                payload={
+                    "task_id": task_id,
+                    "status": status,
+                    "duration": duration,
+                },
+            )
+            state_manager.cleanup_old_notifications(keep_count=100)
+            log.info(f"Recorded completion notification for {task_id}")
         except Exception as e:
             log.error(f"Failed to write completion record: {e}")
 
@@ -597,15 +668,6 @@ class Orchestrator:
 
         if self._send_discord_message(NOTIFY_CHANNEL, message):
             log.info(f"Sent Discord notification for {task_id}")
-            # Mark as notified
-            try:
-                completions = json.loads(completions_file.read_text())
-                for c in completions:
-                    if c["task_id"] == task_id:
-                        c["notified"] = True
-                completions_file.write_text(json.dumps(completions, indent=2))
-            except Exception:
-                pass
 
     def check_agents(self) -> None:
         """Poll running agents and handle completions, timeouts, and cleanup.
@@ -626,7 +688,7 @@ class Orchestrator:
             if retcode is None and duration.total_seconds() > AGENT_TIMEOUT:
                 log.warning(f"Agent for task {task_id} timed out after {duration}")
                 self._terminate_agent(agent, f"TIMEOUT: Agent killed after {duration}")
-                self.complete_task(task_id, success=False)
+                self.complete_task(task_id, agent.channel_name, success=False)
                 self.notify_completion(task_id, agent.title, False, f"{duration} (TIMEOUT)")
                 finished.append(task_id)
                 continue
@@ -644,7 +706,7 @@ class Orchestrator:
                 )
 
                 # Mark task as complete
-                self.complete_task(task_id, success=success)
+                self.complete_task(task_id, agent.channel_name, success=success)
 
                 # Append completion info to log
                 with open(agent.log_file, "a") as f:
@@ -700,7 +762,7 @@ class Orchestrator:
             return iso_timestamp
 
     def get_usage_state(self) -> dict:
-        """Load usage notification state from disk.
+        """Load usage notification state from SQLite.
 
         Tracks the last notified threshold percentages to avoid sending
         duplicate notifications for the same usage level.
@@ -708,21 +770,21 @@ class Orchestrator:
         Returns:
             Dict with 'last_notified_week_all' and 'last_notified_week_sonnet' keys.
         """
-        if USAGE_STATE_FILE.exists():
-            try:
-                return json.loads(USAGE_STATE_FILE.read_text())
-            except (OSError, json.JSONDecodeError):
-                pass
-        return {"last_notified_week_all": 0, "last_notified_week_sonnet": 0}
+        return {
+            "last_notified_week_all": state_manager.get_usage_threshold("last_notified_week_all"),
+            "last_notified_week_sonnet": state_manager.get_usage_threshold("last_notified_week_sonnet"),
+        }
 
-    def save_usage_state(self, state: dict) -> None:
-        """Persist usage notification state to disk.
+    def save_usage_state(self, usage_state: dict) -> None:
+        """Persist usage notification state to SQLite.
 
         Args:
-            state: Dict with 'last_notified_week_all' and 'last_notified_week_sonnet'.
+            usage_state: Dict with 'last_notified_week_all' and 'last_notified_week_sonnet'.
         """
         try:
-            USAGE_STATE_FILE.write_text(json.dumps(state, indent=2))
+            for key, value in usage_state.items():
+                if isinstance(value, int):
+                    state_manager.set_usage_threshold(key, value)
         except Exception as e:
             log.error(f"Failed to save usage state: {e}")
 
@@ -875,7 +937,7 @@ class Orchestrator:
                     log.info(f"Canceling task {task_id} by request")
 
                     self._terminate_agent(agent, "CANCELED by user request")
-                    self.complete_task(task_id, success=False)
+                    self.complete_task(task_id, agent.channel_name, success=False)
 
                     duration = datetime.now() - agent.started_at
                     self.notify_completion(task_id, agent.title, False, f"{duration} (CANCELED)")
@@ -915,7 +977,7 @@ class Orchestrator:
                 # Process already exited, let normal completion flow handle it
                 continue
 
-            task = self.get_task_details(task_id)
+            task = self.get_task_details(task_id, agent.channel_name)
             if task and task.get("status") == "closed":
                 to_kill.append(task_id)
 
@@ -930,48 +992,62 @@ class Orchestrator:
 
             del self.active_agents[task_id]
 
-    def init_beads(self) -> bool:
-        """Initialize the beads task queue if not already initialized.
+    def init_beads_for_channels(self) -> bool:
+        """Initialize beads for all configured channels if not already initialized.
 
-        Runs `bd init` in BEADS_DIR if the .beads directory doesn't exist.
+        Runs `bd init` in each channel's directory if the .beads directory
+        doesn't exist.
 
         Returns:
-            True if beads is initialized (or was already), False on error.
+            True if at least one channel has beads initialized, False if none.
         """
-        if (BEADS_DIR / ".beads").exists():
-            return True
-
-        log.info("Initializing beads...")
-        try:
-            result = subprocess.run(
-                ["bd", "init"],
-                capture_output=True,
-                text=True,
-                cwd=BEADS_DIR,
-                timeout=30
-            )
-            if result.returncode == 0:
-                log.info("Beads initialized successfully")
-                return True
-            else:
-                log.error(f"Failed to init beads: {result.stderr}")
-                return False
-        except Exception as e:
-            log.error(f"Failed to init beads: {e}")
+        if not self.beads_channels:
+            log.warning("No beads-enabled channels configured")
             return False
+
+        any_initialized = False
+        for channel in self.beads_channels:
+            chan_dir = channel_dir(channel.name)
+
+            # Ensure channel directory exists
+            chan_dir.mkdir(parents=True, exist_ok=True)
+
+            # Check if already initialized
+            if (channel.beads_path).exists():
+                any_initialized = True
+                continue
+
+            log.info(f"Initializing beads for channel {channel.name}...")
+            try:
+                result = subprocess.run(
+                    ["bd", "init"],
+                    capture_output=True,
+                    text=True,
+                    cwd=chan_dir,
+                    timeout=30
+                )
+                if result.returncode == 0:
+                    log.info(f"Beads initialized for {channel.name}")
+                    any_initialized = True
+                else:
+                    log.error(f"Failed to init beads for {channel.name}: {result.stderr}")
+            except Exception as e:
+                log.error(f"Failed to init beads for {channel.name}: {e}")
+
+        return any_initialized
 
     def run(self) -> None:
         """Run the main orchestrator loop.
 
         This is the entry point for the orchestrator. It:
-        1. Initializes beads if needed
+        1. Initializes beads for configured channels if needed
         2. Enters an infinite loop that:
            - Checks for cancel requests
            - Checks for externally closed tasks
            - Polls running agents for completion/timeout
            - Cleans up old log files
            - Checks Claude usage (hourly)
-           - Fetches ready tasks and spawns agents up to concurrency limit
+           - Fetches ready tasks from all beads-enabled channels and spawns agents
         3. Sleeps for POLL_INTERVAL between iterations
 
         This method runs forever until the process is killed.
@@ -979,10 +1055,11 @@ class Orchestrator:
         log.info(f"Orchestrator starting with concurrency={self.concurrency}")
         log.info(f"Working directory: {WORKING_DIR}")
         log.info(f"Poll interval: {POLL_INTERVAL}s")
+        log.info(f"Beads-enabled channels: {[c.name for c in self.beads_channels]}")
 
-        # Auto-init beads if needed
-        if not self.init_beads():
-            log.error("Could not initialize beads, exiting")
+        # Auto-init beads for configured channels
+        if not self.init_beads_for_channels():
+            log.error("Could not initialize beads for any channel, exiting")
             return
 
         while True:
@@ -1006,17 +1083,22 @@ class Orchestrator:
                 available_slots = self.concurrency - len(self.active_agents)
 
                 if available_slots > 0:
-                    ready_tasks = self.get_ready_tasks()
+                    # Poll all beads-enabled channels for ready tasks
+                    all_ready_tasks = []
+                    for channel in self.beads_channels:
+                        tasks = self.get_ready_tasks(channel)
+                        all_ready_tasks.extend(tasks)
 
-                    for task in ready_tasks:
+                    for task in all_ready_tasks:
                         task_id = task.get("id")
+                        channel_name = task.get("_channel_name", "coding")
 
                         # Skip if already working on this task
                         if task_id in self.active_agents:
                             continue
 
                         # Claim and spawn
-                        if self.claim_task(task_id):
+                        if self.claim_task(task_id, channel_name):
                             agent = self.spawn_agent(task)
                             if agent:
                                 self.active_agents[task_id] = agent

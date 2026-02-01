@@ -42,12 +42,6 @@ class TestCountDiscordMessagesInToolResult:
         result = _count_discord_messages_in_tool_result('{"key": "value"}')
         assert result == 0
 
-    def test_single_message(self):
-        """Should count single message correctly."""
-        messages = [{"message_id": 1, "author": "test", "content": "hi"}]
-        result = _count_discord_messages_in_tool_result(json.dumps(messages))
-        assert result == 1
-
 
 class TestCountDiscordMessages:
     """Tests for _count_discord_messages."""
@@ -81,8 +75,8 @@ class TestCountDiscordMessages:
         ]
         assert _count_discord_messages(messages) == 2
 
-    def test_multiple_tool_results(self):
-        """Should sum across multiple tool results."""
+    def test_multiple_tool_results_across_messages(self):
+        """Should sum Discord messages across multiple user messages."""
         msgs1 = [{"message_id": 1, "author": "a", "content": "x"}]
         msgs2 = [
             {"message_id": 2, "author": "b", "content": "y"},
@@ -94,6 +88,14 @@ class TestCountDiscordMessages:
                 "message": {
                     "content": [
                         {"type": "tool_result", "content": json.dumps(msgs1)},
+                    ]
+                }
+            },
+            {"type": "assistant", "message": {"content": "ok"}},
+            {
+                "type": "user",
+                "message": {
+                    "content": [
                         {"type": "tool_result", "content": json.dumps(msgs2)},
                     ]
                 }
@@ -108,54 +110,105 @@ class TestCountDiscordMessages:
         ]
         assert _count_discord_messages(messages) == 0
 
+    def test_mixed_tool_results_only_counts_discord(self):
+        """Should only count tool_results that look like Discord messages."""
+        discord_msgs = [{"message_id": 1, "author": "user", "content": "hi"}]
+        messages = [
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {"type": "tool_result", "content": "some text output"},
+                        {"type": "tool_result", "content": json.dumps(discord_msgs)},
+                        {"type": "tool_result", "content": '{"not": "a message list"}'},
+                    ]
+                }
+            }
+        ]
+        assert _count_discord_messages(messages) == 1
+
 
 class TestGetPermissionsForChannel:
     """Tests for _get_permissions_for_channel."""
 
     def setup_method(self):
         """Create generator instance for testing."""
-        # Mock the CLI path check
         import os
         os.environ["CLAUDE_CLI_PATH"] = "/bin/true"
         self.generator = ClaudeCliTextGenerator()
 
-    def test_chat_mode_permissions(self):
-        """Chat mode should have restricted permissions."""
-        config = {"mode": "chat", "folder": "chat"}
+    def test_chat_mode_exact_allowed_tools(self):
+        """Chat mode allowed string should have exact expected format."""
+        config = {"mode": "chat", "name": "mychat"}
         allowed, disallowed = self.generator._get_permissions_for_channel(config)
 
-        # Should allow Read, WebSearch, WebFetch, Bash, and folder-specific Edit/Write
-        assert "Read" in allowed
-        assert "WebSearch" in allowed
-        assert "Bash" in allowed
-        assert "Edit(//data/wendy/chat/**)" in allowed
-        assert "Write(//data/wendy/chat/**)" in allowed
+        # Verify the exact allowed tools list
+        expected_allowed = (
+            "Read,WebSearch,WebFetch,Bash,"
+            "Edit(//data/wendy/channels/mychat/**),"
+            "Write(//data/wendy/channels/mychat/**),"
+            "Write(//data/wendy/tmp/**),"
+            "Write(//tmp/**)"
+        )
+        assert allowed == expected_allowed
 
-        # Should disallow coding folder access
-        assert "coding" in disallowed
-
-    def test_full_mode_permissions(self):
-        """Full mode should have broader permissions."""
-        config = {"mode": "full", "folder": "coding"}
+    def test_chat_mode_disallowed_tools(self):
+        """Chat mode should block editing scripts and app directory."""
+        config = {"mode": "chat", "name": "mychat"}
         allowed, disallowed = self.generator._get_permissions_for_channel(config)
 
-        # Should allow uploads folder
-        assert "Write(//data/wendy/uploads/**)" in allowed
+        # Chat mode blocks editing shell scripts, python scripts, and app dir
+        assert "Edit(//data/wendy/*.sh)" in disallowed
+        assert "Edit(//data/wendy/*.py)" in disallowed
+        assert "Edit(//app/**)" in disallowed
+        assert "Write(//app/**)" in disallowed
 
-        # Should not restrict coding folder
-        assert "coding" not in disallowed
-
-    def test_default_mode_is_full(self):
-        """Missing mode should default to full."""
-        config = {"folder": "wendys_folder"}
+    def test_full_mode_exact_allowed_tools(self):
+        """Full mode allowed string should have exact expected format."""
+        config = {"mode": "full", "name": "coding"}
         allowed, disallowed = self.generator._get_permissions_for_channel(config)
 
-        # Default should be full mode (allows uploads)
-        assert "Write(//data/wendy/uploads/**)" in allowed
+        expected_allowed = (
+            "Read,WebSearch,WebFetch,Bash,"
+            "Edit(//data/wendy/channels/coding/**),"
+            "Write(//data/wendy/channels/coding/**),"
+            "Write(//data/wendy/tmp/**),"
+            "Write(//tmp/**)"
+        )
+        assert allowed == expected_allowed
 
-    def test_default_folder(self):
-        """Missing folder should default to wendys_folder."""
-        config = {"mode": "chat"}
-        allowed, _ = self.generator._get_permissions_for_channel(config)
+    def test_full_mode_disallowed_tools(self):
+        """Full mode should only block app directory."""
+        config = {"mode": "full", "name": "coding"}
+        allowed, disallowed = self.generator._get_permissions_for_channel(config)
 
-        assert "wendys_folder" in allowed
+        # Full mode only blocks app dir
+        assert disallowed == "Edit(//app/**),Write(//app/**)"
+
+    def test_missing_mode_defaults_to_full(self):
+        """Missing mode should default to full mode permissions."""
+        config = {"name": "testchan"}
+        allowed, disallowed = self.generator._get_permissions_for_channel(config)
+
+        # Should get full mode permissions (only app blocked)
+        assert disallowed == "Edit(//app/**),Write(//app/**)"
+        assert "Edit(//data/wendy/channels/testchan/**)" in allowed
+
+    def test_missing_name_defaults_to_default(self):
+        """Missing name should use 'default' in paths."""
+        config = {"mode": "full"}
+        allowed, disallowed = self.generator._get_permissions_for_channel(config)
+
+        # Should use "default" as channel name in paths
+        assert "Edit(//data/wendy/channels/default/**)" in allowed
+        assert "Write(//data/wendy/channels/default/**)" in allowed
+
+    def test_folder_key_overrides_name(self):
+        """_folder key should take precedence over name for backwards compat."""
+        config = {"mode": "full", "name": "display_name", "_folder": "actual_folder"}
+        allowed, disallowed = self.generator._get_permissions_for_channel(config)
+
+        # Should use _folder, not name
+        assert "Edit(//data/wendy/channels/actual_folder/**)" in allowed
+        assert "Write(//data/wendy/channels/actual_folder/**)" in allowed
+        assert "display_name" not in allowed

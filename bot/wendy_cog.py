@@ -5,7 +5,7 @@ This module implements the Discord.py cog that:
 - Caches incoming messages to SQLite for context building
 - Downloads and saves attachments locally
 - Triggers Claude CLI sessions in response to messages
-- Monitors for orchestrator task completions and wakes Wendy
+- Monitors for notifications (task completions, webhooks) and wakes Wendy
 - Provides !context and !reset commands for session management
 
 Architecture:
@@ -28,27 +28,20 @@ import asyncio
 import json
 import logging
 import os
-from pathlib import Path
 
 import discord
 from discord.ext import commands, tasks
 
 from .claude_cli import ClaudeCliError, ClaudeCliTextGenerator
+from .paths import (
+    DB_PATH,
+    attachments_dir,
+    ensure_shared_dirs,
+    validate_channel_name,
+)
+from .state_manager import state as state_manager
 
 _LOG = logging.getLogger(__name__)
-
-# =============================================================================
-# Configuration Constants
-# =============================================================================
-
-DB_PATH: Path = Path(os.getenv("WENDY_DB_PATH", "/data/wendy.db"))
-"""Path to SQLite database for caching Discord messages."""
-
-ATTACHMENTS_DIR: Path = Path("/data/wendy/attachments")
-"""Directory for storing downloaded message attachments."""
-
-TASK_COMPLETIONS_FILE: Path = Path("/data/wendy/task_completions.json")
-"""JSON file where orchestrator writes task completion notifications."""
 
 
 class GenerationJob:
@@ -59,11 +52,13 @@ class GenerationJob:
 
     Attributes:
         task: The asyncio Task running the generation, or None if not started.
+        new_message_pending: True if new messages arrived while this job was running.
     """
 
     def __init__(self) -> None:
         """Initialize an empty generation job."""
         self.task: asyncio.Task | None = None
+        self.new_message_pending: bool = False
 
 
 class WendyCog(commands.Cog):
@@ -78,8 +73,10 @@ class WendyCog(commands.Cog):
         channel_configs: Map of channel_id to channel configuration dicts.
         whitelist_channels: Set of channel IDs where Wendy listens.
 
-    Example channel config format:
-        {"id": "123", "name": "coding", "folder": "coding", "mode": "full"}
+    Example channel config format (new):
+        {"id": "123", "name": "coding", "mode": "full", "beads_enabled": true}
+
+    Note: The 'name' field is used as the folder name. No separate 'folder' field.
 
     Modes:
         - "full": Full coding capabilities with all tools
@@ -99,7 +96,7 @@ class WendyCog(commands.Cog):
         self.generator = ClaudeCliTextGenerator()
 
         # Channel configuration - maps channel_id to config dict
-        # Config format: {"id": "123", "name": "chat", "folder": "chat", "mode": "chat"}
+        # Config format: {"id": "123", "name": "coding", "mode": "full", "beads_enabled": true}
         self.channel_configs: dict[int, dict] = {}
         self.whitelist_channels: set[int] = set()
 
@@ -109,9 +106,11 @@ class WendyCog(commands.Cog):
             try:
                 configs = json.loads(config_json)
                 for cfg in configs:
-                    channel_id = int(cfg["id"])
-                    self.channel_configs[channel_id] = cfg
-                    self.whitelist_channels.add(channel_id)
+                    parsed = self._parse_channel_config(cfg)
+                    if parsed:
+                        channel_id = int(parsed["id"])
+                        self.channel_configs[channel_id] = parsed
+                        self.whitelist_channels.add(channel_id)
                 _LOG.info("Loaded %d channel configs from WENDY_CHANNEL_CONFIG", len(self.channel_configs))
             except (json.JSONDecodeError, KeyError, ValueError) as e:
                 _LOG.error("Failed to parse WENDY_CHANNEL_CONFIG: %s", e)
@@ -128,8 +127,8 @@ class WendyCog(commands.Cog):
                         self.channel_configs[channel_id] = {
                             "id": str(channel_id),
                             "name": "default",
-                            "folder": "wendys_folder",
-                            "mode": "full"
+                            "mode": "full",
+                            "beads_enabled": False,
                         }
                     except ValueError:
                         pass
@@ -137,15 +136,63 @@ class WendyCog(commands.Cog):
         # Active generations (per channel)
         self._active_generations: dict[int, GenerationJob] = {}
 
+        # Ensure shared directories exist
+        ensure_shared_dirs()
+
         # Initialize database
         self._init_db()
 
-        # Start task completion watcher if we have whitelisted channels
+        # Start notification watcher if we have whitelisted channels
         if self.whitelist_channels:
-            self.watch_task_completions.start()
-            _LOG.info("Task completion watcher started")
+            self.watch_notifications.start()
+            _LOG.info("Notifications watcher started")
 
         _LOG.info("WendyCog initialized with %d whitelisted channels", len(self.whitelist_channels))
+
+    def _parse_channel_config(self, cfg: dict) -> dict | None:
+        """Parse and validate a channel configuration.
+
+        Args:
+            cfg: Raw channel config dict from JSON.
+
+        Returns:
+            Normalized config dict, or None if invalid.
+        """
+        # Required fields
+        if "id" not in cfg:
+            _LOG.error("Channel config missing 'id' field: %s", cfg)
+            return None
+        if "name" not in cfg:
+            _LOG.error("Channel config missing 'name' field: %s", cfg)
+            return None
+
+        name = cfg["name"]
+        if not validate_channel_name(name):
+            _LOG.error(
+                "Invalid channel name '%s' - must match ^[a-zA-Z0-9_-]+$",
+                name
+            )
+            return None
+
+        # Build normalized config
+        # Support legacy 'folder' field by using it if present, otherwise use 'name'
+        folder = cfg.get("folder", name)
+        if not validate_channel_name(folder):
+            _LOG.warning(
+                "Invalid folder '%s' in config, using name '%s' instead",
+                folder, name
+            )
+            folder = name
+
+        return {
+            "id": str(cfg["id"]),
+            "name": name,
+            "mode": cfg.get("mode", "chat"),
+            "model": cfg.get("model"),  # None means use default
+            "beads_enabled": cfg.get("beads_enabled", False),
+            # Internal: actual folder to use (supports legacy 'folder' field)
+            "_folder": folder,
+        }
 
     def _init_db(self) -> None:
         """Initialize the SQLite database schema.
@@ -157,14 +204,18 @@ class WendyCog(commands.Cog):
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         _LOG.info("Database path verified at %s", DB_PATH)
 
-    async def _save_attachments(self, message: discord.Message) -> list[str]:
+    async def _save_attachments(self, message: discord.Message, channel_name: str) -> list[str]:
         """Download and save message attachments to local filesystem.
 
         Files are saved with pattern: msg_{message_id}_{index}_{filename}
         This allows the proxy to find attachments by message ID.
 
+        Attachments are stored per-channel to ensure Claude sessions in one
+        channel cannot access attachments from other channels.
+
         Args:
             message: Discord message with potential attachments.
+            channel_name: Name of the channel (used as folder name).
 
         Returns:
             List of absolute paths to saved attachment files.
@@ -172,14 +223,15 @@ class WendyCog(commands.Cog):
         if not message.attachments:
             return []
 
-        ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+        att_dir = attachments_dir(channel_name)
+        att_dir.mkdir(parents=True, exist_ok=True)
         paths = []
 
         for i, attachment in enumerate(message.attachments):
             try:
                 # Create filename with message ID for lookup
                 filename = f"msg_{message.id}_{i}_{attachment.filename}"
-                filepath = ATTACHMENTS_DIR / filename
+                filepath = att_dir / filename
 
                 # Download and save
                 data = await attachment.read()
@@ -214,9 +266,11 @@ class WendyCog(commands.Cog):
         if not message.guild:
             return
 
-        # Check channel whitelist
+        # Check channel whitelist and get config
         if not self._channel_allowed(message):
             return
+        channel_config = self.channel_configs.get(message.channel.id, {})
+        channel_name = channel_config.get("_folder") or channel_config.get("name", "default")
 
         # Ignore commands
         if message.content.startswith(("!", "-", "/")):
@@ -226,8 +280,10 @@ class WendyCog(commands.Cog):
         if not message.content.strip() and not message.attachments:
             return
 
-        # Save any attachments
-        await self._save_attachments(message)
+        # ALWAYS save attachments, even if we skip generation
+        # This prevents race conditions where check_messages sees a message
+        # but the attachment file hasn't been downloaded yet
+        await self._save_attachments(message, channel_name)
 
         # Check if bot was mentioned or should respond
         if not await self._should_respond(message):
@@ -243,13 +299,20 @@ class WendyCog(commands.Cog):
         # Check for existing generation
         existing_job = self._active_generations.get(message.channel.id)
         if existing_job and existing_job.task and not existing_job.task.done():
-            # Claude CLI is already running, it will check for new messages
-            _LOG.info("Claude CLI already running in channel %s, skipping", message.channel.id)
+            # Claude CLI is already running - mark that new messages arrived
+            # so we can start a new generation when the current one finishes
+            existing_job.new_message_pending = True
+            _LOG.info("Claude CLI already running in channel %s, marked pending", message.channel.id)
             return
 
-        # Start generation (use haiku for webhooks to save costs)
+        # Determine model: webhooks use haiku, otherwise use channel config model
+        if is_webhook:
+            model_override = "haiku"
+        else:
+            model_override = channel_config.get("model")  # None means use default
+
+        # Start generation
         job = GenerationJob()
-        model_override = "haiku" if is_webhook else None
         task = self.bot.loop.create_task(self._generate_response(message, job, model_override=model_override))
         job.task = task
         self._active_generations[message.channel.id] = job
@@ -335,7 +398,18 @@ class WendyCog(commands.Cog):
 
         finally:
             if self._active_generations.get(channel.id) is job:
-                self._active_generations.pop(channel.id, None)
+                # Check if new messages arrived while we were running
+                if job.new_message_pending:
+                    _LOG.info("New messages pending in channel %s, starting new generation", channel.id)
+                    # Start a new generation for the pending messages
+                    new_job = GenerationJob()
+                    new_task = self.bot.loop.create_task(
+                        self._generate_response_for_channel(channel, new_job)
+                    )
+                    new_job.task = new_task
+                    self._active_generations[channel.id] = new_job
+                else:
+                    self._active_generations.pop(channel.id, None)
 
     @commands.command(name="context")
     async def context_command(self, ctx: commands.Context) -> None:
@@ -386,74 +460,159 @@ Cache create: {stats.get('total_cache_create_tokens', 0):,}
         await ctx.send(f"Session reset. New session: `{new_session_id[:8]}...`")
 
     @tasks.loop(seconds=5)
-    async def watch_task_completions(self) -> None:
-        """Watch for orchestrator task completions and wake Wendy.
+    async def watch_notifications(self) -> None:
+        """Watch for notifications (task completions, webhooks) and wake Wendy.
 
-        Polls TASK_COMPLETIONS_FILE every 5 seconds. When unseen completions
-        are found, marks them as seen and triggers a generation in the
-        "full" mode channel to let Wendy review the results.
+        Polls SQLite every 5 seconds. When unseen notifications are found:
+        - task_completion: Just wake Wendy in the "full" mode channel
+        - webhook: Insert synthetic message, then wake Wendy in target channel
         """
         if not self.whitelist_channels:
             return
 
         try:
-            if not TASK_COMPLETIONS_FILE.exists():
-                return
-
-            # Orchestrator writes completions as a list directly
-            data = json.loads(TASK_COMPLETIONS_FILE.read_text())
-            if isinstance(data, list):
-                completions = data
-            elif isinstance(data, dict):
-                completions = data.get("completions", [])
-            else:
-                completions = []
-
-            # Find unseen completions
-            unseen = [c for c in completions if not c.get("seen_by_wendy", False)]
+            # Get unseen notifications from SQLite
+            unseen = state_manager.get_unseen_notifications_for_wendy()
             if not unseen:
                 return
 
-            _LOG.info("Found %d unseen task completions, waking Wendy", len(unseen))
+            _LOG.info("Found %d unseen notifications", len(unseen))
 
-            # Mark all as seen
-            for c in completions:
-                c["seen_by_wendy"] = True
-            TASK_COMPLETIONS_FILE.write_text(json.dumps(completions, indent=2))
+            # Get message logger cog for inserting synthetic messages (webhooks)
+            message_logger = self.bot.get_cog("MessageLoggerCog")
 
-            # Use coding channel for task completions (or first channel with full mode)
-            channel_id = None
-            for cid, cfg in self.channel_configs.items():
-                if cfg.get("mode") == "full":
-                    channel_id = cid
-                    break
-            if not channel_id:
-                channel_id = next(iter(self.whitelist_channels), None)
-            if not channel_id:
-                _LOG.warning("No channel available for task completion")
-                return
-            channel = self.bot.get_channel(channel_id)
-            if not channel:
-                _LOG.warning("Whitelist channel %d not found", channel_id)
-                return
+            # Track channels to wake and notification IDs to mark as seen
+            channels_to_wake = set()
+            notification_ids = []
 
-            # Check for existing generation
-            existing_job = self._active_generations.get(channel.id)
-            if existing_job and existing_job.task and not existing_job.task.done():
-                _LOG.info("Claude CLI already running, skipping task wake")
-                return
+            for notif in unseen:
+                notification_ids.append(notif.id)
 
-            # Start generation (same as on_message but without a trigger message)
-            job = GenerationJob()
-            task = self.bot.loop.create_task(self._generate_response_for_channel(channel, job))
-            job.task = task
-            self._active_generations[channel.id] = job
+                if notif.type == "task_completion":
+                    # Task completions go to the "full" mode channel
+                    channel_id = notif.channel_id
+                    if not channel_id:
+                        # Find default "full" mode channel
+                        for cid, cfg in self.channel_configs.items():
+                            if cfg.get("mode") == "full":
+                                channel_id = cid
+                                break
+                        if not channel_id:
+                            channel_id = next(iter(self.whitelist_channels), None)
+
+                    if channel_id:
+                        # Insert synthetic message so Wendy knows to announce the completion
+                        payload = notif.payload or {}
+                        task_id = payload.get("task_id", "unknown")
+                        status = payload.get("status", "completed")
+                        duration = payload.get("duration", "")
+
+                        author = "Task System"
+                        content = f"[{author}] Background task {task_id} ({notif.title}) {status}"
+                        if duration:
+                            content += f" in {duration}"
+                        content += ". YOU MUST send a message to the channel announcing this completion - this is a required system notification, not optional."
+
+                        if message_logger:
+                            channel_config = self.channel_configs.get(channel_id, {})
+                            guild_id = channel_config.get("guild_id")
+                            if guild_id:
+                                try:
+                                    guild_id = int(guild_id)
+                                except ValueError:
+                                    guild_id = None
+
+                            message_logger.insert_synthetic_message(
+                                channel_id=channel_id,
+                                author_nickname=author,
+                                content=content,
+                                guild_id=guild_id,
+                            )
+
+                        channels_to_wake.add(channel_id)
+
+                elif notif.type == "webhook":
+                    channel_id = notif.channel_id
+                    if not channel_id:
+                        _LOG.warning("Webhook notification without channel_id: %s", notif.title)
+                        continue
+
+                    # Check if this channel is in our whitelist
+                    if channel_id not in self.whitelist_channels:
+                        _LOG.warning("Webhook for non-whitelisted channel %d", channel_id)
+                        continue
+
+                    # Insert synthetic message so Claude can see the webhook content
+                    author = f"Webhook: {notif.source.title()}"
+                    # Include payload content if available
+                    payload_content = ""
+                    if notif.payload:
+                        # Extract the raw webhook data
+                        raw_data = notif.payload.get("raw", notif.payload)
+                        if isinstance(raw_data, dict):
+                            # Format dict as readable content
+                            payload_content = "\n" + json.dumps(raw_data, indent=2)
+                        elif raw_data:
+                            payload_content = f"\n{raw_data}"
+                    content = f"[{author}] {notif.title}{payload_content}"
+
+                    if message_logger:
+                        # Get guild_id from channel config if available
+                        channel_config = self.channel_configs.get(channel_id, {})
+                        guild_id = channel_config.get("guild_id")
+                        if guild_id:
+                            try:
+                                guild_id = int(guild_id)
+                            except ValueError:
+                                guild_id = None
+
+                        message_logger.insert_synthetic_message(
+                            channel_id=channel_id,
+                            author_nickname=author,
+                            content=content,
+                            guild_id=guild_id,
+                        )
+                    else:
+                        _LOG.warning("MessageLoggerCog not found, cannot insert synthetic message")
+
+                    channels_to_wake.add(channel_id)
+
+                else:
+                    _LOG.warning("Unknown notification type: %s", notif.type)
+
+            # Mark all notifications as seen
+            if notification_ids:
+                state_manager.mark_notifications_seen_by_wendy(notification_ids)
+
+            # Wake Wendy in each affected channel
+            for channel_id in channels_to_wake:
+                channel = self.bot.get_channel(channel_id)
+                if not channel:
+                    _LOG.warning("Channel %d not found", channel_id)
+                    continue
+
+                # Check for existing generation
+                existing_job = self._active_generations.get(channel_id)
+                if existing_job and existing_job.task and not existing_job.task.done():
+                    # Mark that new messages arrived so we'll process after current gen
+                    existing_job.new_message_pending = True
+                    _LOG.info("Claude CLI already running in channel %d, marked pending", channel_id)
+                    continue
+
+                # Start generation
+                job = GenerationJob()
+                task = self.bot.loop.create_task(
+                    self._generate_response_for_channel(channel, job)
+                )
+                job.task = task
+                self._active_generations[channel_id] = job
+                _LOG.info("Triggered generation for notification in channel %d", channel_id)
 
         except Exception as e:
-            _LOG.error("Error watching task completions: %s", e)
+            _LOG.error("Error watching notifications: %s", e)
 
-    @watch_task_completions.before_loop
-    async def before_watch_task_completions(self) -> None:
+    @watch_notifications.before_loop
+    async def before_watch_notifications(self) -> None:
         """Wait for bot to be ready before starting the watcher."""
         await self.bot.wait_until_ready()
 
@@ -470,9 +629,14 @@ Cache create: {stats.get('total_cache_create_tokens', 0):,}
             job: GenerationJob tracking this generation.
         """
         channel_config = self.channel_configs.get(channel.id, {})
+        model_override = channel_config.get("model")
 
         try:
-            await self.generator.generate(channel_id=channel.id, channel_config=channel_config)
+            await self.generator.generate(
+                channel_id=channel.id,
+                channel_config=channel_config,
+                model_override=model_override,
+            )
             _LOG.info("Claude CLI completed for channel %s (task wake)", channel.id)
 
         except ClaudeCliError as e:
@@ -493,7 +657,17 @@ Cache create: {stats.get('total_cache_create_tokens', 0):,}
 
         finally:
             if self._active_generations.get(channel.id) is job:
-                self._active_generations.pop(channel.id, None)
+                # Check if new messages arrived while we were running
+                if job.new_message_pending:
+                    _LOG.info("New messages pending in channel %s, starting new generation", channel.id)
+                    new_job = GenerationJob()
+                    new_task = self.bot.loop.create_task(
+                        self._generate_response_for_channel(channel, new_job)
+                    )
+                    new_job.task = new_task
+                    self._active_generations[channel.id] = new_job
+                else:
+                    self._active_generations.pop(channel.id, None)
 
 
 async def setup(bot: commands.Bot) -> None:

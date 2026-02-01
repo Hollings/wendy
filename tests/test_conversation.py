@@ -1,4 +1,10 @@
-"""Unit tests for bot/conversation.py dataclasses."""
+"""Unit tests for bot/conversation.py dataclasses.
+
+These dataclasses are simple data containers. We only test:
+1. Actual logic (to_payload method)
+2. Default factory behavior (lists shouldn't share state)
+3. slots=True enforcement
+"""
 
 from bot.conversation import ConversationTurn, ImageAttachment, ModelTurn
 
@@ -6,62 +12,8 @@ from bot.conversation import ConversationTurn, ImageAttachment, ModelTurn
 class TestImageAttachment:
     """Tests for ImageAttachment dataclass."""
 
-    def test_create_basic_attachment(self):
-        """Should create attachment with required fields."""
-        attachment = ImageAttachment(
-            name="test.png",
-            url="https://example.com/test.png",
-            data_url="data:image/png;base64,abc123"
-        )
-        assert attachment.name == "test.png"
-        assert attachment.url == "https://example.com/test.png"
-        assert attachment.data_url == "data:image/png;base64,abc123"
-
-    def test_optional_dimensions(self):
-        """Should support optional width/height."""
-        attachment = ImageAttachment(
-            name="test.png",
-            url="https://example.com/test.png",
-            data_url="data:image/png;base64,abc123",
-            width=800,
-            height=600
-        )
-        assert attachment.width == 800
-        assert attachment.height == 600
-
-    def test_optional_size(self):
-        """Should support optional file size."""
-        attachment = ImageAttachment(
-            name="test.png",
-            url="https://example.com/test.png",
-            data_url="data:image/png;base64,abc123",
-            size=12345
-        )
-        assert attachment.size == 12345
-
-    def test_defaults_are_none(self):
-        """Optional fields should default to None."""
-        attachment = ImageAttachment(
-            name="test.png",
-            url="https://example.com/test.png",
-            data_url="data:image/png;base64,abc123"
-        )
-        assert attachment.width is None
-        assert attachment.height is None
-        assert attachment.size is None
-
-    def test_to_payload(self):
-        """Should convert to API payload format."""
-        attachment = ImageAttachment(
-            name="test.png",
-            url="https://example.com/test.png",
-            data_url="data:image/png;base64,abc123"
-        )
-        payload = attachment.to_payload()
-        assert payload == {"data_url": "data:image/png;base64,abc123"}
-
-    def test_to_payload_only_includes_data_url(self):
-        """Payload should only contain data_url, not other fields."""
+    def test_to_payload_returns_only_data_url(self):
+        """to_payload should return dict with only data_url key."""
         attachment = ImageAttachment(
             name="test.png",
             url="https://example.com/test.png",
@@ -71,95 +23,72 @@ class TestImageAttachment:
             size=12345
         )
         payload = attachment.to_payload()
-        assert list(payload.keys()) == ["data_url"]
+        assert payload == {"data_url": "data:image/png;base64,abc123"}
+        assert len(payload) == 1
+
+    def test_slots_prevents_arbitrary_attributes(self):
+        """slots=True should prevent adding arbitrary attributes."""
+        attachment = ImageAttachment(
+            name="test.png",
+            url="https://example.com/test.png",
+            data_url="data:image/png;base64,abc123"
+        )
+        try:
+            attachment.arbitrary_field = "should fail"
+            assert False, "Expected AttributeError for slots class"
+        except AttributeError:
+            pass
 
 
 class TestConversationTurn:
     """Tests for ConversationTurn dataclass."""
 
-    def test_create_user_turn(self):
-        """Should create user turn."""
-        turn = ConversationTurn(role="user", content="Hello!")
-        assert turn.role == "user"
-        assert turn.content == "Hello!"
-        assert turn.images == []
+    def test_images_default_factory_not_shared(self):
+        """Each instance should get its own empty list, not a shared one."""
+        turn1 = ConversationTurn(role="user", content="Hello")
+        turn2 = ConversationTurn(role="user", content="World")
 
-    def test_create_assistant_turn(self):
-        """Should create assistant turn."""
-        turn = ConversationTurn(role="assistant", content="Hi there!")
-        assert turn.role == "assistant"
-        assert turn.content == "Hi there!"
-
-    def test_turn_with_images(self):
-        """Should support image attachments."""
-        img = ImageAttachment(
-            name="photo.jpg",
-            url="https://example.com/photo.jpg",
-            data_url="data:image/jpeg;base64,xyz"
+        # Mutate turn1's images list
+        turn1.images.append(
+            ImageAttachment(name="x.png", url="x", data_url="data:x")
         )
-        turn = ConversationTurn(role="user", content="Look at this", images=[img])
-        assert len(turn.images) == 1
-        assert turn.images[0].name == "photo.jpg"
 
-    def test_turn_with_metadata(self):
-        """Should support Discord metadata."""
-        turn = ConversationTurn(
-            role="user",
-            content="Hello",
-            message_id=123456789,
-            author_id=987654321,
-            author_name="TestUser"
-        )
-        assert turn.message_id == 123456789
-        assert turn.author_id == 987654321
-        assert turn.author_name == "TestUser"
+        # turn2's images should be unaffected
+        assert turn1.images != turn2.images
+        assert len(turn2.images) == 0
 
-    def test_webhook_id(self):
-        """Should support webhook ID for bot messages."""
-        turn = ConversationTurn(
-            role="assistant",
-            content="Response",
-            webhook_id=111222333
-        )
-        assert turn.webhook_id == 111222333
-
-    def test_defaults(self):
-        """Optional fields should have proper defaults."""
+    def test_slots_prevents_arbitrary_attributes(self):
+        """slots=True should prevent adding arbitrary attributes."""
         turn = ConversationTurn(role="user", content="test")
-        assert turn.images == []
-        assert turn.message_id is None
-        assert turn.author_id is None
-        assert turn.author_name is None
-        assert turn.webhook_id is None
+        try:
+            turn.extra_field = "should fail"
+            assert False, "Expected AttributeError for slots class"
+        except AttributeError:
+            pass
 
 
 class TestModelTurn:
     """Tests for ModelTurn dataclass."""
 
-    def test_create_basic_turn(self):
-        """Should create basic turn for LLM."""
-        turn = ModelTurn(role="user", text="What is Python?")
-        assert turn.role == "user"
-        assert turn.text == "What is Python?"
-        assert turn.images == []
+    def test_images_default_factory_not_shared(self):
+        """Each instance should get its own empty list, not a shared one."""
+        turn1 = ModelTurn(role="user", text="Hello")
+        turn2 = ModelTurn(role="user", text="World")
 
-    def test_turn_with_images(self):
-        """Should support images for vision models."""
-        img = ImageAttachment(
-            name="code.png",
-            url="https://example.com/code.png",
-            data_url="data:image/png;base64,abc"
+        # Mutate turn1's images list
+        turn1.images.append(
+            ImageAttachment(name="x.png", url="x", data_url="data:x")
         )
-        turn = ModelTurn(role="user", text="Explain this code", images=[img])
-        assert len(turn.images) == 1
 
-    def test_empty_text(self):
-        """Should allow empty text (for image-only messages)."""
-        img = ImageAttachment(
-            name="img.png",
-            url="https://example.com/img.png",
-            data_url="data:image/png;base64,abc"
-        )
-        turn = ModelTurn(role="user", text="", images=[img])
-        assert turn.text == ""
-        assert len(turn.images) == 1
+        # turn2's images should be unaffected
+        assert turn1.images != turn2.images
+        assert len(turn2.images) == 0
+
+    def test_slots_prevents_arbitrary_attributes(self):
+        """slots=True should prevent adding arbitrary attributes."""
+        turn = ModelTurn(role="user", text="test")
+        try:
+            turn.unexpected = "should fail"
+            assert False, "Expected AttributeError for slots class"
+        except AttributeError:
+            pass

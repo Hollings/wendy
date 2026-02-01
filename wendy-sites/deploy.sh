@@ -21,17 +21,27 @@ scp "/tmp/${SERVICE}.tar.gz" "${REMOTE_HOST}:/tmp/"
 # Extract and restart
 echo "[$(date +%H:%M:%S)] Deploying on remote..."
 ssh "$REMOTE_HOST" "
+    # Backup .env before anything
+    if [ -f ${REMOTE_BASE}/${SERVICE}/deploy/.env ]; then
+        cp ${REMOTE_BASE}/${SERVICE}/deploy/.env /tmp/${SERVICE}-env-backup
+        echo 'Backed up .env'
+    fi
+
     mkdir -p ${REMOTE_BASE}/${SERVICE}
     tar -xzf /tmp/${SERVICE}.tar.gz -C ${REMOTE_BASE}/${SERVICE}
     rm /tmp/${SERVICE}.tar.gz
 
-    # Create .env from example if not exists
-    if [ ! -f ${REMOTE_BASE}/${SERVICE}/deploy/.env ]; then
+    # Restore .env from backup, or create from example
+    if [ -f /tmp/${SERVICE}-env-backup ]; then
+        cp /tmp/${SERVICE}-env-backup ${REMOTE_BASE}/${SERVICE}/deploy/.env
+        echo 'Restored .env from backup'
+    elif [ ! -f ${REMOTE_BASE}/${SERVICE}/deploy/.env ]; then
         cp ${REMOTE_BASE}/${SERVICE}/deploy/.env.example ${REMOTE_BASE}/${SERVICE}/deploy/.env
-        echo 'Created .env from .env.example - please configure DEPLOY_TOKEN'
+        echo 'Created .env from .env.example - PLEASE CONFIGURE!'
     fi
 
     cd ${REMOTE_BASE}/${SERVICE}/deploy
+    docker compose -p ${SERVICE} down
     docker compose -p ${SERVICE} up -d --build
 "
 

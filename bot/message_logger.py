@@ -21,6 +21,9 @@ Schema (message_history table):
     attachment_urls TEXT (JSON array)
     reply_to_id INTEGER
     reactions TEXT (JSON array)
+
+Functions:
+    insert_synthetic_message() - Insert a synthetic message (e.g., from webhooks)
 """
 
 from __future__ import annotations
@@ -29,14 +32,21 @@ import json
 import logging
 import os
 import sqlite3
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import discord
 from discord.ext import commands
 
+from .paths import DB_PATH as DEFAULT_DB_PATH_FROM_PATHS
+
 _LOG = logging.getLogger(__name__)
 
-DEFAULT_DB_PATH = Path("/data/wendy/wendy.db")
+# Default database path - from paths.py (shared/wendy.db)
+# Allow override via MESSAGE_LOGGER_DB_PATH for backwards compatibility
+_env_db_path = os.getenv("MESSAGE_LOGGER_DB_PATH")
+DEFAULT_DB_PATH = Path(_env_db_path) if _env_db_path else DEFAULT_DB_PATH_FROM_PATHS
 
 
 class MessageLoggerCog(commands.Cog):
@@ -74,17 +84,21 @@ class MessageLoggerCog(commands.Cog):
         return guild_ids
 
     def _init_db(self) -> None:
-        """Initialize the SQLite database schema."""
+        """Initialize the SQLite database schema.
+
+        Handles migration from older schemas by adding missing columns.
+        """
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         with sqlite3.connect(self.db_path) as conn:
+            # Create table if not exists
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS message_history (
                     message_id INTEGER PRIMARY KEY,
                     channel_id INTEGER NOT NULL,
                     guild_id INTEGER,
                     timestamp TEXT NOT NULL,
-                    author_id INTEGER NOT NULL,
+                    author_id INTEGER,
                     author_nickname TEXT,
                     is_bot INTEGER DEFAULT 0,
                     is_webhook INTEGER DEFAULT 0,
@@ -94,18 +108,131 @@ class MessageLoggerCog(commands.Cog):
                     reactions TEXT
                 )
             """)
+
+            # Migration: Add columns that might be missing in older schemas
+            # These are added with defaults that work for existing data
+            migration_columns = [
+                ("guild_id", "INTEGER"),
+                ("author_id", "INTEGER"),
+                ("is_bot", "INTEGER DEFAULT 0"),
+                ("is_webhook", "INTEGER DEFAULT 0"),
+                ("reply_to_id", "INTEGER"),
+            ]
+
+            for col_name, col_type in migration_columns:
+                try:
+                    conn.execute(f"ALTER TABLE message_history ADD COLUMN {col_name} {col_type}")
+                    _LOG.info("Added column %s to message_history", col_name)
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+
+            # Create indexes (IF NOT EXISTS handles existing indexes)
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_message_history_channel_time
                 ON message_history(channel_id, timestamp)
             """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_message_history_author
-                ON message_history(author_id)
+            # Only create author index if author_id exists
+            try:
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_message_history_author
+                    ON message_history(author_id)
+                """)
+            except sqlite3.OperationalError:
+                pass  # Index creation failed, column might not exist yet
+            try:
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_message_history_guild
+                    ON message_history(guild_id)
+                """)
+            except sqlite3.OperationalError:
+                pass  # Index creation failed
+
+            # DUPLICATE SCHEMA WARNING: This is a copy of state_manager.py schema.
+            # Primary source of truth is bot/state_manager.py._init_schema()
+            # Also duplicated in wendy-sites/backend/main.py (notifications only)
+            # If you modify these tables, update all 3 locations!
+            conn.executescript("""
+                -- Channel sessions (replaces session_state.json)
+                CREATE TABLE IF NOT EXISTS channel_sessions (
+                    channel_id INTEGER PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    folder TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    last_used_at INTEGER,
+                    message_count INTEGER DEFAULT 0,
+                    total_input_tokens INTEGER DEFAULT 0,
+                    total_output_tokens INTEGER DEFAULT 0,
+                    total_cache_read_tokens INTEGER DEFAULT 0,
+                    total_cache_create_tokens INTEGER DEFAULT 0
+                );
+
+                -- Last seen message IDs (replaces message_check_state.json)
+                CREATE TABLE IF NOT EXISTS channel_last_seen (
+                    channel_id INTEGER PRIMARY KEY,
+                    last_message_id INTEGER NOT NULL,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
+                -- Unified notifications table (replaces task_completions and webhook_events)
+                CREATE TABLE IF NOT EXISTS notifications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    type TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    channel_id INTEGER,
+                    title TEXT NOT NULL,
+                    payload TEXT,
+                    seen_by_wendy INTEGER DEFAULT 0,
+                    seen_by_proxy INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
+                -- Legacy: Task completions (kept for migration, will be removed)
+                CREATE TABLE IF NOT EXISTS task_completions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT NOT NULL UNIQUE,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'completed',
+                    duration TEXT,
+                    completed_at TEXT NOT NULL,
+                    notified INTEGER DEFAULT 0,
+                    seen_by_wendy INTEGER DEFAULT 0,
+                    seen_by_proxy INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
+                -- Legacy: Webhook events (kept for migration, will be removed)
+                CREATE TABLE IF NOT EXISTS webhook_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source TEXT NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    summary TEXT NOT NULL,
+                    payload TEXT,
+                    processed INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
+                -- Usage state (replaces usage_state.json)
+                CREATE TABLE IF NOT EXISTS usage_state (
+                    key TEXT PRIMARY KEY,
+                    value INTEGER NOT NULL,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
+                -- Indexes for notifications table
+                CREATE INDEX IF NOT EXISTS idx_notifications_unseen_wendy
+                    ON notifications(seen_by_wendy) WHERE seen_by_wendy = 0;
+                CREATE INDEX IF NOT EXISTS idx_notifications_unseen_proxy
+                    ON notifications(seen_by_proxy) WHERE seen_by_proxy = 0;
+
+                -- Legacy indexes (kept for migration)
+                CREATE INDEX IF NOT EXISTS idx_task_completions_unseen_wendy
+                    ON task_completions(seen_by_wendy) WHERE seen_by_wendy = 0;
+                CREATE INDEX IF NOT EXISTS idx_task_completions_unseen_proxy
+                    ON task_completions(seen_by_proxy) WHERE seen_by_proxy = 0;
+                CREATE INDEX IF NOT EXISTS idx_webhook_events_unprocessed
+                    ON webhook_events(processed) WHERE processed = 0;
             """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_message_history_guild
-                ON message_history(guild_id)
-            """)
+
             conn.commit()
 
         _LOG.info("Message logger database initialized at %s", self.db_path)
@@ -196,6 +323,65 @@ class MessageLoggerCog(commands.Cog):
         # We keep deleted messages in the archive for historical record.
         # If you want to mark them as deleted, add a 'deleted_at' column and update here.
         pass
+
+    def insert_synthetic_message(
+        self,
+        channel_id: int,
+        author_nickname: str,
+        content: str,
+        guild_id: int | None = None,
+    ) -> int:
+        """Insert a synthetic message into the database.
+
+        Used for webhook events and other system-generated messages that should
+        appear in the message history for Claude to see.
+
+        Args:
+            channel_id: Target channel ID.
+            author_nickname: Display name for the message author (e.g., "Webhook: GitHub").
+            content: Message content.
+            guild_id: Optional guild ID.
+
+        Returns:
+            The generated message ID.
+        """
+        # Generate a synthetic message ID using timestamp to avoid collisions
+        # Use a large positive base (9 * 10^18) plus timestamp to ensure:
+        # 1. IDs are always greater than Discord snowflake IDs (which are ~10^18)
+        # 2. IDs are unique and monotonically increasing
+        # 3. IDs show up in check_messages (which filters by message_id > since_id)
+        message_id = 9_000_000_000_000_000_000 + int(time.time() * 1000)
+
+        timestamp = datetime.now(UTC).isoformat()
+
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("""
+                    INSERT INTO message_history (
+                        message_id, channel_id, guild_id, timestamp,
+                        author_id, author_nickname, is_bot, is_webhook,
+                        content, attachment_urls, reply_to_id, reactions
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    message_id,
+                    channel_id,
+                    guild_id,
+                    timestamp,
+                    0,  # author_id - 0 for synthetic
+                    author_nickname,
+                    0,  # is_bot
+                    1,  # is_webhook - mark as webhook for identification
+                    content,
+                    None,  # attachment_urls
+                    None,  # reply_to_id
+                    None,  # reactions
+                ))
+                conn.commit()
+            _LOG.info("Inserted synthetic message %d in channel %d", message_id, channel_id)
+        except Exception as e:
+            _LOG.exception("Failed to insert synthetic message: %s", e)
+
+        return message_id
 
 
 async def setup(bot: commands.Bot) -> None:

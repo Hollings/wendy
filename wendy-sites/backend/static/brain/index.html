@@ -59,8 +59,47 @@
             min-height: 0;
         }
 
-        /* Left Column - Feed */
-        .feed-column {
+        /* Main Column - Feed/Avatar toggle */
+        .main-column {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            height: 100%;
+        }
+
+        /* Main column toggle bar */
+        .main-toggle-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 20px;
+            background: #0a0a0a;
+            border-bottom: 1px solid #222;
+        }
+        .main-toggle-btn {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 4px;
+            color: #888;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 13px;
+            padding: 8px 16px;
+            transition: all 0.15s;
+        }
+        .main-toggle-btn:hover {
+            background: #222;
+            color: #ccc;
+        }
+        .main-toggle-btn.active {
+            background: #2a2a2a;
+            color: #fff;
+            border-color: #4ade80;
+        }
+
+        /* Feed view */
+        .feed-view {
             flex: 1;
             display: flex;
             flex-direction: column;
@@ -68,9 +107,32 @@
             overflow-y: auto;
             padding: 20px 40px;
         }
-        .feed-column > * {
+        .feed-view.hidden { display: none; }
+        .feed-view > * {
             max-width: 1000px;
             width: 100%;
+        }
+
+        /* Avatar view */
+        .avatar-view {
+            flex: 1;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            background: #050508;
+            padding: 20px;
+        }
+        .avatar-view.active {
+            display: flex;
+        }
+        .avatar-view iframe {
+            width: 100%;
+            height: 100%;
+            max-width: 1024px;
+            max-height: 1024px;
+            aspect-ratio: 1;
+            border: none;
+            border-radius: 8px;
         }
 
         /* Right Column - Tabbed Sidebar */
@@ -354,6 +416,28 @@
             display: block;
         }
 
+        /* Avatar Panel */
+        .avatar-panel {
+            align-items: center;
+            justify-content: center;
+            background: #050508;
+            flex: 1;
+            min-height: 0;
+            padding: 0;
+        }
+        .avatar-panel.active {
+            display: flex;
+        }
+        .avatar-panel iframe {
+            width: 100%;
+            height: 100%;
+            max-width: 500px;
+            max-height: 500px;
+            aspect-ratio: 1;
+            border: none;
+            border-radius: 8px;
+        }
+
         /* Beads Panel */
         .beads-panel {
             flex: 1;
@@ -375,6 +459,7 @@
         .bead-item.open { border-left-color: #60a5fa; }
         .bead-item.in_progress { border-left-color: #fbbf24; }
         .bead-item.closed { border-left-color: #666; opacity: 0.6; }
+        .bead-item.tombstone { border-left-color: #444; opacity: 0.4; }
         .bead-item-header {
             display: flex;
             justify-content: space-between;
@@ -395,6 +480,13 @@
         .bead-item-status.open { background: #1a2a4a; color: #60a5fa; }
         .bead-item-status.in_progress { background: #3a3a1a; color: #fbbf24; }
         .bead-item-status.closed { background: #222; color: #888; }
+        .bead-item-status.tombstone { background: #1a1a1a; color: #555; }
+        .bead-item-time {
+            font-size: 10px;
+            color: #555;
+            margin-left: auto;
+            padding-left: 8px;
+        }
         .bead-item-title {
             font-size: 13px;
             color: #ddd;
@@ -428,21 +520,34 @@
                 padding: 14px 8px;
             }
 
-            /* Hide desktop sidebar */
+            /* Hide desktop elements on mobile */
             .sidebar-column {
                 display: none;
             }
-
-            /* Feed column becomes a tab panel on mobile */
-            .feed-column {
+            .main-toggle-bar {
                 display: none;
-                padding: 12px;
             }
-            .feed-column.active {
+
+            /* Main column becomes full width on mobile */
+            .main-column {
+                flex: 1;
+                display: none;  /* Hidden by default, shown when feed tab active */
+            }
+            .main-column.mobile-active {
                 display: flex;
             }
-            .feed-column header {
+
+            /* Feed view adjustments for mobile */
+            .feed-view {
+                padding: 12px;
+            }
+            .feed-view header {
                 padding-top: 10px;
+            }
+
+            /* Hide desktop avatar view on mobile */
+            .avatar-view {
+                display: none !important;
             }
 
             /* Mobile tab panels */
@@ -455,6 +560,17 @@
             .mobile-panel.active {
                 display: flex;
                 flex-direction: column;
+            }
+
+            /* Avatar panel mobile - center the iframe */
+            .mobile-panel.avatar-panel.active {
+                align-items: center;
+                justify-content: center;
+                padding: 8px;
+            }
+            .mobile-panel.avatar-panel iframe {
+                max-width: calc(100vw - 16px);
+                max-height: calc(100vw - 16px);
             }
         }
 
@@ -664,10 +780,21 @@
             font-weight: 500;
         }
         .usage-bar {
+            position: relative;
             height: 8px;
             background: rgba(255,255,255,0.1);
             border-radius: 4px;
             overflow: hidden;
+        }
+        .week-marker {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: rgba(255, 255, 255, 0.5);
+            border-radius: 1px;
+            z-index: 1;
+            transition: left 0.3s ease;
         }
         .usage-bar-fill {
             height: 100%;
@@ -840,34 +967,49 @@
         <div class="mobile-tab-bar">
             <button class="tab-btn active" data-tab="feed" onclick="switchMobileTab('feed')">Feed</button>
             <button class="tab-btn" data-tab="settings" onclick="switchMobileTab('settings')">Settings</button>
+            <button class="tab-btn" data-tab="avatar" onclick="switchMobileTab('avatar')">Avatar</button>
             <button class="tab-btn" data-tab="beads" onclick="switchMobileTab('beads')">Beads</button>
             <button class="tab-btn" data-tab="marbles" onclick="switchMobileTab('marbles')">Marbles</button>
         </div>
 
         <!-- Main Layout -->
         <div class="main-layout">
-            <!-- Left Column: Feed -->
-            <div id="feed-column" class="feed-column active">
-                <header>
-                    <h1>Wendy's Brain</h1>
-                    <p>Real-time Claude Code session</p>
+            <!-- Main Column: Feed/Avatar toggle -->
+            <div class="main-column mobile-active">
+                <!-- Toggle bar -->
+                <div class="main-toggle-bar">
+                    <button id="toggle-feed" class="main-toggle-btn active" onclick="switchMainView('feed')">Feed</button>
+                    <button id="toggle-avatar" class="main-toggle-btn" onclick="switchMainView('avatar')">Avatar</button>
                     <span id="status" class="status connecting">Connecting...</span>
-                </header>
-
-                <!-- Task viewing banner -->
-                <div id="task-banner" class="task-banner">
-                    <div class="task-banner-info">
-                        <span class="task-banner-icon">🔧</span>
-                        <div class="task-banner-text">
-                            <span class="task-banner-label">Viewing Task Output</span>
-                            <span id="task-banner-title" class="task-banner-title">-</span>
-                        </div>
-                    </div>
-                    <button class="task-banner-back" onclick="backToWendy()">← Back to Wendy</button>
                 </div>
 
-                <div id="feed">
-                    <div class="idle-notice">Waiting for activity...</div>
+                <!-- Feed View -->
+                <div id="feed-view" class="feed-view">
+                    <header>
+                        <h1>Wendy's Brain</h1>
+                        <p>Real-time Claude Code session</p>
+                    </header>
+
+                    <!-- Task viewing banner -->
+                    <div id="task-banner" class="task-banner">
+                        <div class="task-banner-info">
+                            <span class="task-banner-icon">🔧</span>
+                            <div class="task-banner-text">
+                                <span class="task-banner-label">Viewing Task Output</span>
+                                <span id="task-banner-title" class="task-banner-title">-</span>
+                            </div>
+                        </div>
+                        <button class="task-banner-back" onclick="backToWendy()">← Back to Wendy</button>
+                    </div>
+
+                    <div id="feed">
+                        <div class="idle-notice">Waiting for activity...</div>
+                    </div>
+                </div>
+
+                <!-- Avatar View -->
+                <div id="avatar-view" class="avatar-view">
+                    <iframe id="avatar-iframe" src="/avatar/?embed" frameborder="0"></iframe>
                 </div>
             </div>
 
@@ -915,6 +1057,7 @@
                                 </div>
                                 <div class="usage-bar">
                                     <div class="usage-bar-fill normal" id="usage-all-bar" style="width: 0%"></div>
+                                    <div class="week-marker" id="week-marker-all" style="left: 0%"></div>
                                 </div>
                             </div>
                             <div class="usage-row">
@@ -924,6 +1067,7 @@
                                 </div>
                                 <div class="usage-bar">
                                     <div class="usage-bar-fill normal" id="usage-sonnet-bar" style="width: 0%"></div>
+                                    <div class="week-marker" id="week-marker-sonnet" style="left: 0%"></div>
                                 </div>
                             </div>
                             <div class="usage-updated" id="usage-updated"></div>
@@ -1000,6 +1144,7 @@
                             </div>
                             <div class="usage-bar">
                                 <div class="usage-bar-fill normal" id="usage-all-bar-mobile" style="width: 0%"></div>
+                                <div class="week-marker" id="week-marker-all-mobile" style="left: 0%"></div>
                             </div>
                         </div>
                         <div class="usage-row">
@@ -1009,6 +1154,7 @@
                             </div>
                             <div class="usage-bar">
                                 <div class="usage-bar-fill normal" id="usage-sonnet-bar-mobile" style="width: 0%"></div>
+                                <div class="week-marker" id="week-marker-sonnet-mobile" style="left: 0%"></div>
                             </div>
                         </div>
                         <div class="usage-updated" id="usage-updated-mobile"></div>
@@ -1038,6 +1184,10 @@
                     <button class="filter-btn" onclick="setAllFilters(true)">All</button>
                     <button class="filter-btn" onclick="setAllFilters(false)">None</button>
                 </div>
+            </div>
+
+            <div id="mobile-avatar-panel" class="mobile-panel avatar-panel">
+                <iframe id="avatar-iframe-mobile" src="/avatar/?embed" frameborder="0"></iframe>
             </div>
 
             <div id="mobile-beads-panel" class="mobile-panel beads-panel">
@@ -1105,6 +1255,15 @@
             Object.keys(knownChannels).forEach(id => {
                 if (channelFilters[id] === undefined) channelFilters[id] = true;
             });
+            // Safety: if ALL type filters are off or ALL channel filters are off, reset them
+            const allTypesOff = eventTypes.every(t => filters[t.id] === false);
+            const allChannelsOff = Object.keys(knownChannels).every(id => channelFilters[id] === false);
+            if (allTypesOff) {
+                eventTypes.forEach(t => filters[t.id] = true);
+            }
+            if (allChannelsOff) {
+                Object.keys(knownChannels).forEach(id => channelFilters[id] = true);
+            }
         }
         function saveSettings() {
             localStorage.setItem('brain_settings', JSON.stringify({ filters, channelFilters, autoscroll }));
@@ -1193,16 +1352,20 @@
                 btn.classList.toggle('active', btn.dataset.tab === tabName);
             });
 
-            // Update panels
-            const feedColumn = document.getElementById('feed-column');
-            feedColumn.classList.toggle('active', tabName === 'feed');
+            // Update panels - hide main-column and all mobile panels first
+            const mainColumn = document.querySelector('.main-column');
+            mainColumn.classList.remove('mobile-active');
 
             document.querySelectorAll('.mobile-panel').forEach(panel => {
                 panel.classList.remove('active');
             });
 
-            if (tabName === 'settings') {
+            if (tabName === 'feed') {
+                mainColumn.classList.add('mobile-active');
+            } else if (tabName === 'settings') {
                 document.getElementById('mobile-settings-panel').classList.add('active');
+            } else if (tabName === 'avatar') {
+                document.getElementById('mobile-avatar-panel').classList.add('active');
             } else if (tabName === 'beads') {
                 document.getElementById('mobile-beads-panel').classList.add('active');
             } else if (tabName === 'marbles') {
@@ -1213,8 +1376,10 @@
                 if (canvas && mobilePanel) {
                     mobilePanel.appendChild(canvas);
                 }
-            } else {
-                // Move canvas back to desktop panel
+            }
+
+            // Move canvas back to desktop panel when not on marbles
+            if (tabName !== 'marbles') {
                 const canvas = document.getElementById('marbles-canvas');
                 const desktopPanel = document.getElementById('marbles-panel');
                 if (canvas && desktopPanel && !desktopPanel.contains(canvas)) {
@@ -1241,6 +1406,20 @@
 
             // Update marbles active state
             updateMarblesActiveState();
+        }
+
+        // Main view toggle (Feed/Avatar on desktop)
+        let currentMainView = 'feed';
+        function switchMainView(view) {
+            currentMainView = view;
+
+            // Update toggle buttons
+            document.getElementById('toggle-feed').classList.toggle('active', view === 'feed');
+            document.getElementById('toggle-avatar').classList.toggle('active', view === 'avatar');
+
+            // Update views
+            document.getElementById('feed-view').classList.toggle('hidden', view !== 'feed');
+            document.getElementById('avatar-view').classList.toggle('active', view === 'avatar');
         }
 
         function updateMarblesActiveState() {
@@ -1342,8 +1521,8 @@
         let isAutoScrolling = false;
 
         function getScrollContainer() {
-            // Feed-column is the scroll container in the new layout
-            return document.getElementById('feed-column');
+            // Feed-view is the scroll container
+            return document.getElementById('feed-view');
         }
 
         function jumpToBottom() {
@@ -1551,6 +1730,20 @@
                     sonnetBar.className = `usage-bar-fill ${getBarClass(weekSonnet)}`;
                 }
 
+                // Week progress marker - shows how far through the 7-day cycle we are
+                if (data.week_all_resets) {
+                    const resetDate = new Date(data.week_all_resets);
+                    const now = new Date();
+                    const msUntilReset = resetDate - now;
+                    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+                    const weekProgress = Math.max(0, Math.min(100, ((sevenDaysMs - msUntilReset) / sevenDaysMs) * 100));
+
+                    const markerAll = document.getElementById(`week-marker-all${suffix}`);
+                    const markerSonnet = document.getElementById(`week-marker-sonnet${suffix}`);
+                    if (markerAll) markerAll.style.left = `${weekProgress}%`;
+                    if (markerSonnet) markerSonnet.style.left = `${weekProgress}%`;
+                }
+
                 // Updated time and reset info
                 const updated = document.getElementById(`usage-updated${suffix}`);
                 if (updated) {
@@ -1603,8 +1796,12 @@
         function getToken() { return localStorage.getItem('brain_token'); }
         function setToken(token) { localStorage.setItem('brain_token', token); }
         function clearToken() { localStorage.removeItem('brain_token'); }
+        function getPassphrase() { return localStorage.getItem('brain_passphrase'); }
+        function setPassphrase(p) { localStorage.setItem('brain_passphrase', p); }
+        function clearPassphrase() { localStorage.removeItem('brain_passphrase'); }
 
-        async function authenticate(code) {
+        async function authenticate(code, savePassphrase = true) {
+            console.log('[Auth] authenticate called, savePassphrase:', savePassphrase);
             const res = await fetch('/api/brain/auth', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1616,7 +1813,26 @@
             }
             const { token } = await res.json();
             setToken(token);
+            if (savePassphrase) {
+                console.log('[Auth] Saving passphrase to localStorage');
+                setPassphrase(code);
+                console.log('[Auth] Passphrase saved:', !!getPassphrase());
+            }
             return true;
+        }
+
+        async function tryReauthenticate() {
+            const passphrase = getPassphrase();
+            if (!passphrase) return false;
+            try {
+                await authenticate(passphrase, false);
+                console.log('Re-authenticated with stored passphrase');
+                return true;
+            } catch (e) {
+                console.log('Re-auth failed:', e.message);
+                clearPassphrase();
+                return false;
+            }
         }
 
         async function handleAuth(e) {
@@ -1664,6 +1880,11 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+        function escapeJsString(str) {
+            // Escape for use inside single-quoted JS string literals
+            if (!str) return '';
+            return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '\\r');
         }
         function truncate(str, len = 200) {
             if (!str || str.length <= len) return str;
@@ -1968,13 +2189,23 @@
             const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
             ws = new WebSocket(protocol + '//' + location.host + '/ws/brain?token=' + encodeURIComponent(token));
 
-            ws.onopen = () => setStatus('connected', 'Connected');
-            ws.onclose = (e) => {
+            let wasConnected = false;
+            ws.onopen = () => { wasConnected = true; setStatus('connected', 'Connected'); };
+            ws.onclose = async (e) => {
                 ws = null;
-                if (e.code === 4001) {
+                // Auth error codes that mean token is definitely invalid
+                const authErrorCodes = [4001, 4003, 1008, 3000];
+                if (authErrorCodes.includes(e.code)) {
+                    // Token invalid or expired - try to re-auth with stored passphrase
                     clearToken();
-                    showAuth();
-                    document.getElementById('auth-error').textContent = 'Session expired';
+                    setStatus('disconnected', 'Re-authenticating...');
+                    const reauthed = await tryReauthenticate();
+                    if (reauthed) {
+                        connect();
+                    } else {
+                        showAuth();
+                        document.getElementById('auth-error').textContent = 'Session expired';
+                    }
                 } else if (e.code === 4002) {
                     setStatus('disconnected', 'Server full');
                 } else {
@@ -1985,7 +2216,7 @@
                     }
                 }
             };
-            ws.onerror = () => setStatus('disconnected', 'Error');
+            ws.onerror = () => { /* handled in onclose */ };
             ws.onmessage = (e) => {
                 try {
                     const data = JSON.parse(e.data);
@@ -2051,6 +2282,26 @@
             beadMarbles.set(bead.id, marble);
         }
 
+        function formatRelativeTime(isoString) {
+            if (!isoString) return '';
+            try {
+                const date = new Date(isoString);
+                const now = new Date();
+                const diffMs = now - date;
+                const diffMins = Math.floor(diffMs / 60000);
+                const diffHours = Math.floor(diffMs / 3600000);
+                const diffDays = Math.floor(diffMs / 86400000);
+
+                if (diffMins < 1) return 'just now';
+                if (diffMins < 60) return `${diffMins}m ago`;
+                if (diffHours < 24) return `${diffHours}h ago`;
+                if (diffDays < 7) return `${diffDays}d ago`;
+                return date.toLocaleDateString();
+            } catch {
+                return '';
+            }
+        }
+
         function renderTasksList(tasks) {
             const html = tasks.length === 0
                 ? '<div class="beads-empty">No tasks</div>'
@@ -2058,14 +2309,18 @@
                     const statusLabel = {
                         'in_progress': 'Running',
                         'open': 'Queued',
-                        'closed': 'Done'
+                        'closed': 'Done',
+                        'tombstone': 'Archived'
                     }[task.status] || task.status;
                     const isViewing = viewingTaskId === task.id;
+                    const timeAgo = formatRelativeTime(task.updated || task.created);
+                    const timeDisplay = timeAgo ? `<span class="bead-item-time">${timeAgo}</span>` : '';
                     return `
-                        <div class="bead-item ${task.status} ${isViewing ? 'viewing' : ''}" onclick="viewTask('${task.id}', '${escapeHtml(task.title)}')">
+                        <div class="bead-item ${task.status} ${isViewing ? 'viewing' : ''}" onclick="viewTask('${task.id}', '${escapeJsString(task.title)}')">
                             <div class="bead-item-header">
                                 <span class="bead-item-id">${task.id}</span>
                                 <span class="bead-item-status ${task.status}">${statusLabel}</span>
+                                ${timeDisplay}
                             </div>
                             <div class="bead-item-title">${escapeHtml(task.title)}</div>
                         </div>
@@ -2172,78 +2427,114 @@
             const idle = feed.querySelector('.idle-notice');
             if (idle) idle.remove();
 
-            // Split by lines and create log entries
+            // Split by lines and group them intelligently
             const lines = text.split('\n');
-            for (const line of lines) {
-                if (!line.trim()) continue;
+            let plainTextBuffer = [];  // Accumulate non-JSON lines
 
+            function flushPlainTextBuffer() {
+                if (plainTextBuffer.length === 0) return;
+
+                const content = plainTextBuffer.join('\n').trim();
+                if (!content) {
+                    plainTextBuffer = [];
+                    return;
+                }
+
+                // Detect type based on content
+                let icon = '📝';
+                let type = 'log';
+                let cssClass = 'result';
+
+                // Check if it's a header block (Task:, Priority:, Model:, Started:)
+                const isHeader = content.includes('Task:') && (
+                    content.includes('Priority:') || content.includes('Model:') || content.includes('Started:')
+                );
+
+                if (isHeader) {
+                    icon = '📋';
+                    type = 'task info';
+                    cssClass = 'system';
+                } else if (content.includes('[TOOL]') || content.includes('Tool:') || /^(Read|Write|Edit|Bash|Grep|Glob):/im.test(content)) {
+                    icon = '⌨️';
+                    type = 'tool';
+                    cssClass = 'bash';
+                } else if (content.includes('[THINKING]') || content.startsWith('Thinking:')) {
+                    icon = '💭';
+                    type = 'thinking';
+                    cssClass = 'thinking';
+                } else if (content.includes('[ERROR]') || /\berror\b/i.test(content)) {
+                    icon = '❌';
+                    type = 'error';
+                    cssClass = 'system';
+                } else if (/^=+$/.test(content) || /^-+$/.test(content)) {
+                    // Skip pure separator lines
+                    plainTextBuffer = [];
+                    return;
+                } else if (content.startsWith('>') || content.includes('Result:') || content.includes('Output:')) {
+                    icon = '📨';
+                    type = 'result';
+                    cssClass = 'result';
+                }
+
+                const el = document.createElement('div');
+                el.className = `event ${cssClass}`;
+                if (type === 'error') {
+                    el.style.borderLeftColor = '#f87171';
+                }
+
+                el.innerHTML = `
+                    <div class="event-header">
+                        <div class="event-label">
+                            <span class="event-icon">${icon}</span>
+                            <span class="event-type">${type}</span>
+                        </div>
+                    </div>
+                    <div class="event-content" style="white-space:pre-wrap;word-break:break-word;font-size:12px;">${escapeHtml(content)}</div>
+                `;
+                feed.appendChild(el);
+                plainTextBuffer = [];
+            }
+
+            for (const line of lines) {
                 // Try to parse as JSON event first
                 let el = null;
-                try {
-                    const parsed = JSON.parse(line);
-                    // Check for wrapped format {ts, event} or raw format {type, message}
-                    if (parsed.ts && parsed.event) {
-                        // Wrapped format from WebSocket
-                        el = renderEvent(parsed);
-                    } else if (parsed.type && (parsed.type === 'user' || parsed.type === 'assistant' || parsed.type === 'system' || parsed.type === 'result')) {
-                        // Raw Claude Code event format - wrap it for renderEvent
-                        el = renderEvent({ ts: Date.now(), event: parsed });
+                const trimmed = line.trim();
+
+                if (trimmed.startsWith('{')) {
+                    try {
+                        const parsed = JSON.parse(trimmed);
+                        // Check for wrapped format {ts, event} or raw format {type, message}
+                        if (parsed.ts && parsed.event) {
+                            // Wrapped format from WebSocket - flush buffer first
+                            flushPlainTextBuffer();
+                            el = renderEvent(parsed);
+                        } else if (parsed.type && (parsed.type === 'user' || parsed.type === 'assistant' || parsed.type === 'system' || parsed.type === 'result')) {
+                            // Raw Claude Code event format - flush buffer first
+                            flushPlainTextBuffer();
+                            el = renderEvent({ ts: Date.now(), event: parsed });
+                        }
+                        if (el) {
+                            el.addEventListener('click', () => toggleEventExpand(el));
+                            feed.appendChild(el);
+                            continue;
+                        }
+                    } catch (e) {
+                        // Not JSON, fall through to plain text handling
                     }
-                    if (el) {
-                        el.addEventListener('click', () => toggleEventExpand(el));
-                    }
-                } catch (e) {
-                    // Not JSON, render as plain text
                 }
 
-                if (!el) {
-                    // Create a formatted log line
-                    el = document.createElement('div');
-                    el.className = 'event';
-
-                    // Try to detect line type for styling
-                    let icon = '';
-                    let type = 'log';
-
-                    if (line.includes('[TOOL]') || line.includes('Tool:') || line.match(/^(Read|Write|Edit|Bash|Grep|Glob):/i)) {
-                        el.classList.add('bash');
-                        icon = '⌨️';
-                        type = 'tool';
-                    } else if (line.includes('[THINKING]') || line.startsWith('Thinking:') || line.includes('thinking')) {
-                        el.classList.add('thinking');
-                        icon = '💭';
-                        type = 'thinking';
-                    } else if (line.includes('[ERROR]') || line.includes('Error:') || line.toLowerCase().includes('error')) {
-                        el.classList.add('system');
-                        el.style.borderLeftColor = '#f87171';
-                        icon = '❌';
-                        type = 'error';
-                    } else if (line.includes('===') || line.includes('---')) {
-                        el.classList.add('system');
-                        icon = '⚡';
-                        type = 'system';
-                    } else if (line.startsWith('>') || line.includes('Result:') || line.includes('Output:')) {
-                        el.classList.add('result');
-                        icon = '📨';
-                        type = 'result';
-                    } else {
-                        el.classList.add('result');
-                        icon = '📝';
-                    }
-
-                    el.innerHTML = `
-                        <div class="event-header">
-                            <div class="event-label">
-                                <span class="event-icon">${icon}</span>
-                                <span class="event-type">${type}</span>
-                            </div>
-                        </div>
-                        <div class="event-content" style="white-space:pre-wrap;word-break:break-word;font-size:12px;">${escapeHtml(line)}</div>
-                    `;
+                // Check for separator lines that indicate a new section
+                if (/^={10,}$/.test(trimmed) || /^-{10,}$/.test(trimmed)) {
+                    flushPlainTextBuffer();
+                    continue;  // Skip the separator line itself
                 }
 
-                feed.appendChild(el);
+                // Accumulate plain text
+                plainTextBuffer.push(line);
             }
+
+            // Flush any remaining plain text
+            flushPlainTextBuffer();
 
             // Auto-scroll if enabled AND user is at bottom
             if (autoscroll && userAtBottom) {
@@ -2306,8 +2597,19 @@
                         document.getElementById('auth-error').textContent = e.message || 'Invalid code';
                     });
             } else if (getToken()) {
+                // Check if we have passphrase for re-auth on token expiry
+                if (!getPassphrase()) {
+                    console.log('[Auth] Token exists but no passphrase - will need to re-enter on expiry');
+                }
                 showFeed();
                 connect();
+            } else if (getPassphrase()) {
+                // No token but have passphrase - try to re-auth
+                console.log('[Auth] No token but have passphrase, trying re-auth');
+                tryReauthenticate().then(ok => {
+                    if (ok) { showFeed(); connect(); }
+                    else { showAuth(); }
+                });
             } else {
                 showAuth();
             }

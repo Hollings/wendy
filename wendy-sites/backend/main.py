@@ -32,20 +32,34 @@ Environment Variables:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shutil
+import sqlite3
 import tarfile
+import time
+import uuid
 from pathlib import Path
 
 import auth
 import brain
-from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile, WebSocket
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from starlette.websockets import WebSocketDisconnect
 
 app = FastAPI(title="Wendy Sites", version="2.0.0")
+
+# CORS middleware for avatar and other frontends
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"^https?://(localhost:\d+|127\.0\.0\.1:\d+|wendy\.monster|.*\.wendy\.monster)$",
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
 
 # =============================================================================
 # Configuration
@@ -68,6 +82,25 @@ BASE_URL: str = os.environ.get("BASE_URL", "https://wendy.monster")
 
 STATIC_DIR: Path = Path(__file__).parent / "static"
 """Directory containing static files (brain dashboard HTML)."""
+
+WENDY_DATA_DIR: Path = Path("/data/wendy")
+"""Directory for Wendy bot data (shared with bot container)."""
+
+WEBHOOKS_FILE: Path = WENDY_DATA_DIR / "secrets" / "webhooks.json"
+"""JSON file containing webhook token configurations."""
+
+WENDY_DB_PATH: Path = Path(os.getenv("WENDY_DB_PATH", "/data/wendy/wendy.db"))
+"""Path to the shared SQLite database for webhook events."""
+
+WEBHOOK_MAX_PAYLOAD: int = 1024 * 1024  # 1 MB
+"""Maximum webhook payload size in bytes."""
+
+# Rate limiting: track requests per token
+_webhook_rate_limits: dict[str, list[float]] = {}
+"""Token -> list of request timestamps for rate limiting."""
+
+WEBHOOK_RATE_LIMIT: int = 10
+"""Maximum requests per token per minute."""
 
 # Ensure directories exist
 SITES_DIR.mkdir(parents=True, exist_ok=True)
@@ -125,6 +158,45 @@ async def serve_brain_page() -> HTMLResponse:
     if brain_html.exists():
         return HTMLResponse(brain_html.read_text())
     return HTMLResponse("<h1>Brain feed not configured</h1>", status_code=503)
+
+
+# =============================================================================
+# Avatar Static Files
+# =============================================================================
+
+AVATAR_DIR: Path = STATIC_DIR / "avatar"
+"""Directory containing avatar static files."""
+
+
+@app.get("/avatar/")
+async def serve_avatar_root() -> FileResponse:
+    """Serve avatar index.html at /avatar/."""
+    return FileResponse(AVATAR_DIR / "index.html")
+
+
+@app.get("/avatar/{path:path}")
+async def serve_avatar_files(path: str) -> FileResponse:
+    """Serve avatar static files (JS, CSS, etc)."""
+    file_path = (AVATAR_DIR / path).resolve()
+
+    # Security: ensure we're still within avatar directory
+    if not str(file_path).startswith(str(AVATAR_DIR.resolve())):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Not a file")
+
+    # Set correct content type for JS modules
+    media_type = None
+    if path.endswith(".js"):
+        media_type = "application/javascript"
+    elif path.endswith(".css"):
+        media_type = "text/css"
+
+    return FileResponse(file_path, media_type=media_type)
 
 
 @app.get("/api/brain/stats")
@@ -220,17 +292,41 @@ async def brain_beads() -> dict:
                     "status": data.get("status", "open"),
                     "priority": data.get("priority", 2),
                     "created": data.get("created"),
+                    "updated": data.get("updated", data.get("created")),  # Track last update
                     "labels": data.get("labels", []),
                 })
         except OSError:
             pass
 
-    # Sort: in_progress first, then open, then closed
-    status_order = {"in_progress": 0, "open": 1, "closed": 2}
-    beads.sort(key=lambda b: (
-        status_order.get(b["status"], 3),
-        b.get("priority", 2) if b["status"] != "closed" else 999,
-    ))
+    # Sort: in_progress first, then open by priority, then closed/tombstone by recency
+    # tombstone = archived/compacted tasks (show fewer of these)
+    status_order = {"in_progress": 0, "open": 1, "closed": 2, "tombstone": 3}
+
+    def sort_key(b):
+        status_rank = status_order.get(b["status"], 4)
+        if b["status"] in ("closed", "tombstone"):
+            # Sort by updated time descending (most recent first)
+            updated = b.get("updated") or b.get("created") or ""
+            return (status_rank, 0, updated)
+        else:
+            # Open/in_progress: sort by priority (lower = higher priority)
+            return (status_rank, b.get("priority", 2), "")
+
+    beads.sort(key=sort_key)
+
+    # Separate by status and limit old tasks
+    MAX_CLOSED = 10
+    MAX_TOMBSTONE = 5  # Show fewer archived tasks
+
+    active = [b for b in beads if b["status"] in ("in_progress", "open")]
+    closed = [b for b in beads if b["status"] == "closed"]
+    tombstone = [b for b in beads if b["status"] == "tombstone"]
+
+    # Sort closed/tombstone by recency (most recent first)
+    closed.sort(key=lambda b: b.get("updated") or b.get("created") or "", reverse=True)
+    tombstone.sort(key=lambda b: b.get("updated") or b.get("created") or "", reverse=True)
+
+    beads = active + closed[:MAX_CLOSED] + tombstone[:MAX_TOMBSTONE]
 
     return {"beads": beads}
 
@@ -323,6 +419,299 @@ async def brain_websocket(websocket: WebSocket, token: str = Query("")) -> None:
         pass
     finally:
         brain.remove_client(websocket)
+
+
+# =============================================================================
+# Webhook Endpoints
+# =============================================================================
+
+
+def _load_webhooks() -> dict:
+    """Load webhook configurations from file."""
+    if not WEBHOOKS_FILE.exists():
+        return {}
+    try:
+        return json.loads(WEBHOOKS_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _validate_webhook_token(token: str) -> dict | None:
+    """Validate a webhook token and return its config, or None if invalid."""
+    webhooks = _load_webhooks()
+    for name, config in webhooks.items():
+        if config.get("token") == token:
+            return {"name": name, **config}
+    return None
+
+
+def _check_rate_limit(token: str) -> bool:
+    """Check if token is within rate limit. Returns True if allowed."""
+    now = time.time()
+    minute_ago = now - 60
+
+    # Clean old entries
+    if token in _webhook_rate_limits:
+        _webhook_rate_limits[token] = [
+            ts for ts in _webhook_rate_limits[token] if ts > minute_ago
+        ]
+    else:
+        _webhook_rate_limits[token] = []
+
+    # Check limit
+    if len(_webhook_rate_limits[token]) >= WEBHOOK_RATE_LIMIT:
+        return False
+
+    # Record this request
+    _webhook_rate_limits[token].append(now)
+    return True
+
+
+def _detect_webhook_source(headers: dict) -> tuple[str, str]:
+    """Detect webhook source from headers.
+
+    Returns:
+        Tuple of (source_name, event_type).
+    """
+    # GitHub
+    if "x-github-event" in headers:
+        return "github", headers["x-github-event"]
+
+    # GitLab
+    if "x-gitlab-event" in headers:
+        return "gitlab", headers["x-gitlab-event"]
+
+    # Bitbucket
+    if "x-event-key" in headers:
+        return "bitbucket", headers["x-event-key"]
+
+    # Generic
+    return "webhook", "unknown"
+
+
+def _format_github_summary(event_type: str, payload: dict) -> str:
+    """Format GitHub webhook payload into human-readable summary."""
+    repo = payload.get("repository", {}).get("full_name", "unknown repo")
+    sender = payload.get("sender", {}).get("login", "someone")
+
+    if event_type == "push":
+        commits = payload.get("commits", [])
+        branch = payload.get("ref", "").replace("refs/heads/", "")
+        count = len(commits)
+        if count == 1:
+            msg = commits[0].get("message", "").split("\n")[0][:50]
+            return f"{sender} pushed to {branch} in {repo}: \"{msg}\""
+        return f"{sender} pushed {count} commits to {branch} in {repo}"
+
+    if event_type == "pull_request":
+        action = payload.get("action", "updated")
+        pr = payload.get("pull_request", {})
+        title = pr.get("title", "")[:50]
+        number = pr.get("number", "?")
+        return f"{sender} {action} PR #{number} in {repo}: \"{title}\""
+
+    if event_type == "issues":
+        action = payload.get("action", "updated")
+        issue = payload.get("issue", {})
+        title = issue.get("title", "")[:50]
+        number = issue.get("number", "?")
+        return f"{sender} {action} issue #{number} in {repo}: \"{title}\""
+
+    if event_type == "issue_comment":
+        action = payload.get("action", "created")
+        issue = payload.get("issue", {})
+        number = issue.get("number", "?")
+        return f"{sender} {action} comment on #{number} in {repo}"
+
+    if event_type == "release":
+        action = payload.get("action", "published")
+        release = payload.get("release", {})
+        tag = release.get("tag_name", "?")
+        return f"{sender} {action} release {tag} in {repo}"
+
+    if event_type == "star":
+        action = payload.get("action", "created")
+        if action == "created":
+            return f"{sender} starred {repo}"
+        return f"{sender} unstarred {repo}"
+
+    if event_type == "fork":
+        forkee = payload.get("forkee", {}).get("full_name", "unknown")
+        return f"{sender} forked {repo} to {forkee}"
+
+    if event_type == "ping":
+        return f"GitHub ping from {repo} - webhook configured successfully"
+
+    # Generic fallback
+    return f"GitHub {event_type} event from {sender} in {repo}"
+
+
+def _format_gitlab_summary(event_type: str, payload: dict) -> str:
+    """Format GitLab webhook payload into human-readable summary."""
+    project = payload.get("project", {}).get("path_with_namespace", "unknown")
+    user = payload.get("user", {}).get("username", "someone")
+
+    if "Push Hook" in event_type:
+        commits = payload.get("commits", [])
+        branch = payload.get("ref", "").replace("refs/heads/", "")
+        count = len(commits)
+        return f"{user} pushed {count} commit(s) to {branch} in {project}"
+
+    if "Merge Request Hook" in event_type:
+        attrs = payload.get("object_attributes", {})
+        action = attrs.get("action", "updated")
+        title = attrs.get("title", "")[:50]
+        iid = attrs.get("iid", "?")
+        return f"{user} {action} MR !{iid} in {project}: \"{title}\""
+
+    return f"GitLab {event_type} from {user} in {project}"
+
+
+def _format_webhook_summary(source: str, event_type: str, payload: dict) -> str:
+    """Format webhook payload into human-readable summary."""
+    if source == "github":
+        return _format_github_summary(event_type, payload)
+    if source == "gitlab":
+        return _format_gitlab_summary(event_type, payload)
+    # Generic summary
+    return f"Webhook event: {event_type}"
+
+
+def _write_webhook_event(
+    channel_id: str,
+    channel_name: str,
+    source: str,
+    event_type: str,
+    summary: str,
+    payload: dict,
+) -> None:
+    """Write a webhook notification to SQLite for the bot to pick up."""
+    try:
+        channel_id_int = int(channel_id)
+    except ValueError:
+        return
+
+    # Build payload with event metadata
+    notification_payload = {
+        "event_type": event_type,
+        "raw": payload,
+    }
+    payload_str = json.dumps(notification_payload)
+
+    try:
+        WENDY_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(WENDY_DB_PATH, timeout=30.0) as conn:
+            # DUPLICATE SCHEMA WARNING: This is a partial copy from bot/state_manager.py
+            # Primary source of truth is bot/state_manager.py._init_schema()
+            # If you modify notifications table, update both locations!
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS notifications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    type TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    channel_id INTEGER,
+                    title TEXT NOT NULL,
+                    payload TEXT,
+                    seen_by_wendy INTEGER DEFAULT 0,
+                    seen_by_proxy INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute(
+                """
+                INSERT INTO notifications (type, source, channel_id, title, payload)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                ("webhook", source, channel_id_int, summary, payload_str)
+            )
+            # Cleanup old notifications (keep last 100)
+            conn.execute("""
+                DELETE FROM notifications
+                WHERE id NOT IN (
+                    SELECT id FROM notifications
+                    ORDER BY created_at DESC
+                    LIMIT 100
+                )
+            """)
+            conn.commit()
+    except Exception as e:
+        print(f"Failed to write webhook notification: {e}")
+
+
+@app.post("/webhook/{token}")
+async def receive_webhook(token: str, request: Request) -> JSONResponse:
+    """Receive a webhook POST and queue it for the bot.
+
+    Returns 404 for invalid tokens (prevents enumeration).
+    Returns 429 if rate limited.
+    """
+    # Validate token
+    config = _validate_webhook_token(token)
+    if not config:
+        # Return 404 to prevent token enumeration
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # Check rate limit
+    if not _check_rate_limit(token):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+
+    # Check payload size
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > WEBHOOK_MAX_PAYLOAD:
+        raise HTTPException(status_code=413, detail="Payload too large")
+
+    # Parse payload
+    try:
+        body = await request.body()
+        if len(body) > WEBHOOK_MAX_PAYLOAD:
+            raise HTTPException(status_code=413, detail="Payload too large")
+
+        # Try to parse as JSON
+        try:
+            payload = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            payload = {"raw": body.decode("utf-8", errors="replace")}
+    except Exception:
+        payload = {}
+
+    # Detect source and event type
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    source, event_type = _detect_webhook_source(headers)
+
+    # Format summary
+    summary = _format_webhook_summary(source, event_type, payload)
+
+    # Write event for bot
+    _write_webhook_event(
+        channel_id=config["channel_id"],
+        channel_name=config["name"],
+        source=source,
+        event_type=event_type,
+        summary=summary,
+        payload=payload,
+    )
+
+    return JSONResponse({
+        "success": True,
+        "message": "Webhook received",
+        "event_id": str(uuid.uuid4()),
+    })
+
+
+@app.get("/webhook/{token}/test")
+async def test_webhook(token: str) -> JSONResponse:
+    """Validate a webhook token without triggering an event.
+
+    Returns 404 for invalid tokens.
+    """
+    config = _validate_webhook_token(token)
+    if not config:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    return JSONResponse({
+        "valid": True,
+        "channel": config["name"],
+    })
 
 
 # =============================================================================

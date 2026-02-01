@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wendy Avatar</title>
+    <link rel="stylesheet" href="styles/main.css">
+</head>
+<body>
+    <!-- Auth screen -->
+    <div id="auth-screen" class="screen fullscreen">
+        <div class="auth-box">
+            <h1>Wendy's Room</h1>
+            <p>Enter the code to watch Wendy work</p>
+            <form id="auth-form">
+                <input type="text" id="code-input" placeholder="Code" autocomplete="off" autofocus>
+                <button type="submit">Enter</button>
+            </form>
+            <div id="auth-error"></div>
+        </div>
+    </div>
+
+    <!-- Main 3D scene wrapper -->
+    <div id="scene-wrapper" class="hidden">
+        <div id="scene-container">
+            <!-- Three.js canvas will be inserted here -->
+
+            <!-- Camera preset buttons -->
+            <div id="camera-buttons">
+                <button onclick="setCameraPreset(0)">Over Shoulder</button>
+                <button onclick="setCameraPreset(1)">Face</button>
+                <button onclick="setCameraPreset(2)">Keyboard</button>
+                <button onclick="setCameraPreset(3)">Computer</button>
+            </div>
+
+        <!-- Debug panel -->
+        <div id="debug-panel" class="hidden">
+            <div>State: <span id="debug-state">idle</span></div>
+            <div>Events: <span id="debug-events">0</span></div>
+            <div>Connected: <span id="debug-connected">no</span></div>
+            <div class="debug-buttons">
+                <button onclick="mockSession()">Full Session</button>
+                <button onclick="mockQuickSession()">Quick</button>
+                <button onclick="mockEditSession()">Edit</button>
+                <button onclick="mockReadSession()">Read</button>
+                <button onclick="stopReplay()">Stop</button>
+            </div>
+            <div style="margin-top: 8px; font-size: 11px;">
+                <div>Cam: <span id="debug-camera">-</span></div>
+                <button onclick="cycleCamera()" style="margin-top: 4px;">Next View</button>
+                <span id="debug-camera-preset" style="margin-left: 8px;">-</span>
+            </div>
+        </div>
+
+        <!-- Keyboard Debug Panel -->
+        <div id="keyboard-panel" class="hidden">
+            <div class="tuner-header">
+                <strong>Keyboard Test</strong>
+                <label><input type="checkbox" id="typing-ik-enabled"> IK Arms</label>
+            </div>
+            <div class="tuner-section">
+                <input type="text" id="keyboard-input" placeholder="Type here..." autocomplete="off">
+                <div class="keyboard-buttons">
+                    <button id="keyboard-type-btn">Type Text</button>
+                    <button id="keyboard-demo-btn">Demo</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- IK Debug Panel -->
+        <div id="ik-panel" class="hidden">
+            <div class="tuner-header">
+                <strong>IK Target</strong>
+                <label><input type="checkbox" id="ik-enabled" checked> Enable</label>
+            </div>
+            <div class="tuner-section">
+                <label>X: <span id="ik-x-val">0.30</span></label>
+                <input type="range" id="ik-x" min="-1" max="1" step="0.01" value="0.30">
+                <label>Y: <span id="ik-y-val">0.20</span></label>
+                <input type="range" id="ik-y" min="-0.5" max="1" step="0.01" value="0.20">
+                <label>Z: <span id="ik-z-val">0.40</span></label>
+                <input type="range" id="ik-z" min="-0.5" max="1" step="0.01" value="0.40">
+            </div>
+            <div class="tuner-section">
+                <div><strong>Pole (elbow hint)</strong></div>
+                <label>X: <span id="pole-x-val">0.50</span></label>
+                <input type="range" id="pole-x" min="-1" max="1" step="0.01" value="0.50">
+                <label>Y: <span id="pole-y-val">0.30</span></label>
+                <input type="range" id="pole-y" min="-1" max="1" step="0.01" value="0.30">
+                <label>Z: <span id="pole-z-val">-0.50</span></label>
+                <input type="range" id="pole-z" min="-1" max="1" step="0.01" value="-0.50">
+            </div>
+            <div class="tuner-section">
+                <label>Arm:
+                    <select id="ik-arm">
+                        <option value="right">Right</option>
+                        <option value="left">Left</option>
+                    </select>
+                </label>
+            </div>
+        </div>
+
+        <!-- Scene positioning panel -->
+        <div id="scene-tuner" class="hidden">
+            <div class="tuner-header">
+                <strong>Scene Tuner</strong>
+                <button onclick="window.toggleSceneTuner()">X</button>
+            </div>
+            <div class="tuner-section">
+                <div><strong>Camera Target</strong></div>
+                <label>X: <span id="cam-target-x-val">0</span></label>
+                <input type="range" id="cam-target-x" min="-5" max="5" step="0.1" value="0">
+                <label>Y: <span id="cam-target-y-val">1</span></label>
+                <input type="range" id="cam-target-y" min="0" max="5" step="0.1" value="1">
+                <label>Z: <span id="cam-target-z-val">0</span></label>
+                <input type="range" id="cam-target-z" min="-5" max="5" step="0.1" value="0">
+            </div>
+            <div class="tuner-output">
+                <button onclick="window.copySceneValues()">Copy Values</button>
+                <pre id="scene-tuner-output"></pre>
+            </div>
+        </div>
+        <button id="scene-tuner-toggle" class="hidden" onclick="window.toggleSceneTuner()">Tune Scene</button>
+        </div>
+    </div>
+
+    <!-- Load Three.js from CDN -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+
+    <!-- App modules -->
+    <script type="module" src="src/main.js"></script>
+</body>
+</html>

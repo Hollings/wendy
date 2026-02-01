@@ -30,7 +30,7 @@ import json
 import sqlite3
 import sys
 
-DB_PATH = "/data/wendy.db"
+DB_PATH = "/data/wendy/shared/wendy.db"
 
 # SQL operations to allow (read-only)
 ALLOWED_OPERATIONS = {
@@ -62,7 +62,7 @@ def authorizer(action, arg1, arg2, db_name, trigger_name):
     return sqlite3.SQLITE_DENY
 
 
-def execute_query(query: str, limit: int = 1000) -> dict:
+def execute_query(query: str, limit: int = 10000) -> dict:
     """Execute a read-only query and return results."""
     # Validate query starts with SELECT or WITH (for CTEs)
     query_upper = query.strip().upper()
@@ -93,8 +93,8 @@ def execute_query(query: str, limit: int = 1000) -> dict:
         # Install authorizer (another layer of protection)
         conn.set_authorizer(authorizer)
 
-        # Add LIMIT if not present to prevent huge results
-        if 'LIMIT' not in query_upper:
+        # Add LIMIT if not present to prevent huge results (unless limit=0 for unlimited)
+        if 'LIMIT' not in query_upper and limit > 0:
             query = f"{query.rstrip(';')} LIMIT {limit}"
 
         cursor = conn.execute(query)
@@ -148,7 +148,7 @@ def main():
     parser.add_argument("query", nargs="?", help="SQL query to execute")
     parser.add_argument("--stdin", action="store_true", help="Read query from stdin")
     parser.add_argument("--schema", action="store_true", help="Show database schema")
-    parser.add_argument("--limit", type=int, default=100, help="Max rows (default 100)")
+    parser.add_argument("--limit", type=int, default=10000, help="Max rows (default 10000, use 0 for unlimited)")
 
     args = parser.parse_args()
 

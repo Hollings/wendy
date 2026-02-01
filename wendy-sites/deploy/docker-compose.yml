@@ -5,16 +5,15 @@ services:
       dockerfile: deploy/Dockerfile
     ports:
       - "0.0.0.0:8910:8000"
+    env_file:
+      - /srv/secrets/wendy/sites.env
     environment:
-      - DEPLOY_TOKEN=${DEPLOY_TOKEN}
       - SITES_DIR=/data/sites
-      - BASE_URL=${BASE_URL:-https://wendy.monster}
-      - BRAIN_ACCESS_CODE=${BRAIN_ACCESS_CODE}
-      - BRAIN_SECRET=${BRAIN_SECRET}
     volumes:
       - sites_data:/data/sites
-      # Mount wendy-bot's data directory (read-only) for brain feed
-      - /var/lib/docker/volumes/wendy_data/_data:/data/wendy:ro
+      # Mount wendy-bot's data directory for brain feed and webhooks
+      # Note: read-write needed for webhook_events.json
+      - /var/lib/docker/volumes/wendy_data/_data:/data/wendy
       # Mount claude config for subagent streams (read-only)
       - /var/lib/docker/volumes/claude_config/_data:/data/claude:ro
     restart: unless-stopped

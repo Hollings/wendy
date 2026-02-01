@@ -40,11 +40,8 @@ _LOG = logging.getLogger(__name__)
 STREAM_FILE: Path = Path("/data/wendy/stream.jsonl")
 """Path to the Claude Code stream.jsonl file."""
 
-SESSION_STATE_FILE: Path = Path("/data/wendy/session_state.json")
-"""Path to session state JSON file with per-channel stats."""
-
 DB_PATH: Path = Path("/data/wendy/wendy.db")
-"""Path to the SQLite database with cached messages."""
+"""Path to the SQLite database with cached messages and session state."""
 
 CLAUDE_DIR: Path = Path("/data/claude")
 """Base directory for Claude Code data (projects, sessions)."""
@@ -309,28 +306,30 @@ def get_stats() -> dict:
         "cached_messages": 0,
     }
 
-    # Get session state
+    # Get session state from SQLite
     try:
-        if SESSION_STATE_FILE.exists():
-            state = json.loads(SESSION_STATE_FILE.read_text())
-            # Get first (and usually only) channel's stats
-            for _channel_id, session in state.items():
-                stats["session_messages"] = session.get("message_count", 0)
-                stats["session_id"] = session.get("session_id", "")[:8]
-                stats["total_input"] = session.get("total_input_tokens", 0)
-                stats["total_output"] = session.get("total_output_tokens", 0)
-                stats["cache_read"] = session.get("total_cache_read_tokens", 0)
-                break
+        if DB_PATH.exists():
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                # Get first channel's session stats
+                row = conn.execute(
+                    "SELECT * FROM channel_sessions ORDER BY last_used_at DESC LIMIT 1"
+                ).fetchone()
+                if row:
+                    stats["session_messages"] = row["message_count"]
+                    stats["session_id"] = row["session_id"][:8] if row["session_id"] else ""
+                    stats["total_input"] = row["total_input_tokens"]
+                    stats["total_output"] = row["total_output_tokens"]
+                    stats["cache_read"] = row["total_cache_read_tokens"]
     except Exception as e:
         _LOG.debug("Failed to read session state: %s", e)
 
     # Get message history count
     try:
         if DB_PATH.exists():
-            conn = sqlite3.connect(DB_PATH)
-            count = conn.execute("SELECT COUNT(*) FROM message_history").fetchone()[0]
-            conn.close()
-            stats["cached_messages"] = count  # Keep key for backwards compat
+            with sqlite3.connect(DB_PATH) as conn:
+                count = conn.execute("SELECT COUNT(*) FROM message_history").fetchone()[0]
+                stats["cached_messages"] = count  # Keep key for backwards compat
     except Exception as e:
         _LOG.debug("Failed to count message history: %s", e)
 
@@ -403,22 +402,27 @@ def update_stats_from_event(event_json: str) -> None:
 def get_subagents_dir() -> Path | None:
     """Get the subagents directory for the current Claude session.
 
-    Looks up the session ID from session_state.json and constructs
+    Looks up the session ID from SQLite channel_sessions and constructs
     the path to the subagents directory.
 
     Returns:
         Path to subagents directory, or None if not found.
     """
     try:
-        if not SESSION_STATE_FILE.exists():
+        if not DB_PATH.exists():
             return None
-        state = json.loads(SESSION_STATE_FILE.read_text())
-        for _channel_id, session in state.items():
-            session_id = session.get("session_id")
-            if session_id:
-                subagents_dir = CLAUDE_DIR / "projects" / "-data-wendy" / session_id / "subagents"
-                if subagents_dir.exists():
-                    return subagents_dir
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT session_id FROM channel_sessions ORDER BY last_used_at DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+
+        if row and row["session_id"]:
+            session_id = row["session_id"]
+            subagents_dir = CLAUDE_DIR / "projects" / "-data-wendy" / session_id / "subagents"
+            if subagents_dir.exists():
+                return subagents_dir
         return None
     except Exception as e:
         _LOG.debug("Failed to get subagents dir: %s", e)

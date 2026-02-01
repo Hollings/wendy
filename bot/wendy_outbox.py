@@ -1,6 +1,6 @@
 """Outbox watcher for Wendy's async message sending.
 
-This module implements a file-watching cog that monitors /data/wendy/outbox/
+This module implements a file-watching cog that monitors /data/wendy/shared/outbox/
 for JSON files and sends them as Discord messages. This allows Claude CLI
 (via the proxy API) to queue messages without direct Discord access.
 
@@ -9,7 +9,7 @@ File Format:
     {
         "channel_id": "123456789",
         "message": "Hello world",
-        "file_path": "/data/wendy/uploads/foo.png"  // optional
+        "file_path": "/data/wendy/channels/coding/output.png"  // optional
     }
 
     Filename format: {channel_id}_{timestamp_ns}.json
@@ -34,19 +34,25 @@ from pathlib import Path
 import discord
 from discord.ext import commands, tasks
 
+from .paths import DB_PATH as DEFAULT_DB_PATH
+from .paths import OUTBOX_DIR as DEFAULT_OUTBOX_DIR
+from .paths import WENDY_BASE
+
 _LOG = logging.getLogger(__name__)
 
-# Database path (same as wendy_cog.py)
-DB_PATH: Path = Path(os.getenv("WENDY_DB_PATH", "/data/wendy.db"))
+# Database path - allow override via env var
+_env_db_path = os.getenv("WENDY_DB_PATH")
+DB_PATH: Path = Path(_env_db_path) if _env_db_path else DEFAULT_DB_PATH
 
 # =============================================================================
 # Configuration Constants
 # =============================================================================
 
-OUTBOX_DIR: Path = Path(os.getenv("WENDY_OUTBOX_DIR", "/data/wendy/outbox"))
+_env_outbox_dir = os.getenv("WENDY_OUTBOX_DIR")
+OUTBOX_DIR: Path = Path(_env_outbox_dir) if _env_outbox_dir else DEFAULT_OUTBOX_DIR
 """Directory to watch for outgoing message files."""
 
-MESSAGE_LOG_FILE: Path = Path("/data/wendy/message_log.jsonl")
+MESSAGE_LOG_FILE: Path = WENDY_BASE / "message_log.jsonl"
 """JSONL file for logging sent messages (for debugging)."""
 
 MAX_MESSAGE_LOG_LINES: int = 1000

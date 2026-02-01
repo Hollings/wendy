@@ -16,7 +16,7 @@ services:
     env_file:
       - /srv/secrets/wendy/bot.env
     environment:
-      - WENDY_DB_PATH=/data/wendy/wendy.db
+      - WENDY_DB_PATH=/data/wendy/shared/wendy.db
       - SYSTEM_PROMPT_FILE=/app/config/system_prompt.txt
       - CLAUDE_CLI_TIMEOUT=300
       - WENDY_SECRETS_FILE=/data/wendy/secrets/runtime.json
@@ -38,7 +38,7 @@ services:
     env_file:
       - /srv/secrets/wendy/bot.env
     environment:
-      - WENDY_DB_PATH=/data/wendy/wendy.db
+      - WENDY_DB_PATH=/data/wendy/shared/wendy.db
       - WENDY_SITES_URL=http://127.0.0.1:8910
       - WENDY_GAMES_URL=http://127.0.0.1:8920
 
@@ -57,11 +57,13 @@ services:
     env_file:
       - /srv/secrets/wendy/bot.env
     environment:
-      - ORCHESTRATOR_CONCURRENCY=1
+      - ORCHESTRATOR_CONCURRENCY=3
       - ORCHESTRATOR_POLL_INTERVAL=30
       - ORCHESTRATOR_WORKING_DIR=/data/wendy
       - ORCHESTRATOR_PROXY_URL=http://127.0.0.1:8945
       - AGENT_SYSTEM_PROMPT_FILE=/app/config/agent_claude_md.txt
+      - WENDY_DB_PATH=/data/wendy/shared/wendy.db
+      - ORCHESTRATOR_NOTIFY_CHANNEL=1461429474250850365
     depends_on:
       - proxy
 

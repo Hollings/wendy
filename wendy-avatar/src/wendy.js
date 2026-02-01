@@ -73,6 +73,13 @@ export class Wendy {
         this._lookTarget = null;
         this._lookSpeed = 5;  // Radians per second for head rotation
 
+        // Reading animation state
+        this._isReading = false;
+        this._readingTime = 0;
+
+        // Thinking animation state
+        this._isThinking = false;
+
         this._createBody();
         this._createHead();
         this._createArms();
@@ -279,6 +286,38 @@ export class Wendy {
     }
 
     /**
+     * Start reading animation (gentle head movement scanning code)
+     */
+    startReading() {
+        this._isReading = true;
+        this._readingTime = 0;
+        this._lookTarget = null;  // Clear any look target
+    }
+
+    /**
+     * Stop reading animation
+     */
+    stopReading() {
+        this._isReading = false;
+    }
+
+    /**
+     * Start thinking animation (subtle look-up pose)
+     */
+    startThinking() {
+        this._isThinking = true;
+        this._isReading = false;  // Stop reading while thinking
+        this._lookTarget = null;  // Clear any look target
+    }
+
+    /**
+     * Stop thinking animation
+     */
+    stopThinking() {
+        this._isThinking = false;
+    }
+
+    /**
      * Update method for animation loop
      * @param {number} deltaTime - Time since last frame in seconds
      */
@@ -307,6 +346,42 @@ export class Wendy {
             const lerpFactor = 1 - Math.exp(-this._lookSpeed * deltaTime);
             this.head.rotation.x = THREE.MathUtils.lerp(this.head.rotation.x, clampedPitch, lerpFactor);
             this.head.rotation.y = THREE.MathUtils.lerp(this.head.rotation.y, clampedYaw, lerpFactor);
+        } else if (this._isReading && this.head) {
+            // Reading animation - scanning motion across the screen
+            this._readingTime += deltaTime;
+
+            // Horizontal scan: sweep left-to-right like reading lines
+            // Use a sawtooth-ish pattern: quick return, slow read
+            const lineTime = 2.5;  // Seconds per "line" (faster)
+            const lineCycle = (this._readingTime % lineTime) / lineTime;
+            // Ease in-out for smooth reading motion
+            // Scan phase (0-0.9): smoothly goes from 0 to 0.5
+            // Return phase (0.9-1.0): smoothly goes from 0.5 back to 0
+            const eased = lineCycle < 0.9
+                ? lineCycle / 0.9 * (2 - lineCycle / 0.9) * 0.5  // Smooth scan right (0 to 0.5)
+                : 0.5 * (1 - ((lineCycle - 0.9) / 0.1));  // Smooth return left (0.5 to 0)
+            const targetYaw = (eased - 0.5) * 0.5;  // -0.25 to 0.25 radians (more exaggerated)
+
+            // Vertical drift: downward drift as reading progresses, then jump up
+            const pageTime = 10.0;  // Seconds per "page" (faster)
+            const pageCycle = (this._readingTime % pageTime) / pageTime;
+            const verticalDrift = pageCycle < 0.95
+                ? pageCycle / 0.95 * 0.25  // Gradual look down (more range)
+                : 0;  // Jump back to top
+            const targetPitch = 0.15 + verticalDrift;  // Looking down at screen
+
+            // Smoothly interpolate
+            const lerpFactor = 1 - Math.exp(-3 * deltaTime);
+            this.head.rotation.x = THREE.MathUtils.lerp(this.head.rotation.x, targetPitch, lerpFactor);
+            this.head.rotation.y = THREE.MathUtils.lerp(this.head.rotation.y, targetYaw, lerpFactor);
+        } else if (this._isThinking && this.head) {
+            // Thinking animation - subtle look up and slight head tilt
+            const targetPitch = -0.15;  // Looking up slightly
+            const targetYaw = 0.08;     // Slight head tilt
+
+            const lerpFactor = 1 - Math.exp(-2 * deltaTime);
+            this.head.rotation.x = THREE.MathUtils.lerp(this.head.rotation.x, targetPitch, lerpFactor);
+            this.head.rotation.y = THREE.MathUtils.lerp(this.head.rotation.y, targetYaw, lerpFactor);
         } else if (this.head) {
             // Return to neutral when no target
             const lerpFactor = 1 - Math.exp(-this._lookSpeed * deltaTime);

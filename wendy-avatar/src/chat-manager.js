@@ -37,6 +37,7 @@ export class ChatManager {
             index: 0,
             aborted: false,
             resolve: null,  // Promise resolver for when typing completes
+            charDelay: 150, // Ms between characters (can be reduced by rushTyping)
         };
 
         // Session tracking
@@ -202,12 +203,6 @@ export class ChatManager {
      * @returns {Promise} Resolves when typing completes
      */
     async typeMessage(text, charDelay = 150) {
-        console.log('[DEBUG] ChatManager.typeMessage() called:', {
-            text: text?.slice(0, 50),
-            charDelay,
-            currentlyTyping: this.typing.active,
-        });
-
         // Don't start if already typing
         if (this.typing.active) {
             console.warn('ChatManager: Already typing, ignoring new message');
@@ -219,7 +214,10 @@ export class ChatManager {
             return;
         }
 
-        console.log('[DEBUG] ChatManager.typeMessage() - starting typing animation');
+        console.log('[DEBUG] ChatManager.typeMessage():', {
+            textLength: text.length,
+            charDelay,
+        });
 
         this.typing = {
             active: true,
@@ -227,6 +225,7 @@ export class ChatManager {
             index: 0,
             aborted: false,
             resolve: null,
+            charDelay,  // Store so rushTyping can modify it
         };
 
         // Notify start
@@ -253,13 +252,12 @@ export class ChatManager {
             this.onTypeChar(char);
 
             // Wait for keyboard IK to complete this character
-            await this.sleep(charDelay);
+            // Use this.typing.charDelay so rushTyping() can speed it up
+            await this.sleep(this.typing.charDelay);
         }
 
-        // Wait a bit for last character to finish, then complete
-        await this.sleep(300);
-        this.finishTyping();
-
+        // Don't call finishTyping here - let main.js call it when arm queue is done
+        // The promise will be resolved when finishTyping() is eventually called
         return promise;
     }
 
@@ -366,11 +364,42 @@ export class ChatManager {
     }
 
     /**
+     * Speed up current typing to finish within a max time
+     * Calculates delay based on remaining characters
+     * @param {number} maxTimeMs - Maximum time to finish typing (default 5000ms)
+     */
+    rushTyping(maxTimeMs = 2000) {
+        if (!this.typing.active) return;
+
+        // Calculate remaining characters
+        const remainingChars = this.typing.text.length - this.typing.index;
+        if (remainingChars <= 0) return;
+
+        // Calculate delay to finish in maxTime
+        // Minimum delay of 5ms to keep it visible
+        const newDelay = Math.max(5, Math.floor(maxTimeMs / remainingChars));
+
+        this.typing.charDelay = newDelay;
+        console.log(`[ChatManager] Rushing typing - ${remainingChars} chars remaining, delay: ${newDelay}ms`);
+    }
+
+    /**
      * Check if currently typing
      * @returns {boolean}
      */
     isTyping() {
         return this.typing.active;
+    }
+
+    /**
+     * Check if typing is complete and ready to finish
+     * (all characters queued AND displayed on monitor)
+     * @returns {boolean}
+     */
+    isTypingComplete() {
+        if (!this.typing.active) return false;
+        // Check if all characters have been displayed on monitor
+        return this.monitor && this.monitor.isTypingComplete();
     }
 
     // =========================================================================

@@ -3,6 +3,22 @@
 This file contains reference information for background agents.
 Role-specific instructions are provided in the task prompt.
 
+# Compact Instructions
+
+When summarizing this conversation, focus on:
+- Conversation topics and discussion threads
+- Who said what (preserve speaker attribution)
+- User questions, requests, and goals
+- Decisions made and reasoning
+- Ongoing topics that may be referenced later
+
+Do NOT reduce the summary to just:
+- "Recent work" or technical task lists
+- "Errors and fixes" sections
+- Code changes only
+
+This is a Discord conversation, not a coding session. Preserve the social and conversational context.
+
 ## Environment
 
 - Working directory: /data/wendy/coding/

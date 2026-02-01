@@ -60,7 +60,9 @@ For larger work (new projects, complex features, multi-file changes), use the ta
 * Use `bd create "description"` to create tasks
 * **NEVER use Claude Code's Task tool or subagents** - always use bd instead
 
-The task system runs agents in the background. You'll be notified automatically when tasks complete - no need to poll or check on them.
+The task system runs up to 3 agents concurrently. You'll be notified automatically when tasks complete - no need to poll or check on them.
+
+When tasks must run in sequence (e.g., task B needs output from task A), use `bd dep add <child> <parent>` to set dependencies. Independent tasks run in parallel automatically.
 
 How the task system works
 
@@ -88,7 +90,7 @@ You can deploy static websites and multiplayer game servers to wendy.monster.
 Usage: ./scripts/wendy/deploy.sh <project-path> [target-url]
 
 Arguments:
-* project-path: Folder to deploy (relative to /data/wendy/{folder}/)
+* project-path: Folder to deploy (relative to /data/wendy/channels/{folder}/)
 * target-url: Optional. URL path on wendy.monster. Defaults to the folder name.
 
 Auto-detection:
@@ -122,3 +124,51 @@ Game servers (server.ts):
   ```
 * The helper library automatically serves files from ./public - no extra code needed
 * Frontend WebSocket: `new WebSocket(\`wss://${location.host}${location.pathname}ws\`)`
+
+Secrets management
+
+You have a secure place to store API keys and tokens that users give you:
+
+```
+python3 /data/wendy/secrets.py set github_pat "ghp_xxx"   # Store a secret
+python3 /data/wendy/secrets.py get github_pat              # Retrieve a secret
+python3 /data/wendy/secrets.py list                        # List all keys (not values)
+python3 /data/wendy/secrets.py delete old_key              # Delete a secret
+```
+
+Secrets persist across restarts and deployments. NEVER store secrets in plain text files, CLAUDE.md, or anywhere else - always use this tool.
+
+Webhooks
+
+You have webhook URLs that external services (GitHub, CI/CD, etc.) can POST to wake you with data.
+
+To get your webhook URL for a channel:
+```
+python3 /app/scripts/webhooks.py get <channel_name>
+```
+
+URL format: `https://wendy.monster/webhook/{token}`
+
+When webhook events arrive, they appear as messages from "Webhook: {source}" (e.g., "Webhook: Github").
+Respond naturally - acknowledge the event, take action if relevant, or note it for later.
+
+Webhook management:
+```
+python3 /app/scripts/webhooks.py list                         # List all webhooks
+python3 /app/scripts/webhooks.py create <name> <channel_id>   # Create new webhook
+python3 /app/scripts/webhooks.py regenerate <name>            # Regenerate token (invalidates old)
+python3 /app/scripts/webhooks.py delete <name>                # Delete webhook
+```
+
+Supported webhook sources (auto-detected from headers):
+- GitHub (push, pull_request, issues, release, etc.)
+- GitLab (push, merge request, etc.)
+- Generic webhooks (any JSON payload)
+
+Context restoration after compaction
+
+When you see "This session is being continued from a previous conversation" (indicating auto-compaction happened), call check_messages with count=20 to restore recent conversation context:
+
+  curl "http://proxy:8945/api/check_messages/{channel_id}?count=20"
+
+This fetches the last 20 messages regardless of what was previously seen, helping you understand what people were talking about before the session was compacted.

@@ -20,16 +20,29 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from .paths import (
+    SHARED_DIR,
+    WENDY_BASE,
+    beads_dir,
+    channel_dir,
+    claude_md_path,
+    current_session_file,
+    ensure_channel_dirs,
+    ensure_shared_dirs,
+    session_dir,
+)
+from .state_manager import state as state_manager
+
 _LOG = logging.getLogger(__name__)
 
-# File paths for session persistence
-SESSION_STATE_FILE: Path = Path("/data/wendy/session_state.json")
-"""Path to JSON file storing per-channel session state (session IDs, token counts, etc.)."""
+# Legacy path for one-time migration
+_SESSION_STATE_FILE_LEGACY: Path = Path("/data/wendy/session_state.json")
+"""Legacy JSON file path - used only for one-time migration to SQLite."""
 
-# Session directories are per-folder: /root/.claude/projects/-data-wendy-{folder}/
-# e.g., /data/wendy/coding -> /root/.claude/projects/-data-wendy-coding/
+# Session directories are per-channel: /root/.claude/projects/-data-wendy-channels-{name}/
+# e.g., /data/wendy/channels/coding -> /root/.claude/projects/-data-wendy-channels-coding/
 
-STREAM_LOG_FILE: Path = Path("/data/wendy/stream.jsonl")
+STREAM_LOG_FILE: Path = WENDY_BASE / "stream.jsonl"
 """Rolling log file for real-time event streaming from Claude CLI."""
 
 # Limits for session management
@@ -57,7 +70,7 @@ These are filtered out to prevent the CLI from accessing sensitive credentials
 that should only be available to the parent bot process.
 """
 
-# Tool instructions template - {channel_id} and {folder} are substituted
+# Tool instructions template - {channel_id} and {channel_name} are substituted
 TOOL_INSTRUCTIONS_TEMPLATE = """
 ---
 REAL-TIME CHANNEL TOOLS (Channel ID: {channel_id})
@@ -75,8 +88,8 @@ RESPONSE EXPECTATIONS:
 1. SEND A MESSAGE (REQUIRED to respond):
    curl -X POST http://localhost:8945/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "your message here"}}'
 
-   With attachment (file must be in /data/wendy/):
-   curl -X POST http://localhost:8945/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "check this out", "attachment": "/data/wendy/uploads/file.png"}}'
+   With attachment (file can be anywhere under /data/wendy/ or /tmp/):
+   curl -X POST http://localhost:8945/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "check this out", "attachment": "/data/wendy/channels/{channel_name}/output.png"}}'
 
    This is the ONLY way to send messages to users. Your final output goes nowhere.
 
@@ -97,24 +110,26 @@ Before doing something that might take a while (writing code, researching, readi
 
 ATTACHMENTS:
 When users upload files (images, documents, code, etc.), the check_messages response includes an "attachments" array with file paths:
-  {{"author": "someone", "content": "look at this", "attachments": ["/data/wendy/attachments/msg_123_0_photo.jpg"]}}
+  {{"author": "someone", "content": "look at this", "attachments": ["/data/wendy/channels/{channel_name}/attachments/msg_123_0_photo.jpg"]}}
 - You CANNOT see attachments without using the Read tool on the file path. The path is just a reference.
 - If a message has an "attachments" array, you MUST call Read on each path to actually see the content.
 - Do NOT describe or comment on files you haven't actually Read - you will hallucinate.
 - Always check for the "attachments" field in message JSON when users seem to be sharing something.
 
 PERSONAL FOLDER:
-You have a personal folder at /data/wendy/{folder}/ where you can save notes or files. This persists between conversations.
+Your workspace for this channel is /data/wendy/channels/{channel_name}/
+- Save notes, files, and project work here
+- This persists between conversations
 
 SELF-CUSTOMIZATION:
-You can edit /data/wendy/{folder}/CLAUDE.md to customize your own behavior. Anything you write there becomes part of your system instructions on the next message. Use this to remember things, set personal preferences, or adjust how you behave. Changes take effect immediately - no restart needed.
+You can edit /data/wendy/channels/{channel_name}/CLAUDE.md to customize your own behavior. Anything you write there becomes part of your system instructions on the next message. Use this to remember things, set personal preferences, or adjust how you behave. Changes take effect immediately - no restart needed.
 
 MESSAGE HISTORY DATABASE:
-You have full read access to the message history at /data/wendy.db. Use query_db.py to search messages, check past conversations, or find old content.
+You have full read access to the message history at /data/wendy/shared/wendy.db. Use query_db.py to search messages, check past conversations, or find old content.
 
 Usage:
-  python3 /data/wendy/query_db.py "SELECT * FROM message_history WHERE content LIKE '%keyword%' LIMIT 20"
-  python3 /data/wendy/query_db.py --schema    # Show all tables
+  python3 /app/scripts/query_db.py "SELECT * FROM message_history WHERE content LIKE '%keyword%' LIMIT 20"
+  python3 /app/scripts/query_db.py --schema    # Show all tables
 
 Key tables:
 - message_history: Full raw messages (message_id, channel_id, guild_id, author_id, author_nickname, is_bot, content, timestamp, attachment_urls, reply_to_id)
@@ -209,28 +224,19 @@ class ClaudeCliTextGenerator:
         self._temp_dir = None
         self._temp_files = []
 
-    def _load_session_state(self) -> dict[str, Any]:
-        """Load the persisted session state from disk.
+        # One-time migration from legacy JSON to SQLite
+        self._migrate_legacy_session_state()
 
-        Returns:
-            Dictionary mapping channel IDs (as strings) to session info dicts.
-            Empty dict if file doesn't exist or is corrupted.
+    def _migrate_legacy_session_state(self) -> None:
+        """One-time migration from JSON file to SQLite.
+
+        Checks if the legacy JSON file exists and migrates data to SQLite.
+        The file is renamed to .migrated after successful migration.
         """
-        if SESSION_STATE_FILE.exists():
-            try:
-                return json.loads(SESSION_STATE_FILE.read_text())
-            except (OSError, json.JSONDecodeError):
-                pass
-        return {}
-
-    def _save_session_state(self, state: dict[str, Any]) -> None:
-        """Persist session state to disk.
-
-        Args:
-            state: The complete session state dictionary to save.
-        """
-        SESSION_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SESSION_STATE_FILE.write_text(json.dumps(state, indent=2))
+        if _SESSION_STATE_FILE_LEGACY.exists():
+            count = state_manager.migrate_from_session_json(_SESSION_STATE_FILE_LEGACY)
+            if count > 0:
+                _LOG.info("Migrated %d sessions from legacy JSON to SQLite", count)
 
     def _get_channel_session(self, channel_id: int) -> dict[str, Any] | None:
         """Retrieve session info for a specific Discord channel.
@@ -242,34 +248,21 @@ class ClaudeCliTextGenerator:
             Session info dict containing session_id, token counts, etc.,
             or None if no session exists for this channel.
         """
-        state = self._load_session_state()
-        return state.get(str(channel_id))
+        return state_manager.get_session_stats(channel_id)
 
-    def _create_channel_session(self, channel_id: int, folder: str = "wendys_folder") -> str:
+    def _create_channel_session(self, channel_id: int, channel_name: str) -> str:
         """Create a new Claude CLI session for a Discord channel.
 
         Args:
             channel_id: The Discord channel ID to create a session for.
-            folder: The folder name used for this session's working directory.
-                    This is stored to detect folder changes on resume.
+            channel_name: The channel name (used as folder name).
 
         Returns:
             The newly generated UUID session ID.
         """
         session_id = str(uuid.uuid4())
-        state = self._load_session_state()
-        state[str(channel_id)] = {
-            "session_id": session_id,
-            "folder": folder,
-            "created_at": int(time.time()),
-            "message_count": 0,
-            "total_input_tokens": 0,
-            "total_output_tokens": 0,
-            "total_cache_read_tokens": 0,
-            "total_cache_create_tokens": 0,
-        }
-        self._save_session_state(state)
-        _LOG.info("Created new session %s for channel %d (folder=%s)", session_id, channel_id, folder)
+        state_manager.create_session(channel_id, session_id, channel_name)
+        _LOG.info("Created new session %s for channel %d (channel=%s)", session_id, channel_id, channel_name)
         return session_id
 
     def _update_session_stats(self, channel_id: int, usage: dict[str, Any]) -> None:
@@ -283,24 +276,22 @@ class ClaudeCliTextGenerator:
             usage: Token usage dict from CLI response containing input_tokens,
                    output_tokens, cache_read_input_tokens, cache_creation_input_tokens.
         """
-        state = self._load_session_state()
-        channel_key = str(channel_id)
-        if channel_key not in state:
+        session_info = state_manager.get_session(channel_id)
+        if not session_info:
             return
 
-        state[channel_key]["message_count"] += 1
-        state[channel_key]["total_input_tokens"] += usage.get("input_tokens", 0)
-        state[channel_key]["total_output_tokens"] += usage.get("output_tokens", 0)
-        state[channel_key]["total_cache_read_tokens"] += usage.get("cache_read_input_tokens", 0)
-        state[channel_key]["total_cache_create_tokens"] += usage.get("cache_creation_input_tokens", 0)
-        state[channel_key]["last_used_at"] = int(time.time())
-        self._save_session_state(state)
+        state_manager.update_session_stats(
+            channel_id,
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+            cache_read_tokens=usage.get("cache_read_input_tokens", 0),
+            cache_create_tokens=usage.get("cache_creation_input_tokens", 0),
+        )
 
-        # Check if session needs truncation
-        folder = state[channel_key].get("folder", "wendys_folder")
-        self._truncate_session_if_needed(state[channel_key]["session_id"], folder)
+        # Check if session needs truncation (folder field stores channel_name)
+        self._truncate_session_if_needed(session_info.session_id, session_info.folder)
 
-    def _truncate_session_if_needed(self, session_id: str, folder: str = "wendys_folder") -> None:
+    def _truncate_session_if_needed(self, session_id: str, channel_name: str) -> None:
         """Truncate session history if Discord messages exceed MAX_DISCORD_MESSAGES.
 
         This prevents sessions from growing indefinitely by removing older messages
@@ -310,12 +301,12 @@ class ClaudeCliTextGenerator:
 
         Args:
             session_id: The UUID session ID to check and potentially truncate.
-            folder: The folder name used for this session (determines project directory).
+            channel_name: The channel name (determines project directory).
         """
         # Claude CLI stores sessions in project directories based on cwd path
-        # e.g., /data/wendy/coding -> /root/.claude/projects/-data-wendy-coding
-        session_dir = Path("/root/.claude/projects") / f"-data-wendy-{folder}"
-        session_file = session_dir / f"{session_id}.jsonl"
+        # e.g., /data/wendy/channels/coding -> /root/.claude/projects/-data-wendy-channels-coding
+        sess_dir = session_dir(channel_name)
+        session_file = sess_dir / f"{session_id}.jsonl"
         if not session_file.exists():
             return
 
@@ -393,11 +384,11 @@ class ClaudeCliTextGenerator:
 
     def get_session_stats(self, channel_id: int) -> dict[str, Any] | None:
         """Get session stats for a channel."""
-        return self._get_channel_session(channel_id)
+        return state_manager.get_session_stats(channel_id)
 
-    def reset_channel_session(self, channel_id: int) -> str:
+    def reset_channel_session(self, channel_id: int, channel_name: str = "default") -> str:
         """Reset a channel's session, return new session_id."""
-        return self._create_channel_session(channel_id)
+        return self._create_channel_session(channel_id, channel_name)
 
     def _find_cli_path(self) -> str:
         """Find the claude CLI executable."""
@@ -463,7 +454,7 @@ class ClaudeCliTextGenerator:
     def _save_images_to_temp(self, images: list[dict[str, Any]]) -> list[Path]:
         """Save base64 images to Wendy's images folder."""
         paths = []
-        images_dir = Path("/data/wendy/images")
+        images_dir = SHARED_DIR / "images"
         images_dir.mkdir(parents=True, exist_ok=True)
 
         _LOG.info("Processing %d images for CLI", len(images))
@@ -514,63 +505,74 @@ class ClaudeCliTextGenerator:
             except OSError:
                 pass
 
-    def _setup_wendy_scripts(self, wendy_dir: Path) -> None:
-        """Ensure Wendy's shell scripts are available in her directory."""
+    def _setup_wendy_scripts(self) -> None:
+        """Ensure Wendy's shell scripts are available and shared dirs exist."""
         scripts_src = Path("/app/scripts")
 
+        # Copy scripts to base wendy dir for easy access
         if scripts_src.exists():
             for script in scripts_src.glob("*.sh"):
-                dest = wendy_dir / script.name
+                dest = WENDY_BASE / script.name
                 if not dest.exists() or dest.stat().st_mtime < script.stat().st_mtime:
                     shutil.copy2(script, dest)
                     dest.chmod(0o755)
             for script in scripts_src.glob("*.py"):
-                dest = wendy_dir / script.name
+                dest = WENDY_BASE / script.name
                 if not dest.exists() or dest.stat().st_mtime < script.stat().st_mtime:
                     shutil.copy2(script, dest)
 
-        (wendy_dir / "outbox").mkdir(exist_ok=True)
-        (wendy_dir / "uploads").mkdir(exist_ok=True)
-        (wendy_dir / "secrets").mkdir(exist_ok=True, mode=0o700)
+        # Ensure shared directories exist
+        ensure_shared_dirs()
 
-    def _setup_channel_folder(self, wendy_dir: Path, folder: str) -> None:
-        """Create channel-specific folder if it doesn't exist."""
-        channel_folder = wendy_dir / folder
-        channel_folder.mkdir(exist_ok=True)
+        # Ensure secrets directory exists (at base level for shared access)
+        secrets_dir = WENDY_BASE / "secrets"
+        secrets_dir.mkdir(exist_ok=True, mode=0o700)
+
+    def _setup_channel_folder(self, channel_name: str, beads_enabled: bool = False) -> None:
+        """Create channel-specific folder if it doesn't exist.
+
+        Args:
+            channel_name: The channel name (used as folder name).
+            beads_enabled: If True, create the .beads directory and copy BD_USAGE.md.
+        """
+        # Ensure channel directory exists
+        ensure_channel_dirs(channel_name, beads_enabled=beads_enabled)
+        chan_dir = channel_dir(channel_name)
 
         # Set up Claude Code settings (hooks to block Task tool)
         claude_settings_src = Path("/app/config/claude_settings.json")
-        claude_dir = wendy_dir / ".claude"
+        claude_dir = chan_dir / ".claude"
         claude_dir.mkdir(exist_ok=True)
         settings_dest = claude_dir / "settings.json"
         if claude_settings_src.exists():
             if not settings_dest.exists() or settings_dest.stat().st_mtime < claude_settings_src.stat().st_mtime:
                 shutil.copy2(claude_settings_src, settings_dest)
 
-        # Copy BD_USAGE.md for reference (to coding folder where beads work)
-        bd_usage_src = Path("/app/config/BD_USAGE.md")
-        bd_usage_dest = wendy_dir / "coding" / "BD_USAGE.md"
-        if bd_usage_src.exists():
-            if not bd_usage_dest.exists() or bd_usage_dest.stat().st_mtime < bd_usage_src.stat().st_mtime:
-                shutil.copy2(bd_usage_src, bd_usage_dest)
+        # Copy BD_USAGE.md to channels with beads enabled
+        if beads_enabled:
+            bd_usage_src = Path("/app/config/BD_USAGE.md")
+            bd_usage_dest = chan_dir / "BD_USAGE.md"
+            if bd_usage_src.exists():
+                if not bd_usage_dest.exists() or bd_usage_dest.stat().st_mtime < bd_usage_src.stat().st_mtime:
+                    shutil.copy2(bd_usage_src, bd_usage_dest)
 
-    def _get_wendys_notes(self, folder: str = "wendys_folder") -> str:
+    def _get_wendys_notes(self, channel_name: str) -> str:
         """Load Wendy's self-editable notes from her personal CLAUDE.md."""
-        notes_path = Path(f"/data/wendy/{folder}/CLAUDE.md")
+        notes_path = claude_md_path(channel_name)
         if not notes_path.exists():
             return ""
         try:
             content = notes_path.read_text().strip()
             if content:
-                return f"\n\n---\nYOUR PERSONAL NOTES (from {folder}/CLAUDE.md - you can edit this!):\n{content}\n---"
+                return f"\n\n---\nYOUR PERSONAL NOTES (from channels/{channel_name}/CLAUDE.md - you can edit this!):\n{content}\n---"
             return ""
         except Exception as e:
             _LOG.warning("Failed to read Wendy's notes: %s", e)
             return ""
 
-    def _get_tool_instructions(self, channel_id: int, folder: str = "wendys_folder") -> str:
+    def _get_tool_instructions(self, channel_id: int, channel_name: str) -> str:
         """Get instructions for Wendy's API tools."""
-        return TOOL_INSTRUCTIONS_TEMPLATE.format(channel_id=channel_id, folder=folder)
+        return TOOL_INSTRUCTIONS_TEMPLATE.format(channel_id=channel_id, channel_name=channel_name)
 
     def _parse_stream_json(self, output: str, channel_id: int | None = None) -> str:
         """Parse stream-json output from Claude CLI and save debug log."""
@@ -687,13 +689,13 @@ class ClaudeCliTextGenerator:
         except Exception as e:
             _LOG.error("Failed to trim stream log: %s", e)
 
-    def _build_system_prompt(self, channel_id: int, folder: str, mode: str) -> str:
+    def _build_system_prompt(self, channel_id: int, channel_name: str, mode: str, beads_enabled: bool) -> str:
         """Build the complete system prompt for a channel."""
-        prompt = self._get_base_system_prompt(folder, mode)
-        prompt += self._get_wendys_notes(folder)
-        prompt += self._get_tool_instructions(channel_id, folder)
-        if mode == "full":
-            prompt += self._get_active_beads_warning()
+        prompt = self._get_base_system_prompt(channel_name, mode)
+        prompt += self._get_wendys_notes(channel_name)
+        prompt += self._get_tool_instructions(channel_id, channel_name)
+        if beads_enabled:
+            prompt += self._get_active_beads_warning(channel_name)
         return prompt
 
     def _build_cli_command(
@@ -733,22 +735,24 @@ class ClaudeCliTextGenerator:
         """Get allowedTools and disallowedTools based on channel mode.
 
         Args:
-            channel_config: Channel config dict with 'mode' and 'folder' keys
+            channel_config: Channel config dict with 'mode' and 'name' keys
 
         Returns:
             Tuple of (allowedTools, disallowedTools) strings
         """
         mode = channel_config.get("mode", "full")
-        folder = channel_config.get("folder", "wendys_folder")
+        # Use _folder for backwards compat, or fall back to name
+        channel_name = channel_config.get("_folder", channel_config.get("name", "default"))
 
         if mode == "chat":
-            # Chat mode: restricted access, no beads, can't touch coding folder
-            # Note: uploads folder is needed for sending attachments via send_message API
-            allowed = f"Read,WebSearch,WebFetch,Bash,Edit(//data/wendy/{folder}/**),Write(//data/wendy/{folder}/**),Write(//data/wendy/uploads/**)"
-            disallowed = "Read(//data/wendy/coding/**),Edit(//data/wendy/*.sh),Edit(//data/wendy/*.py),Edit(//app/**),Write(//app/**),Edit(//data/wendy/coding/**),Write(//data/wendy/coding/**)"
+            # Chat mode: restricted access, no beads, can only edit own channel folder
+            # Files can be sent from anywhere under /data/wendy/ or /tmp/
+            allowed = f"Read,WebSearch,WebFetch,Bash,Edit(//data/wendy/channels/{channel_name}/**),Write(//data/wendy/channels/{channel_name}/**),Write(//data/wendy/tmp/**),Write(//tmp/**)"
+            # Block access to other channel folders and system files
+            disallowed = "Edit(//data/wendy/*.sh),Edit(//data/wendy/*.py),Edit(//app/**),Write(//app/**)"
         else:
-            # Full mode: full access to folder, uploads, beads
-            allowed = f"Read,WebSearch,WebFetch,Bash,Edit(//data/wendy/{folder}/**),Write(//data/wendy/{folder}/**),Write(//data/wendy/uploads/**)"
+            # Full mode: full access to channel folder
+            allowed = f"Read,WebSearch,WebFetch,Bash,Edit(//data/wendy/channels/{channel_name}/**),Write(//data/wendy/channels/{channel_name}/**),Write(//data/wendy/tmp/**),Write(//tmp/**)"
             disallowed = "Edit(//app/**),Write(//app/**)"
 
         return allowed, disallowed
@@ -767,7 +771,7 @@ class ClaudeCliTextGenerator:
 
         Args:
             channel_id: Discord channel ID (required for session management)
-            channel_config: Optional channel config dict with mode and folder
+            channel_config: Optional channel config dict with mode, name, beads_enabled
             model_override: Optional model to use instead of default (e.g., "haiku" for webhooks)
 
         Returns:
@@ -778,37 +782,39 @@ class ClaudeCliTextGenerator:
 
         # Default config if not provided
         if channel_config is None:
-            channel_config = {"mode": "full", "folder": "wendys_folder", "name": "default"}
+            channel_config = {"mode": "full", "name": "default", "beads_enabled": False}
 
-        folder = channel_config.get("folder", "wendys_folder")
+        # Use _folder for backwards compat, or fall back to name
+        channel_name = channel_config.get("_folder", channel_config.get("name", "default"))
         mode = channel_config.get("mode", "full")
+        beads_enabled = channel_config.get("beads_enabled", False)
 
         # Get or create session for this channel
         force_new = kwargs.get("_force_new_session", False)
         session_info = self._get_channel_session(channel_id)
 
-        # Check if folder changed - if so, we need a new session since Claude CLI
+        # Check if channel name changed - if so, we need a new session since Claude CLI
         # stores sessions per-project (based on cwd)
-        folder_changed = (
+        channel_changed = (
             session_info is not None
-            and session_info.get("folder") != folder
+            and session_info.get("folder") != channel_name
         )
-        if folder_changed:
+        if channel_changed:
             _LOG.warning(
-                "Folder changed for channel %d: %s -> %s, creating new session",
-                channel_id, session_info.get("folder"), folder
+                "Channel changed for channel %d: %s -> %s, creating new session",
+                channel_id, session_info.get("folder"), channel_name
             )
 
-        is_new_session = session_info is None or force_new or folder_changed
+        is_new_session = session_info is None or force_new or channel_changed
 
         if is_new_session:
-            session_id = self._create_channel_session(channel_id, folder)
+            session_id = self._create_channel_session(channel_id, channel_name)
         else:
             session_id = session_info["session_id"]
 
         # Build system prompt and CLI command
         effective_model = model_override or self.model
-        system_prompt = self._build_system_prompt(channel_id, folder, mode)
+        system_prompt = self._build_system_prompt(channel_id, channel_name, mode, beads_enabled)
         cmd = self._build_cli_command(session_id, is_new_session, system_prompt, channel_config, model=effective_model)
 
         session_action = "starting new" if is_new_session else "resuming"
@@ -817,32 +823,33 @@ class ClaudeCliTextGenerator:
 
         nudge_prompt = f"<new messages - you MUST call curl -s http://localhost:8945/api/check_messages/{channel_id} before any other action. Do not assume what the messages contain.>"
 
-        wendy_dir = Path("/data/wendy")
-        wendy_dir.mkdir(parents=True, exist_ok=True)
-        self._setup_wendy_scripts(wendy_dir)
-        self._setup_channel_folder(wendy_dir, folder)
+        # Ensure base and shared directories exist
+        WENDY_BASE.mkdir(parents=True, exist_ok=True)
+        self._setup_wendy_scripts()
+        self._setup_channel_folder(channel_name, beads_enabled=beads_enabled)
 
         proc = None
         try:
             cli_env = {k: v for k, v in os.environ.items() if k not in SENSITIVE_ENV_VARS}
 
-            # Set BEADS_DIR for full mode so bd command can find .beads
-            if mode == "full":
-                cli_env["BEADS_DIR"] = str(wendy_dir / "coding")
+            # Set BEADS_DIR for channels with beads enabled so bd command can find .beads
+            # Note: BEADS_DIR must point to the .beads directory itself, not the project root
+            if beads_enabled:
+                cli_env["BEADS_DIR"] = str(beads_dir(channel_name))
 
             # Use channel-specific folder as cwd for isolation
-            channel_cwd = wendy_dir / folder
+            channel_cwd = channel_dir(channel_name)
 
             # Write session ID to .current_session for orchestrator to fork
-            # Use atomic write to prevent race conditions
-            if folder == "coding":
-                current_session_file = wendy_dir / "coding" / ".current_session"
+            # Only for channels with beads enabled
+            if beads_enabled:
+                session_file = current_session_file(channel_name)
                 try:
                     # Write to temp file then atomically rename
-                    temp_file = current_session_file.with_suffix(".tmp")
+                    temp_file = session_file.with_suffix(".tmp")
                     temp_file.write_text(session_id)
-                    temp_file.replace(current_session_file)
-                    _LOG.debug("Wrote session ID %s to %s", session_id[:8], current_session_file)
+                    temp_file.replace(session_file)
+                    _LOG.debug("Wrote session ID %s to %s", session_id[:8], session_file)
                 except Exception as e:
                     _LOG.warning("Failed to write current session file: %s", e)
 
@@ -936,11 +943,11 @@ class ClaudeCliTextGenerator:
         finally:
             self._cleanup_temp_files()
 
-    def _get_base_system_prompt(self, folder: str = "wendys_folder", mode: str = "full") -> str:
+    def _get_base_system_prompt(self, channel_name: str, mode: str = "full") -> str:
         """Get the base system prompt for Wendy.
 
         Args:
-            folder: The channel's folder name for path substitution
+            channel_name: The channel name for path substitution
             mode: 'chat' for limited permissions, 'full' for coding channel
         """
         system_prompt_file = os.getenv("SYSTEM_PROMPT_FILE", "/app/config/system_prompt.txt")
@@ -950,8 +957,8 @@ class ClaudeCliTextGenerator:
         try:
             content = Path(system_prompt_file).read_text().strip()
 
-            # Replace folder placeholder
-            content = content.replace("{folder}", folder)
+            # Replace folder placeholder with channel name
+            content = content.replace("{folder}", channel_name)
 
             # For chat mode, strip out deployment and task system instructions
             if mode == "chat":
@@ -989,11 +996,11 @@ class ClaudeCliTextGenerator:
             _LOG.warning("Failed to read system prompt file: %s", e)
             return ""
 
-    def _get_active_beads_warning(self) -> str:
+    def _get_active_beads_warning(self, channel_name: str) -> str:
         """Check for in-progress beads and return a warning if any are active."""
         try:
             # Read directly from beads JSONL file instead of shelling out
-            jsonl_path = Path("/data/wendy/coding/.beads/issues.jsonl")
+            jsonl_path = beads_dir(channel_name) / "issues.jsonl"
             if not jsonl_path.exists():
                 return ""
 
