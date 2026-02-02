@@ -75,6 +75,28 @@ else
         cd ${REMOTE_BASE}/${SERVICE}/deploy
         docker compose -p wendy down
         docker compose -p wendy up -d --build
+
+        # Ensure wendy-games is running (proxy depends on it)
+        if ! docker ps -q -f name=wendy-games-manager | grep -q .; then
+            echo 'wendy-games-manager not running, starting it...'
+            if [ -f /srv/wendy-games/deploy/docker-compose.yml ]; then
+                cd /srv/wendy-games/deploy
+                docker compose up -d --build
+            else
+                echo 'WARNING: wendy-games not deployed at /srv/wendy-games/'
+            fi
+        fi
+
+        # Ensure wendy-sites is running (proxy depends on it)
+        if ! docker ps -q -f name=wendy-sites | grep -q .; then
+            echo 'wendy-sites not running, starting it...'
+            if [ -f /srv/wendy-bot/wendy-sites/deploy/docker-compose.yml ]; then
+                cd /srv/wendy-bot/wendy-sites/deploy
+                docker compose up -d --build
+            else
+                echo 'WARNING: wendy-sites not found'
+            fi
+        fi
     "
 fi
 
@@ -85,7 +107,24 @@ echo "[$(date +%H:%M:%S)] Deployed!"
 if ! $STATIC_ONLY; then
     echo "[$(date +%H:%M:%S)] Checking container status..."
     sleep 3
-    ssh "$REMOTE_HOST" "docker ps --filter name=wendy --format 'table {{.Names}}\t{{.Status}}' | head -5"
+    ssh "$REMOTE_HOST" "docker ps --filter name=wendy --format 'table {{.Names}}\t{{.Status}}' | head -10"
+
+    echo ""
+    echo "[$(date +%H:%M:%S)] Verifying service health..."
+    ssh "$REMOTE_HOST" "
+        # Check wendy-games health
+        if curl -sf http://127.0.0.1:8920/health > /dev/null 2>&1; then
+            echo 'wendy-games: OK'
+        else
+            echo 'wendy-games: NOT RESPONDING'
+        fi
+        # Check wendy-sites health
+        if curl -sf http://127.0.0.1:8910/health > /dev/null 2>&1; then
+            echo 'wendy-sites: OK'
+        else
+            echo 'wendy-sites: NOT RESPONDING'
+        fi
+    "
 fi
 
 echo ""
