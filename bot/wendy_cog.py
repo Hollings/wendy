@@ -400,16 +400,67 @@ class WendyCog(commands.Cog):
             if self._active_generations.get(channel.id) is job:
                 # Check if new messages arrived while we were running
                 if job.new_message_pending:
-                    _LOG.info("New messages pending in channel %s, starting new generation", channel.id)
-                    # Start a new generation for the pending messages
-                    new_job = GenerationJob()
-                    new_task = self.bot.loop.create_task(
-                        self._generate_response_for_channel(channel, new_job)
-                    )
-                    new_job.task = new_task
-                    self._active_generations[channel.id] = new_job
+                    # Verify there are actually messages to process before starting
+                    # a new generation - synthetic messages may have already been
+                    # consumed by our check_messages call
+                    if self._has_pending_messages(channel.id):
+                        _LOG.info("New messages pending in channel %s, starting new generation", channel.id)
+                        # Start a new generation for the pending messages
+                        new_job = GenerationJob()
+                        new_task = self.bot.loop.create_task(
+                            self._generate_response_for_channel(channel, new_job)
+                        )
+                        new_job.task = new_task
+                        self._active_generations[channel.id] = new_job
+                    else:
+                        _LOG.info("new_message_pending was True but no messages found, skipping generation")
+                        self._active_generations.pop(channel.id, None)
                 else:
                     self._active_generations.pop(channel.id, None)
+
+    def _has_pending_messages(self, channel_id: int) -> bool:
+        """Check if there are pending messages for a channel.
+
+        Used to verify that a new generation is warranted before starting one.
+        Returns True if there are unread messages (real or synthetic) in the DB.
+        """
+        import sqlite3
+
+        from bot.paths import DB_PATH
+
+        if not DB_PATH.exists():
+            return False
+
+        try:
+            last_seen = state_manager.get_last_seen(channel_id)
+            conn = sqlite3.connect(str(DB_PATH))
+            try:
+                wendy_bot_id = 771821437199581204
+                if last_seen:
+                    query = """
+                        SELECT COUNT(*) FROM message_history
+                        WHERE channel_id = ? AND message_id > ?
+                        AND author_id != ?
+                        AND content NOT LIKE '!%'
+                        AND content NOT LIKE '-%'
+                    """
+                    count = conn.execute(query, (channel_id, last_seen, wendy_bot_id)).fetchone()[0]
+                else:
+                    query = """
+                        SELECT COUNT(*) FROM message_history
+                        WHERE channel_id = ?
+                        AND author_id != ?
+                        AND content NOT LIKE '!%'
+                        AND content NOT LIKE '-%'
+                        LIMIT 1
+                    """
+                    count = conn.execute(query, (channel_id, wendy_bot_id)).fetchone()[0]
+                return count > 0
+            finally:
+                conn.close()
+        except Exception as e:
+            _LOG.error("Error checking pending messages: %s", e)
+            return True  # Fail open - better to wake than miss messages
 
     @commands.command(name="context")
     async def context_command(self, ctx: commands.Context) -> None:
@@ -659,13 +710,20 @@ Cache create: {stats.get('total_cache_create_tokens', 0):,}
             if self._active_generations.get(channel.id) is job:
                 # Check if new messages arrived while we were running
                 if job.new_message_pending:
-                    _LOG.info("New messages pending in channel %s, starting new generation", channel.id)
-                    new_job = GenerationJob()
-                    new_task = self.bot.loop.create_task(
-                        self._generate_response_for_channel(channel, new_job)
-                    )
-                    new_job.task = new_task
-                    self._active_generations[channel.id] = new_job
+                    # Verify there are actually messages to process before starting
+                    # a new generation - synthetic messages may have already been
+                    # consumed by our check_messages call
+                    if self._has_pending_messages(channel.id):
+                        _LOG.info("New messages pending in channel %s, starting new generation", channel.id)
+                        new_job = GenerationJob()
+                        new_task = self.bot.loop.create_task(
+                            self._generate_response_for_channel(channel, new_job)
+                        )
+                        new_job.task = new_task
+                        self._active_generations[channel.id] = new_job
+                    else:
+                        _LOG.info("new_message_pending was True but no messages found, skipping generation")
+                        self._active_generations.pop(channel.id, None)
                 else:
                     self._active_generations.pop(channel.id, None)
 

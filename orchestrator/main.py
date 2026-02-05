@@ -88,6 +88,13 @@ AGENT_SYSTEM_PROMPT_FILE: Path = Path(os.getenv("AGENT_SYSTEM_PROMPT_FILE", "/ap
 CANCEL_FILE: Path = WORKING_DIR / "cancel_tasks.json"
 """JSON file containing task IDs that should be cancelled."""
 
+CLOSED_TASK_GRACE_PERIOD: int = int(os.getenv("ORCHESTRATOR_CLOSED_GRACE_PERIOD", "5"))
+"""Seconds to wait after detecting a closed task before killing the agent.
+
+This grace period prevents a race condition where the agent closes its own task
+via `bd close` but the process hasn't fully exited yet. Without this, the
+orchestrator might kill a successfully-completed agent."""
+
 # =============================================================================
 # Usage Monitoring Configuration
 # =============================================================================
@@ -191,6 +198,8 @@ class RunningAgent:
         process: The subprocess.Popen object for the Claude CLI process.
         started_at: When the agent was spawned (for timeout tracking).
         log_file: Path to the log file capturing agent stdout/stderr.
+        closed_detected_at: When we first detected the task was closed externally.
+            Used for grace period before killing the agent. None if task is still open.
     """
 
     task_id: str
@@ -199,6 +208,7 @@ class RunningAgent:
     process: subprocess.Popen
     started_at: datetime
     log_file: Path
+    closed_detected_at: datetime | None = None
 
 
 class Orchestrator:
@@ -962,8 +972,13 @@ class Orchestrator:
         while the agent is still running. Terminates the orphaned agent
         and records it as cancelled.
 
-        Note: If the agent process has already exited, we skip killing it
-        and let the normal completion flow mark it as successful.
+        Uses a grace period (CLOSED_TASK_GRACE_PERIOD) to avoid killing agents
+        that closed their own tasks via `bd close` but haven't fully exited yet.
+        This prevents a race condition where successful completions were marked
+        as cancelled.
+
+        Note: If the agent process exits during the grace period, the normal
+        completion flow will handle it as successful.
         """
         if not self.active_agents:
             return
@@ -975,15 +990,28 @@ class Orchestrator:
             # Check if agent process has already finished
             if agent.process.poll() is not None:
                 # Process already exited, let normal completion flow handle it
+                # Clear the closed detection timestamp if set
+                agent.closed_detected_at = None
                 continue
 
             task = self.get_task_details(task_id, agent.channel_name)
             if task and task.get("status") == "closed":
-                to_kill.append(task_id)
+                now = datetime.now()
+
+                if agent.closed_detected_at is None:
+                    # First time detecting this task is closed - start grace period
+                    agent.closed_detected_at = now
+                    log.info(
+                        f"Task {task_id} detected as closed, waiting {CLOSED_TASK_GRACE_PERIOD}s "
+                        "grace period for process to exit naturally"
+                    )
+                elif (now - agent.closed_detected_at).total_seconds() >= CLOSED_TASK_GRACE_PERIOD:
+                    # Grace period expired and process still running - kill it
+                    to_kill.append(task_id)
 
         for task_id in to_kill:
             agent = self.active_agents[task_id]
-            log.info(f"Task {task_id} was closed externally, killing agent")
+            log.info(f"Task {task_id} still running after grace period, killing agent")
 
             self._terminate_agent(agent, "KILLED - task closed externally")
 
@@ -1106,6 +1134,10 @@ class Orchestrator:
 
                                 if available_slots <= 0:
                                     break
+                            else:
+                                # Spawn failed - reopen task so it can be retried
+                                log.error(f"Spawn failed for task {task_id}, reopening for retry")
+                                self.complete_task(task_id, channel_name, success=False)
 
                 # Status update
                 if self.active_agents:

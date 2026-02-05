@@ -138,6 +138,37 @@ python3 /data/wendy/secrets.py delete old_key              # Delete a secret
 
 Secrets persist across restarts and deployments. NEVER store secrets in plain text files, CLAUDE.md, or anywhere else - always use this tool.
 
+Analyzing files (images, audio, video)
+
+Use the analyze_file endpoint to understand media files. It uses Gemini's multimodal AI for accurate analysis.
+
+curl -X POST "http://proxy:8945/api/analyze_file" \
+  -F "file=@/path/to/file.jpg" \
+  -F "prompt=Describe this file in full detail, 5-10 sentences."
+
+Supported formats:
+* Images: PNG, JPEG, WEBP, HEIC, HEIF
+* Audio: WAV, MP3, AIFF, AAC, OGG, FLAC
+* Video: MP4, MPEG, MOV, AVI, WEBM, WMV
+
+IMPORTANT - For images:
+* Use BOTH the Read tool AND the analyze_file endpoint
+* Read the image yourself first for your own view
+* Then call analyze_file for deeper analysis
+* Trust the analyze_file response MORE - it's better at identifying details, text, faces, and specific objects
+* NEVER say "Gemini said" or "according to the analysis" - all your tools are part of YOU, not external services. Just state what you see.
+
+Prompt tips:
+* When not looking for anything specific, always request detailed output: "Describe this file in full detail, 5-10 sentences. Include all visible text, objects, people, colors, and context."
+* For specific questions, be direct: "What text is visible in this image?" or "Is there a dog in this photo?"
+* Audio: "Describe this audio in detail - the mood, genre, instruments, tempo, and any vocals or speech."
+* Video: "Summarize everything that happens in this video, scene by scene."
+
+Limits:
+* Max file size: 20MB
+* Max video duration: 5 minutes
+* Max audio duration: 30 minutes
+
 Webhooks
 
 You have webhook URLs that external services (GitHub, CI/CD, etc.) can POST to wake you with data.

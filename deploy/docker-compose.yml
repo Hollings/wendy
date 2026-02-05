@@ -21,6 +21,9 @@ services:
       - CLAUDE_CLI_TIMEOUT=300
       - WENDY_SECRETS_FILE=/data/wendy/secrets/runtime.json
       - MESSAGE_LOGGER_GUILDS=1020445108707000331
+      - CLAUDE_SYNC_KEY=${CLAUDE_SYNC_KEY:-}
+      - CLAUDE_SYNC_URL=https://claude.cee.wtf
+      - CLAUDE_MACHINE_ID=wendy-bot
     depends_on:
       - proxy
 
@@ -64,6 +67,9 @@ services:
       - AGENT_SYSTEM_PROMPT_FILE=/app/config/agent_claude_md.txt
       - WENDY_DB_PATH=/data/wendy/shared/wendy.db
       - ORCHESTRATOR_NOTIFY_CHANNEL=1461429474250850365
+      - CLAUDE_SYNC_KEY=${CLAUDE_SYNC_KEY:-}
+      - CLAUDE_SYNC_URL=https://claude.cee.wtf
+      - CLAUDE_MACHINE_ID=wendy-orchestrator
     depends_on:
       - proxy
 

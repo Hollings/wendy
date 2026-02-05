@@ -14,6 +14,7 @@ Key Features:
     - Site deployment to wendy.monster
     - Game deployment for multiplayer backends
     - Claude Code usage statistics
+    - Multimodal file analysis via Gemini API
 
 Endpoints:
     POST /api/send_message - Queue a message for sending to Discord
@@ -23,15 +24,19 @@ Endpoints:
     POST /api/deploy_site - Deploy a static site to wendy.monster
     POST /api/deploy_game - Deploy a multiplayer game backend
     GET  /api/game_logs/{name} - Get logs from a running game server
+    POST /api/analyze_file - Analyze image/audio/video files using Gemini
     GET  /health - Health check endpoint
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sqlite3
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -204,6 +209,186 @@ class CheckMessagesResponse(BaseModel):
 
     messages: list[MessageInfo]
     task_updates: list[TaskUpdate]
+
+
+class AnalyzeFileResponse(BaseModel):
+    """Response from Gemini file analysis endpoint.
+
+    Attributes:
+        success: Whether analysis succeeded.
+        analysis: The AI-generated analysis text.
+        media_type: MIME type of the analyzed file.
+        model: Gemini model used for analysis.
+    """
+
+    success: bool
+    analysis: str
+    media_type: str
+    model: str
+
+
+# =============================================================================
+# Gemini API Configuration
+# =============================================================================
+
+GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+"""API key for Google Gemini API."""
+
+GEMINI_MAX_FILE_SIZE: int = 20 * 1024 * 1024  # 20MB
+"""Maximum file size for inline base64 uploads to Gemini."""
+
+GEMINI_MAX_VIDEO_DURATION: int = 5 * 60  # 5 minutes
+"""Maximum video duration in seconds."""
+
+GEMINI_MAX_AUDIO_DURATION: int = 30 * 60  # 30 minutes
+"""Maximum audio duration in seconds."""
+
+SUPPORTED_IMAGE_TYPES: set[str] = {
+    "image/png", "image/jpeg", "image/webp", "image/heic", "image/heif",
+}
+"""Image MIME types supported by Gemini."""
+
+SUPPORTED_AUDIO_TYPES: set[str] = {
+    "audio/wav", "audio/mp3", "audio/mpeg", "audio/aiff", "audio/aac",
+    "audio/ogg", "audio/flac",
+}
+"""Audio MIME types supported by Gemini."""
+
+SUPPORTED_VIDEO_TYPES: set[str] = {
+    "video/mp4", "video/mpeg", "video/quicktime", "video/avi",
+    "video/x-flv", "video/webm", "video/x-ms-wmv", "video/3gpp",
+}
+"""Video MIME types supported by Gemini."""
+
+SUPPORTED_MEDIA_TYPES: set[str] = SUPPORTED_IMAGE_TYPES | SUPPORTED_AUDIO_TYPES | SUPPORTED_VIDEO_TYPES
+"""All media types supported for Gemini analysis."""
+
+# File extension to MIME type mapping for fallback detection
+EXTENSION_TO_MIME: dict[str, str] = {
+    # Images
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+    # Audio
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".aiff": "audio/aiff",
+    ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+    ".flac": "audio/flac",
+    # Video
+    ".mp4": "video/mp4",
+    ".mpeg": "video/mpeg",
+    ".mpg": "video/mpeg",
+    ".mov": "video/quicktime",
+    ".avi": "video/avi",
+    ".flv": "video/x-flv",
+    ".webm": "video/webm",
+    ".wmv": "video/x-ms-wmv",
+    ".3gp": "video/3gpp",
+    ".3gpp": "video/3gpp",
+}
+"""Mapping from file extensions to MIME types for fallback detection."""
+
+
+def get_media_duration(content: bytes, media_type: str) -> float | None:
+    """Get duration of audio/video content using ffprobe.
+
+    Args:
+        content: Raw file bytes.
+        media_type: MIME type of the file.
+
+    Returns:
+        Duration in seconds, or None if unable to determine.
+    """
+    # Only check duration for audio/video
+    if media_type not in SUPPORTED_AUDIO_TYPES and media_type not in SUPPORTED_VIDEO_TYPES:
+        return None
+
+    try:
+        # Write to temp file for ffprobe
+        suffix = ".mp4" if media_type.startswith("video/") else ".mp3"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+            f.write(content)
+            temp_path = f.name
+
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe", "-v", "quiet", "-show_entries",
+                    "format=duration", "-of", "csv=p=0", temp_path
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return float(result.stdout.strip())
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+
+    except Exception:
+        pass
+
+    return None
+
+
+def infer_media_type(filename: str | None, content_type: str | None) -> str:
+    """Infer media type from content_type header or filename extension.
+
+    Args:
+        filename: Original filename (may be None).
+        content_type: Content-Type header from upload (may be None or generic).
+
+    Returns:
+        Best guess at MIME type, or empty string if unknown.
+    """
+    # First try the content_type if it's specific
+    if content_type and content_type != "application/octet-stream":
+        return content_type
+
+    # Fall back to filename extension
+    if filename:
+        ext = Path(filename).suffix.lower()
+        if ext in EXTENSION_TO_MIME:
+            return EXTENSION_TO_MIME[ext]
+
+    return content_type or ""
+
+
+def get_gemini_model(media_type: str) -> str:
+    """Select the appropriate Gemini model based on media type.
+
+    Args:
+        media_type: MIME type of the file.
+
+    Returns:
+        Gemini model identifier.
+    """
+    if media_type in SUPPORTED_VIDEO_TYPES:
+        return "gemini-2.5-pro"
+    return "gemini-3-pro-preview"
+
+
+def get_video_resolution(duration: float | None) -> str:
+    """Select video resolution based on duration to manage token usage.
+
+    Args:
+        duration: Video duration in seconds, or None if unknown.
+
+    Returns:
+        Gemini media resolution setting.
+    """
+    if duration is None:
+        return "MEDIA_RESOLUTION_MEDIUM"  # Safe default
+    if duration <= 30:
+        return "MEDIA_RESOLUTION_HIGH"
+    if duration <= 120:
+        return "MEDIA_RESOLUTION_MEDIUM"
+    return "MEDIA_RESOLUTION_LOW"
 
 
 # =============================================================================
@@ -941,6 +1126,158 @@ async def deploy_game(
         raise HTTPException(
             status_code=502,
             detail=f"Failed to connect to wendy-games service: {str(e)}"
+        ) from e
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+# =============================================================================
+# File Analysis (Gemini)
+# =============================================================================
+
+
+@app.post("/api/analyze_file", response_model=AnalyzeFileResponse)
+async def analyze_file(
+    file: UploadFile = File(...),
+    prompt: str = Form(...),
+) -> AnalyzeFileResponse:
+    """Analyze an image, audio, or video file using Google Gemini.
+
+    This endpoint accepts media files and uses Gemini's multimodal capabilities
+    to analyze them based on the provided prompt.
+
+    Args:
+        file: Media file to analyze (image, audio, or video).
+        prompt: Analysis prompt (e.g., "What is in this image?").
+
+    Returns:
+        AnalyzeFileResponse with the AI-generated analysis.
+
+    Raises:
+        HTTPException 400: Unsupported file type or file too large.
+        HTTPException 500: GEMINI_API_KEY not configured.
+        HTTPException 502: Gemini API error.
+    """
+    if not GEMINI_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="GEMINI_API_KEY not configured on server"
+        )
+
+    # Determine media type from content_type header or filename
+    media_type = infer_media_type(file.filename, file.content_type)
+    if media_type not in SUPPORTED_MEDIA_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported file type: {media_type}. "
+                f"Supported: images (PNG, JPEG, WEBP, HEIC), "
+                f"audio (WAV, MP3, AAC, OGG, FLAC), "
+                f"video (MP4, MPEG, MOV, AVI, WEBM, WMV)"
+            )
+        )
+
+    # Read file content
+    content = await file.read()
+
+    # Check file size
+    if len(content) > GEMINI_MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large ({len(content) / 1024 / 1024:.1f}MB). Maximum size is 20MB."
+        )
+
+    # Check duration for audio/video files
+    duration: float | None = None
+    if media_type in SUPPORTED_VIDEO_TYPES or media_type in SUPPORTED_AUDIO_TYPES:
+        duration = get_media_duration(content, media_type)
+
+        if duration is not None:
+            if media_type in SUPPORTED_VIDEO_TYPES and duration > GEMINI_MAX_VIDEO_DURATION:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Video too long ({duration / 60:.1f} min). Maximum is 5 minutes."
+                )
+            if media_type in SUPPORTED_AUDIO_TYPES and duration > GEMINI_MAX_AUDIO_DURATION:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Audio too long ({duration / 60:.1f} min). Maximum is 30 minutes."
+                )
+
+    # Select model based on media type
+    model = get_gemini_model(media_type)
+
+    # Encode file as base64
+    file_base64 = base64.standard_b64encode(content).decode("utf-8")
+
+    # Build Gemini API request
+    gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+    request_body: dict = {
+        "contents": [{
+            "parts": [
+                {
+                    "inline_data": {
+                        "mime_type": media_type,
+                        "data": file_base64,
+                    }
+                },
+                {"text": prompt},
+            ]
+        }]
+    }
+
+    # Set video resolution based on duration to manage token usage
+    # <30s = HIGH, 30s-2min = MEDIUM, >2min = LOW
+    if media_type in SUPPORTED_VIDEO_TYPES:
+        resolution = get_video_resolution(duration)
+        request_body["generation_config"] = {"media_resolution": resolution}
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                gemini_url,
+                headers={"x-goog-api-key": GEMINI_API_KEY},
+                json=request_body,
+            )
+
+        if response.status_code != 200:
+            error_detail = response.text
+            try:
+                error_json = response.json()
+                if "error" in error_json:
+                    error_detail = error_json["error"].get("message", error_detail)
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=502,
+                detail=f"Gemini API error: {error_detail}"
+            )
+
+        result = response.json()
+
+        # Extract text from response
+        try:
+            analysis = result["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError) as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Unexpected Gemini response format: {result}"
+            ) from e
+
+        return AnalyzeFileResponse(
+            success=True,
+            analysis=analysis,
+            media_type=media_type,
+            model=model,
+        )
+
+    except httpx.RequestError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to connect to Gemini API: {str(e)}"
         ) from e
     except HTTPException:
         raise
