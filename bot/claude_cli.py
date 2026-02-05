@@ -208,6 +208,13 @@ class ClaudeCliTextGenerator:
     _temp_dir: Path | None
     _temp_files: list[Path]
 
+    # Map shorthand names to explicit model IDs
+    MODEL_MAP = {
+        "opus": "claude-opus-4-6",
+        "sonnet": "claude-sonnet-4-5-20250929",
+        "haiku": "claude-haiku-4-5-20251001",
+    }
+
     def __init__(self, model: str = "sonnet") -> None:
         """Initialize the Claude CLI text generator.
 
@@ -218,7 +225,7 @@ class ClaudeCliTextGenerator:
         Raises:
             ClaudeCliError: If the claude CLI executable cannot be found.
         """
-        self.model = model
+        self.model = self.MODEL_MAP.get(model, model)
         self.cli_path = self._find_cli_path()
         self.timeout = int(os.getenv("CLAUDE_CLI_TIMEOUT", "300"))
         self._temp_dir = None
@@ -813,7 +820,7 @@ class ClaudeCliTextGenerator:
             session_id = session_info["session_id"]
 
         # Build system prompt and CLI command
-        effective_model = model_override or self.model
+        effective_model = self.MODEL_MAP.get(model_override, model_override) if model_override else self.model
         system_prompt = self._build_system_prompt(channel_id, channel_name, mode, beads_enabled)
         cmd = self._build_cli_command(session_id, is_new_session, system_prompt, channel_config, model=effective_model)
 

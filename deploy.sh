@@ -73,8 +73,8 @@ else
 
         # Rebuild and restart Docker containers
         cd ${REMOTE_BASE}/${SERVICE}/deploy
-        docker compose -p wendy down
-        docker compose -p wendy up -d --build
+        docker compose down
+        docker compose up -d --build
 
         # Ensure wendy-games is running (proxy depends on it)
         if ! docker ps -q -f name=wendy-games-manager | grep -q .; then

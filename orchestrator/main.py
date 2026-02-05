@@ -603,7 +603,13 @@ class Orchestrator:
                     log.warning(f"Failed to read agent system prompt: {e}")
 
             # Add model (default to opus)
+            MODEL_MAP = {
+                "opus": "claude-opus-4-6",
+                "sonnet": "claude-sonnet-4-5-20250929",
+                "haiku": "claude-haiku-4-5-20251001",
+            }
             model = model or "opus"
+            model = MODEL_MAP.get(model, model)
             cmd.extend(["--model", model])
 
             # Spawn Claude Code CLI in the channel's directory
