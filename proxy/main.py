@@ -467,6 +467,15 @@ def find_attachments_for_message(message_id: int, channel_name: str | None = Non
 DISCORD_MAX_MESSAGE_LENGTH: int = 2000
 """Maximum message length allowed by Discord."""
 
+WENDY_BOT_ID: int = 771821437199581204
+"""Wendy's Discord bot user ID, used to filter out her own messages."""
+
+SYNTHETIC_ID_THRESHOLD: int = 9_000_000_000_000_000_000
+"""Message IDs at or above this are synthetic one-time notifications."""
+
+MAX_MESSAGE_LIMIT: int = 200
+"""Upper bound for limit/count parameters on check_messages."""
+
 
 def check_for_new_messages(channel_id: int) -> list[dict]:
     """Check if new messages have arrived since last check_messages call.
@@ -497,8 +506,6 @@ def check_for_new_messages(channel_id: int) -> list[dict]:
     conn.row_factory = sqlite3.Row
 
     try:
-        # Filter out Wendy's own messages by bot ID (771821437199581204)
-        wendy_bot_id = 771821437199581204
         query = """
             SELECT m.message_id, m.author_nickname, m.content, m.timestamp,
                    m.reply_to_id,
@@ -512,11 +519,10 @@ def check_for_new_messages(channel_id: int) -> list[dict]:
             AND m.content NOT LIKE '-%'
             ORDER BY m.message_id ASC
         """
-        rows = conn.execute(query, (channel_id, last_seen, wendy_bot_id)).fetchall()
+        rows = conn.execute(query, (channel_id, last_seen, WENDY_BOT_ID)).fetchall()
 
-        # Filter out synthetic messages (ID >= 9 * 10^18) - they're one-time
+        # Filter out synthetic messages - they're one-time
         # notifications that shouldn't trigger the "new message interrupt"
-        SYNTHETIC_ID_THRESHOLD = 9_000_000_000_000_000_000
         real_rows = [r for r in rows if r["message_id"] < SYNTHETIC_ID_THRESHOLD]
 
         if real_rows:
@@ -603,10 +609,11 @@ async def send_message(request: SendMessageRequest) -> dict:
 
         # Validate attachment path if provided
         # Allow files from anywhere under /data/wendy/ or /tmp/
+        # Use Path.resolve() to prevent path traversal (e.g. /data/wendy/../etc/passwd)
         if request.attachment:
-            att_path = Path(request.attachment)
-            allowed_prefixes = [str(WENDY_BASE) + "/", "/tmp/"]
-            if not any(request.attachment.startswith(p) for p in allowed_prefixes):
+            att_path = Path(request.attachment).resolve()
+            allowed_parents = [WENDY_BASE.resolve(), Path("/tmp").resolve()]
+            if not any(att_path == parent or parent in att_path.parents for parent in allowed_parents):
                 raise HTTPException(
                     status_code=400,
                     detail=f"Attachment must be in {WENDY_BASE}/ or /tmp/, got: {request.attachment}"
@@ -636,7 +643,8 @@ async def send_message(request: SendMessageRequest) -> dict:
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        print(f"Error in send_message: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
 @app.get("/api/check_messages/{channel_id}")
@@ -665,6 +673,11 @@ async def check_messages(
     Returns:
         CheckMessagesResponse with messages (oldest first) and task_updates.
     """
+    # Cap limit and count to prevent unbounded queries
+    limit = min(limit, MAX_MESSAGE_LIMIT)
+    if count is not None:
+        count = min(count, MAX_MESSAGE_LIMIT)
+
     # Look up channel name from config for finding attachments
     channel_name = get_channel_name(channel_id)
     messages: list[MessageInfo] = []
@@ -684,9 +697,6 @@ async def check_messages(
             conn.row_factory = sqlite3.Row
 
             try:
-                # Filter out Wendy's own messages by bot ID (771821437199581204)
-                # Don't filter by name - webhooks like "Wendy's Minecraft Tulpa" should be included
-                wendy_bot_id = 771821437199581204
                 if since_id:
                     query = """
                         SELECT m.message_id, m.channel_id, m.author_nickname, m.content, m.timestamp,
@@ -703,7 +713,7 @@ async def check_messages(
                         ORDER BY m.message_id DESC
                         LIMIT ?
                     """
-                    rows = conn.execute(query, (channel_id, since_id, wendy_bot_id, limit)).fetchall()
+                    rows = conn.execute(query, (channel_id, since_id, WENDY_BOT_ID, limit)).fetchall()
                 else:
                     query = """
                         SELECT m.message_id, m.channel_id, m.author_nickname, m.content, m.timestamp,
@@ -720,7 +730,7 @@ async def check_messages(
                         ORDER BY m.message_id DESC
                         LIMIT ?
                     """
-                    rows = conn.execute(query, (channel_id, wendy_bot_id, limit)).fetchall()
+                    rows = conn.execute(query, (channel_id, WENDY_BOT_ID, limit)).fetchall()
 
                 for row in rows:
                     attachments = find_attachments_for_message(row["message_id"], channel_name)
@@ -747,10 +757,9 @@ async def check_messages(
                 # Return in chronological order (oldest first)
                 messages = list(reversed(messages))
 
-                # Separate synthetic messages (ID >= 9 * 10^18) from real messages
+                # Separate synthetic messages from real messages
                 # Synthetic messages are one-time notifications (webhooks, etc.) that
                 # should be shown to Claude once then deleted
-                SYNTHETIC_ID_THRESHOLD = 9_000_000_000_000_000_000
                 synthetic_ids = [m.message_id for m in messages if m.message_id >= SYNTHETIC_ID_THRESHOLD]
                 real_messages = [m for m in messages if m.message_id < SYNTHETIC_ID_THRESHOLD]
 
@@ -886,7 +895,8 @@ async def get_usage() -> UsageResponse:
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=500, detail="Failed to parse usage data") from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        print(f"Error in get_usage: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
 @app.post("/api/usage/refresh")
@@ -906,7 +916,8 @@ async def refresh_usage() -> dict:
         USAGE_FORCE_CHECK_FILE.touch()
         return {"success": True, "message": "Usage refresh requested. Check back in ~30 seconds."}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        print(f"Error in refresh_usage: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
 # =============================================================================
@@ -1005,7 +1016,8 @@ async def deploy_site(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        print(f"Error in deploy_site: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
 # =============================================================================
@@ -1130,7 +1142,8 @@ async def deploy_game(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        print(f"Error in deploy_game: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
 # =============================================================================
@@ -1282,7 +1295,8 @@ async def analyze_file(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        print(f"Error in analyze_file: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
 if __name__ == "__main__":

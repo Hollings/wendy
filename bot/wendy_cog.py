@@ -435,7 +435,7 @@ class WendyCog(commands.Cog):
             last_seen = state_manager.get_last_seen(channel_id)
             conn = sqlite3.connect(str(DB_PATH))
             try:
-                wendy_bot_id = 771821437199581204
+                wendy_bot_id = self.bot.user.id
                 if last_seen:
                     query = """
                         SELECT COUNT(*) FROM message_history

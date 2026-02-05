@@ -350,7 +350,7 @@ class MessageLoggerCog(commands.Cog):
         # 1. IDs are always greater than Discord snowflake IDs (which are ~10^18)
         # 2. IDs are unique and monotonically increasing
         # 3. IDs show up in check_messages (which filters by message_id > since_id)
-        message_id = 9_000_000_000_000_000_000 + int(time.time() * 1000)
+        message_id = 9_000_000_000_000_000_000 + int(time.time() * 1_000_000)
 
         timestamp = datetime.now(UTC).isoformat()
 
