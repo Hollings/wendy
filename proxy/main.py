@@ -49,6 +49,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from bot.paths import (
     DB_PATH,
     OUTBOX_DIR,
+    SHARED_DIR,
     WENDY_BASE,
     attachments_dir,
     ensure_shared_dirs,
@@ -105,6 +106,28 @@ _load_channel_config()
 # =============================================================================
 
 
+class ActionItem(BaseModel):
+    """A single action within a batch send_message request.
+
+    Attributes:
+        type: Action type - "send_message" or "add_reaction".
+        content: Message text (for send_message).
+        file_path: Path to file attachment (for send_message).
+        attachment: Alias for file_path (for send_message).
+        reply_to: Message ID to reply to (for send_message).
+        message_id: Target message ID (for add_reaction).
+        emoji: Emoji name or custom emoji string (for add_reaction).
+    """
+
+    type: str
+    content: str | None = None
+    file_path: str | None = None
+    attachment: str | None = None
+    reply_to: int | None = None
+    message_id: int | None = None
+    emoji: str | None = None
+
+
 class SendMessageRequest(BaseModel):
     """Request body for sending a Discord message.
 
@@ -113,12 +136,16 @@ class SendMessageRequest(BaseModel):
         content: Message text content (max 2000 chars).
         message: Legacy alias for content (deprecated).
         attachment: Optional path to file to attach (must be in /data/wendy/ or /tmp/).
+        reply_to: Optional message ID to reply to.
+        actions: Optional list of batch actions (overrides content/message/attachment).
     """
 
     channel_id: str
     content: str | None = None
     message: str | None = None
     attachment: str | None = None
+    reply_to: int | None = None
+    actions: list[ActionItem] | None = None
 
 
 class SendMessageResponse(BaseModel):
@@ -552,6 +579,29 @@ def check_for_new_messages(channel_id: int) -> list[dict]:
         conn.close()
 
 
+def _validate_attachment_path(path_str: str) -> None:
+    """Validate that an attachment path is within allowed directories.
+
+    Args:
+        path_str: Filesystem path to validate.
+
+    Raises:
+        HTTPException 400: Path outside allowed directories or file not found.
+    """
+    att_path = Path(path_str).resolve()
+    allowed_parents = [WENDY_BASE.resolve(), Path("/tmp").resolve()]
+    if not any(att_path == parent or parent in att_path.parents for parent in allowed_parents):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Attachment must be in {WENDY_BASE}/ or /tmp/, got: {path_str}"
+        )
+    if not att_path.exists():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Attachment file not found: {path_str}"
+        )
+
+
 @app.post("/api/send_message")
 async def send_message(request: SendMessageRequest) -> dict:
     """Send a message to a Discord channel via the outbox queue.
@@ -594,6 +644,38 @@ async def send_message(request: SendMessageRequest) -> dict:
 
         OUTBOX_DIR.mkdir(parents=True, exist_ok=True)
 
+        # Batch actions mode
+        if request.actions:
+            for i, action in enumerate(request.actions):
+                if action.type == "send_message":
+                    text = action.content or ""
+                    if len(text) > DISCORD_MAX_MESSAGE_LENGTH:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Action {i}: message too long ({len(text)} chars). Discord limit is {DISCORD_MAX_MESSAGE_LENGTH}."
+                        )
+                    att = action.file_path or action.attachment
+                    if att:
+                        _validate_attachment_path(att)
+                elif action.type == "add_reaction":
+                    if not action.message_id:
+                        raise HTTPException(status_code=400, detail=f"Action {i}: add_reaction requires message_id")
+                    if not action.emoji:
+                        raise HTTPException(status_code=400, detail=f"Action {i}: add_reaction requires emoji")
+                else:
+                    raise HTTPException(status_code=400, detail=f"Action {i}: unknown type '{action.type}'")
+
+            timestamp_ns = time.time_ns()
+            filename = f"{request.channel_id}_{timestamp_ns}.json"
+            message_data = {
+                "channel_id": request.channel_id,
+                "actions": [a.model_dump(exclude_none=True) for a in request.actions],
+            }
+            outbox_path = OUTBOX_DIR / filename
+            outbox_path.write_text(json.dumps(message_data))
+            return {"success": True, "message": f"Batch queued ({len(request.actions)} actions): {filename}"}
+
+        # Single message mode
         msg_text = request.content or request.message or ""
 
         # Validate message length - Discord has a 2000 char limit
@@ -608,21 +690,8 @@ async def send_message(request: SendMessageRequest) -> dict:
             )
 
         # Validate attachment path if provided
-        # Allow files from anywhere under /data/wendy/ or /tmp/
-        # Use Path.resolve() to prevent path traversal (e.g. /data/wendy/../etc/passwd)
         if request.attachment:
-            att_path = Path(request.attachment).resolve()
-            allowed_parents = [WENDY_BASE.resolve(), Path("/tmp").resolve()]
-            if not any(att_path == parent or parent in att_path.parents for parent in allowed_parents):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Attachment must be in {WENDY_BASE}/ or /tmp/, got: {request.attachment}"
-                )
-            if not att_path.exists():
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Attachment file not found: {request.attachment}"
-                )
+            _validate_attachment_path(request.attachment)
 
         # Create outbox message
         timestamp_ns = time.time_ns()
@@ -634,6 +703,8 @@ async def send_message(request: SendMessageRequest) -> dict:
         }
         if request.attachment:
             message_data["file_path"] = request.attachment
+        if request.reply_to:
+            message_data["reply_to"] = request.reply_to
 
         outbox_path = OUTBOX_DIR / filename
         outbox_path.write_text(json.dumps(message_data))
@@ -816,6 +887,35 @@ async def check_messages(
 async def health() -> dict:
     """Health check endpoint for load balancers and monitoring."""
     return {"status": "ok"}
+
+
+EMOJI_CACHE_FILE: Path = SHARED_DIR / "emojis.json"
+"""JSON file where the bot caches guild custom emojis."""
+
+
+@app.get("/api/emojis")
+async def get_emojis(search: str | None = None) -> dict:
+    """Get available custom server emojis.
+
+    Args:
+        search: Optional search term to filter emoji names.
+
+    Returns:
+        Dict with 'custom' key containing list of emoji objects.
+    """
+    if not EMOJI_CACHE_FILE.exists():
+        return {"custom": []}
+
+    try:
+        emojis = json.loads(EMOJI_CACHE_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {"custom": []}
+
+    if search:
+        term = search.lower()
+        emojis = [e for e in emojis if term in e.get("name", "").lower()]
+
+    return {"custom": emojis}
 
 
 # =============================================================================

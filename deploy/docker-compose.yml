@@ -13,6 +13,7 @@ services:
       - wendy_data:/data/wendy
       - claude_config:/root/.claude
       - /srv/secrets/wendy:/secrets:ro
+      - /srv/wendy-bot/config:/app/config:ro
     env_file:
       - /srv/secrets/wendy/bot.env
     environment:
@@ -57,6 +58,7 @@ services:
       - wendy_data:/data/wendy
       - claude_config:/root/.claude
       - /srv/secrets/wendy:/secrets:ro
+      - /srv/wendy-bot/config:/app/config:ro
     env_file:
       - /srv/secrets/wendy/bot.env
     environment:

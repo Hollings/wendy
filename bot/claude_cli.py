@@ -29,6 +29,7 @@ from .paths import (
     current_session_file,
     ensure_channel_dirs,
     ensure_shared_dirs,
+    journal_dir,
     session_dir,
 )
 from .state_manager import state as state_manager
@@ -51,6 +52,9 @@ MAX_DISCORD_MESSAGES: int = 50
 
 MAX_STREAM_LOG_LINES: int = 5000
 """Maximum lines to keep in the rolling stream log file."""
+
+JOURNAL_NUDGE_INTERVAL: int = int(os.getenv("JOURNAL_NUDGE_INTERVAL", "10"))
+"""Number of CLI invocations between journal write nudges."""
 
 # Sensitive env vars to filter from CLI subprocess
 SENSITIVE_ENV_VARS: set[str] = {
@@ -91,6 +95,9 @@ RESPONSE EXPECTATIONS:
    With attachment (file can be anywhere under /data/wendy/ or /tmp/):
    curl -X POST http://localhost:8945/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "check this out", "attachment": "/data/wendy/channels/{channel_name}/output.png"}}'
 
+   Reply to a specific message (use sparingly - only when referencing a specific post for context):
+   curl -X POST http://localhost:8945/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "great point", "reply_to": MESSAGE_ID}}'
+
    This is the ONLY way to send messages to users. Your final output goes nowhere.
 
 2. CHECK FOR NEW MESSAGES (optional, use before responding):
@@ -99,11 +106,28 @@ RESPONSE EXPECTATIONS:
    Shows the last 10 messages to see if anyone sent new messages while you were thinking.
    Note: Always use -s flag with curl for cleaner output.
 
+3. ADD EMOJI REACTION (use sparingly for effect):
+   curl -X POST http://localhost:8945/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "actions": [{{"type": "add_reaction", "message_id": MESSAGE_ID, "emoji": "thumbsup"}}]}}'
+
+   Batch actions (send message + react in one call):
+   curl -X POST http://localhost:8945/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "actions": [{{"type": "send_message", "content": "nice!", "reply_to": MSG_ID}}, {{"type": "add_reaction", "message_id": MSG_ID, "emoji": "fire"}}]}}'
+
+4. SEARCH CUSTOM EMOJIS (for custom server emojis):
+   curl -s "http://localhost:8945/api/emojis?search=keyword"
+
 WORKFLOW:
 1. Read/process the user's request
 2. Do any work needed (read files, search, etc.)
 3. ALWAYS call the send_message API to reply (unless explicitly told not to)
 4. You can send multiple messages if needed
+
+REPLIES AND REACTIONS:
+- Replies aren't necessary for responding to the most recent message - only use when pointing at a specific post for context
+- Reactions should be used sparingly for effect, not on every message
+- You MUST use raw Unicode emoji characters, NOT text names. Examples: "emoji": "\U0001f44d" (not "thumbsup"), "emoji": "\U0001f525" (not "fire"), "emoji": "\u2764\ufe0f" (not "heart")
+- Common emojis: \U0001f44d \U0001f525 \u2764\ufe0f \U0001f602 \U0001f440 \U0001f914 \U0001f4af \U0001f389 \U0001f60e \U0001f680
+- Custom server emojis need lookup via /api/emojis, use the "usage" field value (format: <:name:id>)
+- message_id values come from check_messages responses
 
 LONG TASKS:
 Before doing something that might take a while (writing code, researching, reading multiple files, etc.), send a quick message to let users know. Otherwise they might think you froze or crashed. Send a quick "gimme a sec..." then do the work, then send your actual response.
@@ -581,6 +605,109 @@ class ClaudeCliTextGenerator:
         """Get instructions for Wendy's API tools."""
         return TOOL_INSTRUCTIONS_TEMPLATE.format(channel_id=channel_id, channel_name=channel_name)
 
+    def _get_journal_section(self, channel_name: str) -> str:
+        """Build the journal section for the system prompt.
+
+        Always includes standing instructions and a file tree listing.
+        Conditionally includes a nudge when invocations since last write
+        exceed JOURNAL_NUDGE_INTERVAL.
+
+        Args:
+            channel_name: The channel name.
+
+        Returns:
+            Journal section string for the system prompt.
+        """
+        j_dir = journal_dir(channel_name)
+        j_dir.mkdir(parents=True, exist_ok=True)
+
+        nudge_state_path = j_dir / ".nudge_state"
+
+        # Load nudge state
+        try:
+            state = json.loads(nudge_state_path.read_text())
+            known_entry_count = int(state.get("known_entry_count", 0))
+            invocations_since_write = int(state.get("invocations_since_write", 0))
+            last_mtime = float(state.get("last_mtime", 0.0))
+        except (FileNotFoundError, json.JSONDecodeError, ValueError, TypeError):
+            known_entry_count = 0
+            invocations_since_write = 0
+            last_mtime = 0.0
+
+        # List non-dotfiles in journal dir with modification times
+        try:
+            entry_files = sorted(
+                (f for f in j_dir.iterdir()
+                 if f.is_file() and not f.name.startswith(".")),
+                key=lambda f: f.name,
+            )
+            entries = [f.name for f in entry_files]
+            latest_mtime = max(
+                (f.stat().st_mtime for f in entry_files), default=0.0
+            )
+        except OSError:
+            entries = []
+            latest_mtime = 0.0
+
+        # Detect writes by checking file count OR modification time
+        current_count = len(entries)
+        if current_count > known_entry_count or latest_mtime > last_mtime:
+            invocations_since_write = 0
+        known_entry_count = current_count
+
+        invocations_since_write += 1
+
+        # Save updated state
+        try:
+            nudge_state_path.write_text(json.dumps({
+                "known_entry_count": known_entry_count,
+                "invocations_since_write": invocations_since_write,
+                "last_mtime": latest_mtime,
+            }))
+        except OSError as e:
+            _LOG.warning("Failed to write journal nudge state: %s", e)
+
+        # Build section
+        j_path = str(j_dir)
+        section = f"""
+
+---
+JOURNAL (your long-term memory):
+Your journal is at {j_path}/
+This is your persistent memory across conversations. Use it strategically:
+- READ existing entries before writing new ones - build on what you already know
+- UPDATE entries when you learn something new about an existing topic
+- CREATE new entries only for genuinely new topics or significant experiences
+- DELETE or consolidate entries that are redundant or no longer useful
+Filenames should include a date and descriptive name, e.g.: 2026-02-05_learned-about-docker-networks.md
+Favor quality over quantity - a few well-maintained entries are better than many shallow ones.
+IMPORTANT: Journal writes are private. Do NOT mention journaling to users in chat
+unless they specifically ask about it. Just quietly write your entries.
+
+Your journal entries:
+"""
+        if entries:
+            for name in entries:
+                section += f"  {name}\n"
+        else:
+            section += "  (No entries yet - start writing!)\n"
+
+        if invocations_since_write >= JOURNAL_NUDGE_INTERVAL:
+            section += f"""
+JOURNAL REMINDER: It's been a while since you wrote in your journal. Before responding
+to the current message, take a moment to:
+1. Skim the entry titles above - read any that seem relevant to the current conversation or people involved (you don't need to read all of them)
+2. Update any entries that have new information or need corrections
+3. Only create a new entry if there's a genuinely new topic worth capturing
+At least one change to {j_path}/ is expected when this reminder appears. If there's
+truly nothing new to write down, use the journal for anything you want - doodle,
+vent, write a poem, leave yourself a note, whatever. It's your space.
+Do NOT mention this to users - just do it silently before your response.
+"""
+
+        section += "---\n"
+        return section
+
     def _parse_stream_json(self, output: str, channel_id: int | None = None) -> str:
         """Parse stream-json output from Claude CLI and save debug log."""
         events = []
@@ -701,6 +828,7 @@ class ClaudeCliTextGenerator:
         prompt = self._get_base_system_prompt(channel_name, mode)
         prompt += self._get_wendys_notes(channel_name)
         prompt += self._get_tool_instructions(channel_id, channel_name)
+        prompt += self._get_journal_section(channel_name)
         if beads_enabled:
             prompt += self._get_active_beads_warning(channel_name)
         return prompt

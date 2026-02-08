@@ -32,6 +32,8 @@ Environment Variables:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -44,7 +46,7 @@ from pathlib import Path
 
 import auth
 import brain
-from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
@@ -91,6 +93,9 @@ WEBHOOKS_FILE: Path = WENDY_DATA_DIR / "secrets" / "webhooks.json"
 
 WENDY_DB_PATH: Path = Path(os.getenv("WENDY_DB_PATH", "/data/wendy/wendy.db"))
 """Path to the shared SQLite database for webhook events."""
+
+WEBHOOK_SECRET: str = os.getenv("WEBHOOK_SECRET", "")
+"""Shared secret for GitHub webhook signature validation (HMAC-SHA256)."""
 
 WEBHOOK_MAX_PAYLOAD: int = 1024 * 1024  # 1 MB
 """Maximum webhook payload size in bytes."""
@@ -147,6 +152,38 @@ class BrainAuthResponse(BaseModel):
 
 
 # =============================================================================
+# Brain Feed Auth Dependency
+# =============================================================================
+
+
+async def require_brain_auth(
+    authorization: str | None = Header(None),
+    token: str | None = Query(None),
+) -> None:
+    """Validate brain feed authentication token.
+
+    Accepts token via Authorization: Bearer header or ?token= query param.
+    Skips validation if auth is not configured.
+
+    Raises:
+        HTTPException 401: Missing or invalid token.
+        HTTPException 503: Brain feed not configured.
+    """
+    if not auth.is_configured():
+        raise HTTPException(status_code=503, detail="Brain feed not configured")
+
+    # Extract token from Authorization header or query param
+    auth_token = None
+    if authorization and authorization.startswith("Bearer "):
+        auth_token = authorization[7:]
+    elif token:
+        auth_token = token
+
+    if not auth_token or not auth.verify_token(auth_token):
+        raise HTTPException(status_code=401, detail="Invalid or missing token")
+
+
+# =============================================================================
 # Brain Feed Endpoints
 # =============================================================================
 
@@ -200,10 +237,8 @@ async def serve_avatar_files(path: str) -> FileResponse:
 
 
 @app.get("/api/brain/stats")
-async def brain_stats() -> dict:
+async def brain_stats(_auth: None = Depends(require_brain_auth)) -> dict:
     """Get current brain feed statistics (context, costs, activity)."""
-    if not auth.is_configured():
-        raise HTTPException(status_code=503, detail="Brain feed not configured")
     return brain.get_stats()
 
 
@@ -212,11 +247,9 @@ USAGE_DATA_FILE: Path = Path("/data/wendy/usage_data.json")
 
 
 @app.get("/api/brain/usage")
-async def brain_usage() -> dict:
+async def brain_usage(_auth: None = Depends(require_brain_auth)) -> dict:
     """Get Claude Code usage statistics (session and weekly limits)."""
     import json
-    if not auth.is_configured():
-        raise HTTPException(status_code=503, detail="Brain feed not configured")
 
     if not USAGE_DATA_FILE.exists():
         return {
@@ -244,28 +277,24 @@ async def brain_usage() -> dict:
 
 
 @app.get("/api/brain/agents")
-async def brain_agents() -> dict:
+async def brain_agents(_auth: None = Depends(require_brain_auth)) -> dict:
     """List all active and completed subagents from the current session."""
-    if not auth.is_configured():
-        raise HTTPException(status_code=503, detail="Brain feed not configured")
     return {"agents": brain.list_agents()}
 
 
 @app.get("/api/brain/agents/{agent_id}")
-async def brain_agent_events(agent_id: str, limit: int = 50) -> dict:
+async def brain_agent_events(
+    agent_id: str, limit: int = 50, _auth: None = Depends(require_brain_auth)
+) -> dict:
     """Get recent events from a specific subagent's log file."""
-    if not auth.is_configured():
-        raise HTTPException(status_code=503, detail="Brain feed not configured")
     events = brain.get_agent_events(agent_id, limit)
     return {"agent_id": agent_id, "events": events}
 
 
 @app.get("/api/brain/beads")
-async def brain_beads() -> dict:
+async def brain_beads(_auth: None = Depends(require_brain_auth)) -> dict:
     """List all tasks from the beads queue (open, in_progress, closed)."""
     import json
-    if not auth.is_configured():
-        raise HTTPException(status_code=503, detail="Brain feed not configured")
 
     jsonl_path = Path("/data/wendy/coding/.beads/issues.jsonl")
     beads = []
@@ -332,11 +361,10 @@ async def brain_beads() -> dict:
 
 
 @app.get("/api/brain/beads/{task_id}/log")
-async def brain_task_log(task_id: str, offset: int = 0) -> dict:
+async def brain_task_log(
+    task_id: str, offset: int = 0, _auth: None = Depends(require_brain_auth)
+) -> dict:
     """Get orchestrator log output for a running or completed task."""
-    if not auth.is_configured():
-        raise HTTPException(status_code=503, detail="Brain feed not configured")
-
     logs_dir = Path("/data/wendy/orchestrator_logs")
     if not logs_dir.exists():
         return {"task_id": task_id, "log": "", "offset": 0, "complete": False}
@@ -655,6 +683,20 @@ async def receive_webhook(token: str, request: Request) -> JSONResponse:
     if not _check_rate_limit(token):
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
 
+    # Read body early so it's available for signature validation and parsing
+    body = await request.body()
+
+    # Validate GitHub webhook signature if secret is configured
+    if WEBHOOK_SECRET:
+        signature_header = request.headers.get("x-hub-signature-256")
+        if not signature_header:
+            raise HTTPException(status_code=401, detail="Missing signature")
+        expected = "sha256=" + hmac.new(
+            WEBHOOK_SECRET.encode(), body, hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(signature_header, expected):
+            raise HTTPException(status_code=403, detail="Invalid signature")
+
     # Check payload size
     content_length = request.headers.get("content-length")
     if content_length and int(content_length) > WEBHOOK_MAX_PAYLOAD:
@@ -662,7 +704,6 @@ async def receive_webhook(token: str, request: Request) -> JSONResponse:
 
     # Parse payload
     try:
-        body = await request.body()
         if len(body) > WEBHOOK_MAX_PAYLOAD:
             raise HTTPException(status_code=413, detail="Payload too large")
 
@@ -671,6 +712,8 @@ async def receive_webhook(token: str, request: Request) -> JSONResponse:
             payload = json.loads(body) if body else {}
         except json.JSONDecodeError:
             payload = {"raw": body.decode("utf-8", errors="replace")}
+    except HTTPException:
+        raise
     except Exception:
         payload = {}
 

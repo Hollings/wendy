@@ -74,6 +74,9 @@ _latest_stats: dict = {
 }
 """Latest statistics extracted from stream events."""
 
+_active_task_ids: set[str] = set()
+"""Set of tool_use IDs for currently active Task calls."""
+
 
 # =============================================================================
 # Event Reading Functions
@@ -203,16 +206,7 @@ async def tail_stream() -> None:
                         # the whole file so we'd re-broadcast everything otherwise
                         if current_size < pos:
                             _LOG.info("File truncated, jumping to end (was %d, now %d)", pos, current_size)
-                            # Jump to END of current file to skip the rewritten content
                             pos = current_size
-                            # Wait a bit for the trim operation to complete
-                            await asyncio.sleep(0.5)
-                            # Now jump to whatever the new size is
-                            try:
-                                pos = STREAM_FILE.stat().st_size
-                                _LOG.info("After truncation settle, pos now %d", pos)
-                            except OSError:
-                                pass
                             continue
 
                         if current_size <= pos:
@@ -375,20 +369,25 @@ def update_stats_from_event(event_json: str) -> None:
             if cost:
                 _latest_stats["session_cost"] = round(cost, 4)
 
-        # Track active Task tool calls
+        # Track active Task tool calls by ID
         if event.get("type") == "assistant":
             content = event.get("message", {}).get("content", [])
             for block in content:
                 if block.get("type") == "tool_use" and block.get("name") == "Task":
-                    _latest_stats["active_tasks"] += 1
+                    tool_id = block.get("id")
+                    if tool_id:
+                        _active_task_ids.add(tool_id)
+                        _latest_stats["active_tasks"] = len(_active_task_ids)
 
-        # Decrement tasks on tool results (rough tracking)
+        # Remove completed tasks on matching tool results
         if event.get("type") == "user":
             content = event.get("message", {}).get("content", [])
             for block in content:
                 if block.get("type") == "tool_result":
-                    if _latest_stats["active_tasks"] > 0:
-                        _latest_stats["active_tasks"] -= 1
+                    tool_id = block.get("tool_use_id")
+                    if tool_id:
+                        _active_task_ids.discard(tool_id)
+                        _latest_stats["active_tasks"] = len(_active_task_ids)
 
     except Exception as e:
         _LOG.debug("Failed to parse event for stats: %s", e)
@@ -402,8 +401,9 @@ def update_stats_from_event(event_json: str) -> None:
 def get_subagents_dir() -> Path | None:
     """Get the subagents directory for the current Claude session.
 
-    Looks up the session ID from SQLite channel_sessions and constructs
-    the path to the subagents directory.
+    Looks up the session ID from SQLite channel_sessions and scans
+    Claude project directories matching -data-wendy-channels-* for
+    the matching session's subagents directory.
 
     Returns:
         Path to subagents directory, or None if not found.
@@ -418,11 +418,19 @@ def get_subagents_dir() -> Path | None:
         ).fetchone()
         conn.close()
 
-        if row and row["session_id"]:
-            session_id = row["session_id"]
-            subagents_dir = CLAUDE_DIR / "projects" / "-data-wendy" / session_id / "subagents"
+        if not row or not row["session_id"]:
+            return None
+
+        session_id = row["session_id"]
+        projects_dir = CLAUDE_DIR / "projects"
+        if not projects_dir.exists():
+            return None
+
+        for project_dir in projects_dir.glob("-data-wendy-channels-*"):
+            subagents_dir = project_dir / session_id / "subagents"
             if subagents_dir.exists():
                 return subagents_dir
+
         return None
     except Exception as e:
         _LOG.debug("Failed to get subagents dir: %s", e)

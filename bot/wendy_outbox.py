@@ -36,7 +36,7 @@ from discord.ext import commands, tasks
 
 from .paths import DB_PATH as DEFAULT_DB_PATH
 from .paths import OUTBOX_DIR as DEFAULT_OUTBOX_DIR
-from .paths import WENDY_BASE
+from .paths import SHARED_DIR, WENDY_BASE
 
 _LOG = logging.getLogger(__name__)
 
@@ -61,6 +61,9 @@ MAX_MESSAGE_LOG_LINES: int = 1000
 MAX_FILE_SIZE_MB: int = 25
 """Maximum attachment size in MB (Discord's default limit for non-boosted servers)."""
 
+EMOJI_CACHE_FILE: Path = SHARED_DIR / "emojis.json"
+"""JSON file where guild custom emojis are cached for proxy lookups."""
+
 
 class WendyOutbox(commands.Cog):
     """Discord cog that watches the outbox directory and sends queued messages.
@@ -82,6 +85,7 @@ class WendyOutbox(commands.Cog):
         self.bot = bot
         self._ensure_outbox_dir()
         self.watch_outbox.start()
+        self.refresh_emoji_cache.start()
         _LOG.info("WendyOutbox initialized, watching %s", OUTBOX_DIR)
 
     def _ensure_outbox_dir(self) -> None:
@@ -195,6 +199,7 @@ class WendyOutbox(commands.Cog):
     def cog_unload(self) -> None:
         """Clean up when the cog is unloaded."""
         self.watch_outbox.cancel()
+        self.refresh_emoji_cache.cancel()
 
     @tasks.loop(seconds=0.5)
     async def watch_outbox(self) -> None:
@@ -213,11 +218,39 @@ class WendyOutbox(commands.Cog):
         """Wait for bot to be ready before starting the watcher."""
         await self.bot.wait_until_ready()
 
+    def _build_attachment(self, file_path_str: str | None, channel: discord.TextChannel) -> discord.File | None:
+        """Build a discord.File from a file path string.
+
+        Validates file existence and size before creating the attachment.
+
+        Args:
+            file_path_str: Filesystem path to the attachment, or None.
+            channel: Discord channel (used for error reporting).
+
+        Returns:
+            discord.File if valid, None otherwise.
+        """
+        if not file_path_str:
+            return None
+
+        attachment_path = Path(file_path_str)
+        if not attachment_path.exists():
+            _LOG.warning("Attachment file not found: %s", file_path_str)
+            return None
+
+        file_size_mb = attachment_path.stat().st_size / (1024 * 1024)
+        if file_size_mb > MAX_FILE_SIZE_MB:
+            _LOG.error("File too large: %s is %.1fMB (limit %dMB)", attachment_path.name, file_size_mb, MAX_FILE_SIZE_MB)
+            return None
+
+        _LOG.info("Attaching file: %s (%.1fMB)", attachment_path, file_size_mb)
+        return discord.File(attachment_path)
+
     async def _process_outbox_file(self, outbox_file: Path) -> None:
         """Process a single outbox file and send the message to Discord.
 
-        Parses the JSON, validates the attachment if any, sends to Discord,
-        logs the correlation, and deletes the file.
+        Dispatches to batch or single-message processing based on the presence
+        of an 'actions' key in the JSON data.
 
         Files are always deleted after processing (even on error) to prevent
         infinite retry loops.
@@ -228,7 +261,6 @@ class WendyOutbox(commands.Cog):
         try:
             data = json.loads(outbox_file.read_text())
             channel_id = int(data["channel_id"])
-            message_text = data.get("message") or data.get("content") or ""
 
             channel = self.bot.get_channel(channel_id)
             if not channel:
@@ -236,46 +268,10 @@ class WendyOutbox(commands.Cog):
                 outbox_file.unlink()
                 return
 
-            # Check for file attachment
-            file_path_str = data.get("file_path")
-            attachment = None
-            if file_path_str:
-                attachment_path = Path(file_path_str)
-                if attachment_path.exists():
-                    # Check file size before attempting to send
-                    file_size_mb = attachment_path.stat().st_size / (1024 * 1024)
-                    if file_size_mb > MAX_FILE_SIZE_MB:
-                        error_msg = f"File too large to send: {attachment_path.name} is {file_size_mb:.1f}MB (Discord limit is {MAX_FILE_SIZE_MB}MB)"
-                        _LOG.error(error_msg)
-                        await channel.send(f"[Outbox error] {error_msg}")
-                        outbox_file.unlink()
-                        return
-                    attachment = discord.File(attachment_path)
-                    _LOG.info("Attaching file: %s (%.1fMB)", attachment_path, file_size_mb)
-                else:
-                    _LOG.warning("Attachment file not found: %s", file_path_str)
-
-            # Send the message
-            if attachment:
-                sent_msg = await channel.send(message_text, file=attachment)
+            if "actions" in data:
+                await self._process_actions(channel, data["actions"], outbox_file.name)
             else:
-                sent_msg = await channel.send(message_text)
-
-            _LOG.info("Sent Wendy outbox message to channel %s (msg_id=%s): %s...",
-                     channel_id, sent_msg.id, message_text[:50])
-
-            # Cache Wendy's message to database (so she has memory of her own responses)
-            self._cache_sent_message(sent_msg)
-
-            # Log the message correlation
-            outbox_ts = self._extract_outbox_timestamp(outbox_file.name)
-            if outbox_ts:
-                self._log_sent_message(
-                    discord_msg_id=sent_msg.id,
-                    outbox_ts=outbox_ts,
-                    channel_id=channel_id,
-                    content=message_text,
-                )
+                await self._process_single_message(channel, data, outbox_file.name)
 
             outbox_file.unlink()
 
@@ -284,8 +280,153 @@ class WendyOutbox(commands.Cog):
             outbox_file.unlink()
         except Exception as e:
             _LOG.error("Error processing outbox file %s: %s", outbox_file, e)
-            # Delete file to prevent infinite retry loop
             outbox_file.unlink()
+
+    async def _process_single_message(
+        self, channel: discord.TextChannel, data: dict, filename: str
+    ) -> None:
+        """Process a single-message outbox entry.
+
+        Args:
+            channel: Discord channel to send to.
+            data: Parsed outbox JSON data.
+            filename: Outbox filename (for logging).
+        """
+        message_text = data.get("message") or data.get("content") or ""
+        file_path_str = data.get("file_path")
+        attachment = self._build_attachment(file_path_str, channel)
+
+        # Build reply reference if reply_to is specified
+        reference = None
+        reply_to = data.get("reply_to")
+        if reply_to:
+            try:
+                reference = discord.MessageReference(
+                    message_id=int(reply_to), channel_id=channel.id
+                )
+            except (ValueError, TypeError):
+                _LOG.warning("Invalid reply_to value: %s", reply_to)
+
+        # Send the message
+        kwargs = {}
+        if attachment:
+            kwargs["file"] = attachment
+        if reference:
+            kwargs["reference"] = reference
+            kwargs["mention_author"] = False
+
+        sent_msg = await channel.send(message_text, **kwargs)
+
+        _LOG.info("Sent Wendy outbox message to channel %s (msg_id=%s): %s...",
+                 channel.id, sent_msg.id, message_text[:50])
+
+        self._cache_sent_message(sent_msg)
+
+        outbox_ts = self._extract_outbox_timestamp(filename)
+        if outbox_ts:
+            self._log_sent_message(
+                discord_msg_id=sent_msg.id,
+                outbox_ts=outbox_ts,
+                channel_id=channel.id,
+                content=message_text,
+            )
+
+    async def _process_actions(
+        self, channel: discord.TextChannel, actions: list[dict], filename: str
+    ) -> None:
+        """Process a batch of actions from an outbox file.
+
+        Each action is processed independently - errors in one action don't
+        block subsequent actions.
+
+        Args:
+            channel: Discord channel to operate in.
+            actions: List of action dicts from outbox JSON.
+            filename: Outbox filename (for logging).
+        """
+        for i, action in enumerate(actions):
+            try:
+                action_type = action.get("type")
+
+                if action_type == "send_message":
+                    text = action.get("content", "")
+                    att_path = action.get("file_path") or action.get("attachment")
+                    attachment = self._build_attachment(att_path, channel)
+
+                    reference = None
+                    reply_to = action.get("reply_to")
+                    if reply_to:
+                        try:
+                            reference = discord.MessageReference(
+                                message_id=int(reply_to), channel_id=channel.id
+                            )
+                        except (ValueError, TypeError):
+                            _LOG.warning("Invalid reply_to in action %d: %s", i, reply_to)
+
+                    kwargs = {}
+                    if attachment:
+                        kwargs["file"] = attachment
+                    if reference:
+                        kwargs["reference"] = reference
+                        kwargs["mention_author"] = False
+
+                    sent_msg = await channel.send(text, **kwargs)
+                    _LOG.info("Batch action %d: sent message %s", i, sent_msg.id)
+                    self._cache_sent_message(sent_msg)
+
+                    outbox_ts = self._extract_outbox_timestamp(filename)
+                    if outbox_ts:
+                        self._log_sent_message(
+                            discord_msg_id=sent_msg.id,
+                            outbox_ts=outbox_ts,
+                            channel_id=channel.id,
+                            content=text,
+                        )
+
+                elif action_type == "add_reaction":
+                    message_id = action.get("message_id")
+                    emoji = action.get("emoji")
+                    if not message_id or not emoji:
+                        _LOG.warning("Batch action %d: add_reaction missing message_id or emoji", i)
+                        continue
+
+                    target_msg = await channel.fetch_message(int(message_id))
+                    await target_msg.add_reaction(emoji)
+                    _LOG.info("Batch action %d: reacted with %s on message %s", i, emoji, message_id)
+
+                else:
+                    _LOG.warning("Batch action %d: unknown type '%s'", i, action_type)
+
+            except Exception as e:
+                _LOG.error("Batch action %d failed: %s", i, e)
+
+    @tasks.loop(minutes=15)
+    async def refresh_emoji_cache(self) -> None:
+        """Cache guild custom emojis to a JSON file for proxy lookups."""
+        try:
+            all_emojis = []
+            for guild in self.bot.guilds:
+                for emoji in guild.emojis:
+                    prefix = "a" if emoji.animated else ""
+                    all_emojis.append({
+                        "name": emoji.name,
+                        "id": str(emoji.id),
+                        "animated": emoji.animated,
+                        "guild": guild.name,
+                        "usage": f"<{prefix}:{emoji.name}:{emoji.id}>",
+                    })
+
+            EMOJI_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            EMOJI_CACHE_FILE.write_text(json.dumps(all_emojis))
+            _LOG.debug("Refreshed emoji cache: %d emojis", len(all_emojis))
+
+        except Exception as e:
+            _LOG.error("Failed to refresh emoji cache: %s", e)
+
+    @refresh_emoji_cache.before_loop
+    async def before_refresh_emoji_cache(self) -> None:
+        """Wait for bot to be ready before starting the emoji cache task."""
+        await self.bot.wait_until_ready()
 
 
 async def setup(bot: commands.Bot) -> None:

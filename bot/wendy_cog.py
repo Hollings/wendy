@@ -28,6 +28,7 @@ import asyncio
 import json
 import logging
 import os
+from pathlib import Path
 
 import discord
 from discord.ext import commands, tasks
@@ -213,6 +214,9 @@ class WendyCog(commands.Cog):
         Attachments are stored per-channel to ensure Claude sessions in one
         channel cannot access attachments from other channels.
 
+        After saving, verifies each file exists on disk with brief retries
+        to handle filesystem flush delays (e.g. Docker volumes, NFS).
+
         Args:
             message: Discord message with potential attachments.
             channel_name: Name of the channel (used as folder name).
@@ -240,6 +244,20 @@ class WendyCog(commands.Cog):
                 _LOG.info("Saved attachment: %s (%d bytes)", filepath, len(data))
             except Exception as e:
                 _LOG.error("Failed to save attachment %s: %s", attachment.filename, e)
+
+        # Verify all saved files exist on disk (handles filesystem flush delays)
+        for path_str in paths:
+            path = Path(path_str)
+            for attempt in range(3):
+                if path.exists():
+                    break
+                _LOG.warning(
+                    "Attachment not yet on disk (attempt %d/3): %s",
+                    attempt + 1, path_str,
+                )
+                await asyncio.sleep(0.1)
+            else:
+                _LOG.error("Attachment missing after retries: %s", path_str)
 
         return paths
 
@@ -289,7 +307,6 @@ class WendyCog(commands.Cog):
         if not await self._should_respond(message):
             return
 
-        # Use haiku for webhook messages (cheaper for automated triggers)
         is_webhook = message.webhook_id is not None
         if is_webhook:
             _LOG.info("Processing WEBHOOK message from %s: %s...", message.author.display_name, message.content[:50])
@@ -305,11 +322,8 @@ class WendyCog(commands.Cog):
             _LOG.info("Claude CLI already running in channel %s, marked pending", message.channel.id)
             return
 
-        # Determine model: webhooks use haiku, otherwise use channel config model
-        if is_webhook:
-            model_override = "haiku"
-        else:
-            model_override = channel_config.get("model")  # None means use default
+        # Determine model: use channel config model (webhooks no longer force haiku)
+        model_override = channel_config.get("model")  # None means use default
 
         # Start generation
         job = GenerationJob()

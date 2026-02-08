@@ -228,6 +228,24 @@ def attachments_dir(channel_name: str) -> Path:
     return channel_dir(channel_name) / "attachments"
 
 
+def journal_dir(channel_name: str) -> Path:
+    """Get the journal directory for a channel.
+
+    Each channel has its own journal directory for long-term memory entries.
+
+    Args:
+        channel_name: Channel name.
+
+    Returns:
+        Path to the channel's journal directory.
+
+    Example:
+        >>> journal_dir("coding")
+        Path('/data/wendy/channels/coding/journal')
+    """
+    return channel_dir(channel_name) / "journal"
+
+
 # =============================================================================
 # Utility Functions
 # =============================================================================
@@ -245,6 +263,7 @@ def ensure_channel_dirs(channel_name: str, beads_enabled: bool = False) -> None:
     """
     channel_dir(channel_name).mkdir(parents=True, exist_ok=True)
     attachments_dir(channel_name).mkdir(exist_ok=True)
+    journal_dir(channel_name).mkdir(exist_ok=True)
 
     if beads_enabled:
         beads_dir(channel_name).mkdir(exist_ok=True)

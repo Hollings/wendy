@@ -57,6 +57,7 @@
             display: flex;
             flex: 1;
             min-height: 0;
+            gap: 0;
         }
 
         /* Main Column - Feed/Avatar toggle */
@@ -214,8 +215,8 @@
             padding: 12px 16px; border-radius: 8px;
             background: #111; border-left: 3px solid #333;
             animation: fadeIn 0.2s ease-out;
-            cursor: pointer;
             transition: background 0.15s;
+            position: relative;
         }
         .event:hover { background: #161616; }
         .event.expanded { background: #1a1a1a; }
@@ -224,12 +225,32 @@
         .event.expanded .thinking-text { max-height: none; }
         .event .expand-hint {
             display: none;
-            color: #555;
-            font-size: 10px;
-            margin-top: 4px;
         }
-        .event.truncated .expand-hint { display: block; }
-        .event.expanded .expand-hint { display: none; }
+
+        /* Expand button */
+        .expand-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            width: 24px;
+            height: 24px;
+            background: #222;
+            border: 1px solid #444;
+            border-radius: 4px;
+            color: #888;
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            transition: opacity 0.15s, background 0.15s;
+            z-index: 2;
+            line-height: 1;
+        }
+        .event:hover .expand-btn { opacity: 1; }
+        .expand-btn:hover { background: #333; color: #fff; }
+        .event.expanded .expand-btn { opacity: 1; background: #333; color: #fff; }
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
@@ -396,6 +417,18 @@
             margin-left: 8px;
         }
 
+        /* Hidden WIP features */
+        .marbles-panel,
+        [data-panel="marbles-panel"],
+        [data-tab="marbles"],
+        .avatar-view,
+        .avatar-panel,
+        #toggle-avatar,
+        #toggle-feed,
+        [data-tab="avatar"],
+        #mobile-avatar-panel,
+        #mobile-marbles-panel { display: none !important; }
+
         /* Marbles Panel */
         .marbles-panel {
             align-items: center;
@@ -442,54 +475,72 @@
         .beads-panel {
             flex: 1;
         }
+        .beads-toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #222;
+        }
+        .beads-toolbar label {
+            font-size: 11px;
+            color: #888;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .beads-toolbar input[type="checkbox"] {
+            accent-color: #4ade80;
+        }
         .beads-list {
             display: flex;
             flex-direction: column;
-            gap: 8px;
+            gap: 4px;
         }
         .bead-item {
-            padding: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
             background: #111;
             border-radius: 6px;
-            border-left: 3px solid #666;
             cursor: pointer;
             transition: background 0.15s;
         }
         .bead-item:hover { background: #1a1a1a; }
-        .bead-item.open { border-left-color: #60a5fa; }
-        .bead-item.in_progress { border-left-color: #fbbf24; }
-        .bead-item.closed { border-left-color: #666; opacity: 0.6; }
-        .bead-item.tombstone { border-left-color: #444; opacity: 0.4; }
-        .bead-item-header {
+        .bead-status-icon {
+            flex-shrink: 0;
+            width: 18px;
+            height: 18px;
             display: flex;
-            justify-content: space-between;
             align-items: center;
-            margin-bottom: 4px;
+            justify-content: center;
+            font-size: 12px;
+            border-radius: 50%;
         }
-        .bead-item-id {
-            font-size: 10px;
-            color: #666;
-            font-family: monospace;
-        }
-        .bead-item-status {
-            font-size: 10px;
-            padding: 2px 6px;
-            border-radius: 3px;
-            text-transform: uppercase;
-        }
-        .bead-item-status.open { background: #1a2a4a; color: #60a5fa; }
-        .bead-item-status.in_progress { background: #3a3a1a; color: #fbbf24; }
-        .bead-item-status.closed { background: #222; color: #888; }
-        .bead-item-status.tombstone { background: #1a1a1a; color: #555; }
-        .bead-item-time {
-            font-size: 10px;
-            color: #555;
-            margin-left: auto;
-            padding-left: 8px;
+        .bead-status-icon.open { background: #1a2a4a; color: #3b82f6; }
+        .bead-status-icon.in_progress { background: #3a3a1a; color: #fbbf24; animation: pulse 1.5s ease-in-out infinite; }
+        .bead-status-icon.closed { background: #1a2a1a; color: #4ade80; }
+        .bead-status-icon.tombstone { background: #1a1a1a; color: #666; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
         }
         .bead-item-title {
-            font-size: 13px;
+            flex: 1;
+            font-size: 12px;
             color: #ddd;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            min-width: 0;
+        }
+        .bead-item-time {
+            flex-shrink: 0;
+            font-size: 10px;
+            color: #555;
         }
         .beads-empty {
             color: #666;
@@ -1106,6 +1157,9 @@
 
                 <!-- Beads Panel -->
                 <div id="beads-panel" class="tab-panel beads-panel">
+                    <div class="beads-toolbar">
+                        <label><input type="checkbox" id="beads-show-completed" onchange="toggleShowCompleted()"> Show completed</label>
+                    </div>
                     <div id="beads-list" class="beads-list">
                         <div class="beads-empty">No tasks</div>
                     </div>
@@ -1191,6 +1245,9 @@
             </div>
 
             <div id="mobile-beads-panel" class="mobile-panel beads-panel">
+                <div class="beads-toolbar">
+                    <label><input type="checkbox" id="beads-show-completed-mobile" onchange="toggleShowCompleted()"> Show completed</label>
+                </div>
                 <div id="beads-list-mobile" class="beads-list">
                     <div class="beads-empty">No tasks</div>
                 </div>
@@ -1595,7 +1652,7 @@
 
         async function fetchStats() {
             try {
-                const res = await fetch('/api/brain/stats');
+                const res = await fetch('/api/brain/stats', { headers: authHeaders() });
                 if (!res.ok) return;
                 const stats = await res.json();
                 updateStatsDisplay(stats);
@@ -1679,7 +1736,7 @@
 
         async function fetchUsage() {
             try {
-                const res = await fetch('/api/brain/usage');
+                const res = await fetch('/api/brain/usage', { headers: authHeaders() });
                 if (!res.ok) return;
                 const data = await res.json();
                 updateUsageDisplay(data);
@@ -1799,6 +1856,10 @@
         function getPassphrase() { return localStorage.getItem('brain_passphrase'); }
         function setPassphrase(p) { localStorage.setItem('brain_passphrase', p); }
         function clearPassphrase() { localStorage.removeItem('brain_passphrase'); }
+        function authHeaders() {
+            const t = getToken();
+            return t ? { 'Authorization': 'Bearer ' + t } : {};
+        }
 
         async function authenticate(code, savePassphrase = true) {
             console.log('[Auth] authenticate called, savePassphrase:', savePassphrase);
@@ -1889,6 +1950,13 @@
         function truncate(str, len = 200) {
             if (!str || str.length <= len) return str;
             return str.slice(0, len) + '...';
+        }
+        function normalizeContent(content) {
+            if (content == null) return '';
+            if (typeof content === 'string') return content;
+            if (Array.isArray(content)) return content.map(c => (c && c.text) || (typeof c === 'string' ? c : JSON.stringify(c))).join('\n');
+            if (typeof content === 'object') return JSON.stringify(content, null, 2);
+            return String(content);
         }
         function basename(path) {
             const parts = path.split('/');
@@ -2007,8 +2075,9 @@
             if (renderer) {
                 content = renderer(input);
             } else {
+                const inputJson = JSON.stringify(input, null, 2);
                 content = `<span style="color:#f59e0b">${escapeHtml(name)}</span>
-                    <div class="command-block">${escapeHtml(truncate(JSON.stringify(input, null, 2), 200))}</div>`;
+                    <div class="command-block result-content">${escapeHtml(inputJson)}</div>`;
             }
 
             return { cls, icon, name, content };
@@ -2062,8 +2131,8 @@
                         icon = '📨';
                         type = 'result';
                         filterType = 'result';
-                        const resultContent = block.content || '';
-                        content = `<div class="result-content">${escapeHtml(truncate(resultContent, 500))}</div>`;
+                        const resultContent = normalizeContent(block.content);
+                        content = `<div class="result-content">${escapeHtml(resultContent)}</div>`;
                     }
                 }
             } else if (event.type === 'result') {
@@ -2079,6 +2148,7 @@
             div.classList.add(cls);
             div.dataset.eventType = filterType;
             div.innerHTML = `
+                <button class="expand-btn" onclick="event.stopPropagation(); toggleEventExpand(this.closest('.event'));" title="Expand/collapse">&#x25BC;</button>
                 <div class="event-header">
                     <div class="event-label">
                         <span class="event-icon">${icon}</span>
@@ -2087,7 +2157,6 @@
                     <span class="event-time">${formatTime(ts)}</span>
                 </div>
                 <div class="event-content">${content}</div>
-                <div class="expand-hint">Click to expand</div>
             `;
 
             // Check if content is likely truncated (for thinking/result types)
@@ -2122,11 +2191,8 @@
                 } else if (content[0].type === 'text') {
                     contentKey = content[0].text?.slice(0, 50) || '';
                 } else if (content[0].type === 'tool_result') {
-                    let resultContent = content[0].content || '';
-                    if (Array.isArray(resultContent)) {
-                        resultContent = resultContent.map(c => c.text || '').join(' ');
-                    }
-                    contentKey = 'result-' + (typeof resultContent === 'string' ? resultContent.slice(0, 30) : '');
+                    const resultContent = normalizeContent(content[0].content);
+                    contentKey = 'result-' + resultContent.slice(0, 30);
                 }
             }
             return `${ts}-${type}-${subtype}-${contentKey}`;
@@ -2154,9 +2220,6 @@
             const el = renderEvent(data);
             if (!el) return;
 
-            // Add click handler for expanding
-            el.addEventListener('click', () => toggleEventExpand(el));
-
             feed.appendChild(el);
             while (feed.children.length > MAX_EVENTS) {
                 feed.removeChild(feed.firstChild);
@@ -2172,6 +2235,10 @@
         function toggleEventExpand(el) {
             const isExpanded = el.classList.toggle('expanded');
 
+            // Update expand button icon
+            const btn = el.querySelector('.expand-btn');
+            if (btn) btn.innerHTML = isExpanded ? '&#x25B2;' : '&#x25BC;';
+
             // Toggle truncated/full content visibility
             const truncatedEls = el.querySelectorAll('.command-truncated, .edit-truncated, .task-truncated');
             const fullEls = el.querySelectorAll('.command-full, .edit-full, .task-full');
@@ -2179,6 +2246,19 @@
             truncatedEls.forEach(e => e.style.display = isExpanded ? 'none' : '');
             fullEls.forEach(e => e.style.display = isExpanded ? '' : 'none');
         }
+
+        // Close expanded cards when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.event') && !e.target.closest('.event-modal')) {
+                document.querySelectorAll('#feed .event.expanded').forEach(el => {
+                    el.classList.remove('expanded');
+                    const btn = el.querySelector('.expand-btn');
+                    if (btn) btn.innerHTML = '&#x25BC;';
+                    el.querySelectorAll('.command-truncated, .edit-truncated, .task-truncated').forEach(e => e.style.display = '');
+                    el.querySelectorAll('.command-full, .edit-full, .task-full').forEach(e => e.style.display = 'none');
+                });
+            }
+        });
 
         // ==================== WebSocket ====================
         function connect() {
@@ -2239,7 +2319,7 @@
 
         async function fetchTasks() {
             try {
-                const res = await fetch('/api/brain/beads');
+                const res = await fetch('/api/brain/beads', { headers: authHeaders() });
                 if (!res.ok) return;
                 const data = await res.json();
                 const beads = data.beads || [];
@@ -2302,27 +2382,46 @@
             }
         }
 
+        let showCompletedBeads = false;
+        let lastBeadsList = [];
+
+        function toggleShowCompleted() {
+            showCompletedBeads = !showCompletedBeads;
+            document.querySelectorAll('#beads-show-completed, #beads-show-completed-mobile').forEach(el => {
+                el.checked = showCompletedBeads;
+            });
+            renderTasksList(lastBeadsList);
+        }
+
         function renderTasksList(tasks) {
-            const html = tasks.length === 0
-                ? '<div class="beads-empty">No tasks</div>'
-                : tasks.map(task => {
-                    const statusLabel = {
-                        'in_progress': 'Running',
-                        'open': 'Queued',
-                        'closed': 'Done',
-                        'tombstone': 'Archived'
-                    }[task.status] || task.status;
-                    const isViewing = viewingTaskId === task.id;
+            lastBeadsList = tasks;
+
+            // Sort: in_progress first, then open, then closed, then tombstone
+            const statusOrder = { 'in_progress': 0, 'open': 1, 'closed': 2, 'tombstone': 3 };
+            const sorted = [...tasks].sort((a, b) => (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9));
+
+            // Filter if not showing completed
+            const filtered = showCompletedBeads
+                ? sorted
+                : sorted.filter(t => t.status === 'open' || t.status === 'in_progress');
+
+            const statusIcons = {
+                'in_progress': '&#9654;',
+                'open': '&#9679;',
+                'closed': '&#10003;',
+                'tombstone': '&#8212;'
+            };
+
+            const html = filtered.length === 0
+                ? '<div class="beads-empty">No active tasks</div>'
+                : filtered.map(task => {
+                    const icon = statusIcons[task.status] || '?';
                     const timeAgo = formatRelativeTime(task.updated || task.created);
-                    const timeDisplay = timeAgo ? `<span class="bead-item-time">${timeAgo}</span>` : '';
                     return `
-                        <div class="bead-item ${task.status} ${isViewing ? 'viewing' : ''}" onclick="viewTask('${task.id}', '${escapeJsString(task.title)}')">
-                            <div class="bead-item-header">
-                                <span class="bead-item-id">${task.id}</span>
-                                <span class="bead-item-status ${task.status}">${statusLabel}</span>
-                                ${timeDisplay}
-                            </div>
-                            <div class="bead-item-title">${escapeHtml(task.title)}</div>
+                        <div class="bead-item" onclick="viewTask('${task.id}', '${escapeJsString(task.title)}')">
+                            <span class="bead-status-icon ${task.status}">${icon}</span>
+                            <span class="bead-item-title" title="${escapeHtml(task.title)}">${escapeHtml(task.title)}</span>
+                            <span class="bead-item-time">${timeAgo}</span>
                         </div>
                     `;
                 }).join('');
@@ -2403,7 +2502,7 @@
             if (!viewingTaskId) return;
 
             try {
-                const res = await fetch(`/api/brain/beads/${viewingTaskId}/log?offset=${taskLogOffset}`);
+                const res = await fetch(`/api/brain/beads/${viewingTaskId}/log?offset=${taskLogOffset}`, { headers: authHeaders() });
                 if (!res.ok) return;
                 const data = await res.json();
 
@@ -2514,7 +2613,6 @@
                             el = renderEvent({ ts: Date.now(), event: parsed });
                         }
                         if (el) {
-                            el.addEventListener('click', () => toggleEventExpand(el));
                             feed.appendChild(el);
                             continue;
                         }
@@ -2563,7 +2661,7 @@
         function startTasksPolling() {
             if (tasksInterval) return;
             fetchTasks();
-            tasksInterval = setInterval(fetchTasks, 10000);
+            tasksInterval = setInterval(fetchTasks, 30000);
         }
 
         function stopTasksPolling() {
@@ -3236,17 +3334,9 @@
                 for (const block of blocks) {
                     if (block.type === 'tool_result') {
                         eventType = 'result';
-                        let content = block.content || '';
-                        // content can be string or array of content blocks
-                        if (Array.isArray(content)) {
-                            content = content.map(c => c.text || '').join(' ');
-                        }
-                        if (typeof content === 'string') {
-                            summary = content.slice(0, 40).replace(/\n/g, ' ');
-                            if (content.length > 40) summary += '...';
-                        } else {
-                            summary = 'result';
-                        }
+                        const resultStr = normalizeContent(block.content);
+                        summary = resultStr.slice(0, 40).replace(/\n/g, ' ');
+                        if (resultStr.length > 40) summary += '...';
                     }
                 }
             } else if (event.type === 'system') {
