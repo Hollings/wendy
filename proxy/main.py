@@ -782,12 +782,13 @@ async def check_messages(
                         FROM message_history m
                         LEFT JOIN message_history r ON m.reply_to_id = r.message_id
                         WHERE m.channel_id = ? AND m.message_id > ?
+                        AND m.author_id != ?
                         AND m.content NOT LIKE '!%'
                         AND m.content NOT LIKE '-%'
                         ORDER BY m.message_id DESC
                         LIMIT ?
                     """
-                    rows = conn.execute(query, (channel_id, since_id, limit)).fetchall()
+                    rows = conn.execute(query, (channel_id, since_id, WENDY_BOT_ID, limit)).fetchall()
                 else:
                     query = """
                         SELECT m.message_id, m.channel_id, m.author_nickname, m.content, m.timestamp,
@@ -798,12 +799,13 @@ async def check_messages(
                         FROM message_history m
                         LEFT JOIN message_history r ON m.reply_to_id = r.message_id
                         WHERE m.channel_id = ?
+                        AND m.author_id != ?
                         AND m.content NOT LIKE '!%'
                         AND m.content NOT LIKE '-%'
                         ORDER BY m.message_id DESC
                         LIMIT ?
                     """
-                    rows = conn.execute(query, (channel_id, limit)).fetchall()
+                    rows = conn.execute(query, (channel_id, WENDY_BOT_ID, limit)).fetchall()
 
                 for row in rows:
                     attachments = find_attachments_for_message(row["message_id"], channel_name)
