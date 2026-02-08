@@ -152,24 +152,13 @@ async def broadcast(message: str) -> None:
     if not connected_clients:
         return
 
-    dead: set[WebSocket] = set()
-    tasks = []
-
-    for ws in connected_clients:
-        try:
-            tasks.append(ws.send_text(message))
-        except Exception:
-            dead.add(ws)
-
-    if tasks:
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for ws, result in zip(list(connected_clients), results):
-            if isinstance(result, Exception):
-                dead.add(ws)
-
-    connected_clients.difference_update(dead)
+    clients = list(connected_clients)
+    tasks = [ws.send_text(message) for ws in clients]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    dead = {ws for ws, r in zip(clients, results) if isinstance(r, Exception)}
 
     if dead:
+        connected_clients.difference_update(dead)
         _LOG.info("Removed %d dead connections, %d remaining", len(dead), len(connected_clients))
 
 

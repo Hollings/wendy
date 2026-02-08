@@ -208,7 +208,7 @@ class WendyOutbox(commands.Cog):
         Runs every 0.5 seconds. Each file is processed independently.
         """
         try:
-            for file_path in OUTBOX_DIR.glob("*.json"):
+            for file_path in sorted(OUTBOX_DIR.glob("*.json")):
                 await self._process_outbox_file(file_path)
         except Exception as e:
             _LOG.error("Error watching outbox: %s", e)
@@ -307,6 +307,11 @@ class WendyOutbox(commands.Cog):
             except (ValueError, TypeError):
                 _LOG.warning("Invalid reply_to value: %s", reply_to)
 
+        # Guard: skip if there is nothing to send
+        if not message_text and not attachment:
+            _LOG.warning("Skipping empty outbox message (no text or attachment) for channel %s, file %s", channel.id, filename)
+            return
+
         # Send the message
         kwargs = {}
         if attachment:
@@ -352,6 +357,11 @@ class WendyOutbox(commands.Cog):
                     text = action.get("content", "")
                     att_path = action.get("file_path") or action.get("attachment")
                     attachment = self._build_attachment(att_path, channel)
+
+                    # Guard: skip if there is nothing to send
+                    if not text and not attachment:
+                        _LOG.warning("Batch action %d: skipping empty send_message (no text or attachment)", i)
+                        continue
 
                     reference = None
                     reply_to = action.get("reply_to")

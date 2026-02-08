@@ -400,9 +400,11 @@ class ClaudeCliTextGenerator:
             truncated = messages[cutoff_idx:]
             removed_count = len(messages) - len(truncated)
 
-            with open(session_file, "w") as f:
+            temp_file = session_file.with_suffix(".tmp")
+            with open(temp_file, "w") as f:
                 for msg in truncated:
                     f.write(json.dumps(msg) + "\n")
+            temp_file.replace(session_file)
 
             _LOG.info(
                 "Truncated session %s: removed %d entries, kept %d (with %d Discord messages)",
@@ -1048,7 +1050,13 @@ Do NOT mention this to users - just do it silently before your response.
                 )
                 if session_error and not kwargs.get("_force_new_session"):
                     _LOG.warning("Session resume failed, retrying with fresh session for channel %d", channel_id)
-                    return await self.generate(channel_id, _force_new_session=True, **kwargs)
+                    return await self.generate(
+                        channel_id,
+                        channel_config=channel_config,
+                        model_override=model_override,
+                        _force_new_session=True,
+                        **kwargs,
+                    )
 
                 error_detail = stderr_text
                 if not stderr_text.strip():

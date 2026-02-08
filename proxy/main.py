@@ -672,7 +672,9 @@ async def send_message(request: SendMessageRequest) -> dict:
                 "actions": [a.model_dump(exclude_none=True) for a in request.actions],
             }
             outbox_path = OUTBOX_DIR / filename
-            outbox_path.write_text(json.dumps(message_data))
+            tmp_path = OUTBOX_DIR / f".{filename}.tmp"
+            tmp_path.write_text(json.dumps(message_data))
+            tmp_path.rename(outbox_path)
             return {"success": True, "message": f"Batch queued ({len(request.actions)} actions): {filename}"}
 
         # Single message mode
@@ -707,7 +709,9 @@ async def send_message(request: SendMessageRequest) -> dict:
             message_data["reply_to"] = request.reply_to
 
         outbox_path = OUTBOX_DIR / filename
-        outbox_path.write_text(json.dumps(message_data))
+        tmp_path = OUTBOX_DIR / f".{filename}.tmp"
+        tmp_path.write_text(json.dumps(message_data))
+        tmp_path.rename(outbox_path)
 
         return {"success": True, "message": f"Message queued: {filename}"}
 
@@ -778,13 +782,12 @@ async def check_messages(
                         FROM message_history m
                         LEFT JOIN message_history r ON m.reply_to_id = r.message_id
                         WHERE m.channel_id = ? AND m.message_id > ?
-                        AND m.author_id != ?
                         AND m.content NOT LIKE '!%'
                         AND m.content NOT LIKE '-%'
                         ORDER BY m.message_id DESC
                         LIMIT ?
                     """
-                    rows = conn.execute(query, (channel_id, since_id, WENDY_BOT_ID, limit)).fetchall()
+                    rows = conn.execute(query, (channel_id, since_id, limit)).fetchall()
                 else:
                     query = """
                         SELECT m.message_id, m.channel_id, m.author_nickname, m.content, m.timestamp,
@@ -795,13 +798,12 @@ async def check_messages(
                         FROM message_history m
                         LEFT JOIN message_history r ON m.reply_to_id = r.message_id
                         WHERE m.channel_id = ?
-                        AND m.author_id != ?
                         AND m.content NOT LIKE '!%'
                         AND m.content NOT LIKE '-%'
                         ORDER BY m.message_id DESC
                         LIMIT ?
                     """
-                    rows = conn.execute(query, (channel_id, WENDY_BOT_ID, limit)).fetchall()
+                    rows = conn.execute(query, (channel_id, limit)).fetchall()
 
                 for row in rows:
                     attachments = find_attachments_for_message(row["message_id"], channel_name)

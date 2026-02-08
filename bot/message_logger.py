@@ -43,6 +43,9 @@ from .paths import DB_PATH as DEFAULT_DB_PATH_FROM_PATHS
 
 _LOG = logging.getLogger(__name__)
 
+# Counter to guarantee unique synthetic message IDs even within the same clock tick
+_synthetic_counter = 0
+
 # Default database path - from paths.py (shared/wendy.db)
 # Allow override via MESSAGE_LOGGER_DB_PATH for backwards compatibility
 _env_db_path = os.getenv("MESSAGE_LOGGER_DB_PATH")
@@ -345,12 +348,15 @@ class MessageLoggerCog(commands.Cog):
         Returns:
             The generated message ID.
         """
-        # Generate a synthetic message ID using timestamp to avoid collisions
-        # Use a large positive base (9 * 10^18) plus timestamp to ensure:
+        # Generate a synthetic message ID using nanosecond timestamp + counter
+        # to avoid collisions when multiple messages arrive in the same clock tick.
+        # Uses a large positive base (9 * 10^18) plus timestamp to ensure:
         # 1. IDs are always greater than Discord snowflake IDs (which are ~10^18)
         # 2. IDs are unique and monotonically increasing
         # 3. IDs show up in check_messages (which filters by message_id > since_id)
-        message_id = 9_000_000_000_000_000_000 + int(time.time() * 1_000_000)
+        global _synthetic_counter
+        _synthetic_counter += 1
+        message_id = 9_000_000_000_000_000_000 + int(time.time_ns() // 1000) + _synthetic_counter
 
         timestamp = datetime.now(UTC).isoformat()
 

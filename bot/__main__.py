@@ -75,10 +75,15 @@ async def main() -> None:
 
     # Handle shutdown signals
     loop = asyncio.get_event_loop()
+    _shutdown_task = None
 
     def handle_signal(sig):
-        _LOG.info("Received signal %s, shutting down...", sig.name)
-        asyncio.create_task(bot.close())
+        nonlocal _shutdown_task
+        if _shutdown_task is None:
+            _LOG.info("Received signal %s, shutting down...", sig.name)
+            _shutdown_task = asyncio.create_task(bot.close())
+        else:
+            _LOG.info("Received signal %s again, shutdown already in progress", sig.name)
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, handle_signal, sig)

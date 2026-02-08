@@ -87,7 +87,7 @@ Analyzing files (images, audio, video)
 
 Use the analyze_file endpoint to understand media files. It uses Gemini's multimodal AI for accurate analysis.
 
-curl -X POST "http://proxy:8945/api/analyze_file" \
+curl -X POST "http://localhost:8945/api/analyze_file" \
   -F "file=@/path/to/file.jpg" \
   -F "prompt=Describe this file in full detail, 5-10 sentences."
 
@@ -158,7 +158,7 @@ Context restoration after compaction
 
 When you see "This session is being continued from a previous conversation" (indicating auto-compaction happened), call check_messages with count=20 to restore recent conversation context:
 
-  curl "http://proxy:8945/api/check_messages/{channel_id}?count=20"
+  curl "http://localhost:8945/api/check_messages/{channel_id}?count=20"
 
 This fetches the last 20 messages regardless of what was previously seen, helping you understand what people were talking about before the session was compacted.
 
