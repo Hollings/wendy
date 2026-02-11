@@ -23,7 +23,7 @@ ruff check .
 ruff check --fix .
 ```
 
-CI runs lint (ruff) and tests (pytest) on push/PR to main via `.github/workflows/test.yml`.
+CI runs lint (ruff) and tests (pytest with Python 3.11) on push/PR to main via `.github/workflows/test.yml`.
 
 ## Architecture
 
@@ -49,14 +49,58 @@ Discord <-> Bot (Claude Code CLI) <-> Proxy <-> Discord API
 | wendy-games | 8920 | WebSocket game server manager |
 | wendy-avatar | 8915 | 3D visualization (Three.js) |
 
-All three core services share a single Dockerfile and two external Docker volumes: `wendy_data` (mounted at `/data/wendy`) and `claude_config` (mounted at `/root/.claude`). These must exist before first deploy.
+Bot, proxy, and orchestrator share a single Dockerfile and two external Docker volumes: `wendy_data` (mounted at `/data/wendy`) and `claude_config` (mounted at `/root/.claude`).
 
 ### Key Data Flow
 
 1. **Discord -> Bot**: `WendyCog.on_message` receives messages, caches to SQLite via `MessageLoggerCog`, saves attachments per-channel
 2. **Bot -> Claude CLI**: `ClaudeCliTextGenerator.generate()` spawns `claude` subprocess with `--resume` for session persistence, sends nudge prompt via stdin
-3. **Claude CLI -> Discord**: Claude calls `curl` to hit proxy API endpoints (`/api/send_message`, `/api/check_messages`)
-4. **Proxy -> Discord**: `WendyOutbox` watches `/data/wendy/shared/outbox/` for JSON files and sends them via discord.py
+3. **Claude CLI -> Proxy**: Claude calls `curl` to hit proxy API endpoints (`/api/send_message`, `/api/check_messages`)
+4. **Proxy -> Outbox**: Proxy writes JSON files to `/data/wendy/shared/outbox/`
+5. **Outbox -> Discord**: `WendyOutbox` cog polls outbox dir every 0.5s and sends via discord.py
+
+### Module Structure
+
+| Module | Key File(s) | Responsibility |
+|--------|-------------|----------------|
+| `bot/claude_cli.py` | ~1200 lines | Spawns Claude CLI, manages sessions, handles streaming output |
+| `bot/wendy_cog.py` | ~750 lines | Discord event handling, message routing, attachment saving |
+| `bot/wendy_outbox.py` | ~450 lines | Watches outbox dir, sends messages/reactions to Discord |
+| `bot/state_manager.py` | ~1000 lines | Unified SQLite state (sessions, last_seen, notifications, usage) |
+| `bot/message_logger.py` | ~400 lines | Message caching and archival |
+| `bot/paths.py` | Centralized paths | All filesystem paths - use this instead of constructing paths manually |
+| `bot/conversation.py` | Data structures | Conversation/message dataclasses |
+| `proxy/main.py` | ~1400 lines | FastAPI proxy: all API endpoints |
+| `orchestrator/main.py` | ~1200 lines | Background task polling, agent spawning, usage monitoring |
+
+### Proxy API Endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/send_message` | POST | Queue message to Discord (with new-message interrupt detection) |
+| `/api/check_messages/{channel_id}` | GET | Fetch messages and task updates |
+| `/api/emojis` | GET | List custom server emojis (searchable) |
+| `/api/usage` | GET | Claude Code usage stats |
+| `/api/usage/refresh` | POST | Force immediate usage check |
+| `/api/deploy_site` | POST | Deploy static site to wendy.monster |
+| `/api/deploy_game` | POST | Deploy multiplayer game backend |
+| `/api/game_logs/{name}` | GET | Fetch game server logs |
+| `/api/analyze_file` | POST | Analyze media via Gemini API (images, audio, video) |
+
+### Outbox Action Types
+
+The outbox supports batch actions via an `actions` array in the JSON file:
+
+- **`send_message`**: `{type, content, file_path?, reply_to?}` - send text/attachment
+- **`add_reaction`**: `{type, message_id, emoji}` - add emoji reaction to a message
+
+### New Message Interrupts
+
+Prevents stale replies when users send messages while Wendy is thinking:
+1. `check_messages` records the last seen message ID in SQLite
+2. `send_message` checks if new real messages (not synthetic, ID < 9e18) arrived since last check
+3. If new messages exist, returns them instead of sending (409-like response with guidance)
+4. Claude must re-read messages and retry with updated response
 
 ### Filesystem Layout (on server)
 
@@ -66,12 +110,14 @@ All three core services share a single Dockerfile and two external Docker volume
 |   +-- {name}/            # Each channel gets isolated workspace
 |       +-- CLAUDE.md      # Wendy's self-editable notes (loaded as system prompt)
 |       +-- attachments/   # Downloaded Discord files (per-channel isolation)
+|       +-- journal/       # Long-term memory entries (auto-nudged)
 |       +-- .claude/       # Claude Code settings (hooks config)
 |       +-- .beads/        # Task queue (only if beads_enabled)
 |       +-- .current_session  # Session ID for agent forking
 +-- shared/
 |   +-- outbox/            # Message queue to Discord
 |   +-- wendy.db           # SQLite database (all state)
++-- stream.jsonl           # Rolling log of Claude CLI events (max 5000 lines)
 +-- tmp/                   # Scratch space
 ```
 
@@ -82,13 +128,26 @@ Claude CLI sessions are per-channel with automatic truncation:
 - Session state (ID, token counts) tracked in SQLite `channel_sessions` table
 - Truncates when Discord messages in session exceed `MAX_DISCORD_MESSAGES` (50) - see `claude_cli.py:_truncate_session_if_needed`
 
-### New Message Interrupts
+### Claude CLI Invocation
 
-The proxy prevents stale replies when users send messages while Wendy is thinking:
-1. `check_messages` records the last seen message ID in SQLite
-2. `send_message` checks if new real messages (not synthetic) arrived since last check
-3. If new messages exist, returns them instead of sending (409-like response with guidance)
-4. Claude must re-read messages and retry with updated response
+Key flags passed to the `claude` subprocess:
+- `-p` (headless mode, no interactive prompts)
+- `--output-format stream-json` (streaming JSON output)
+- `--verbose` (debug logging)
+- `--resume {session_id}` / `--session-id {id}` (session persistence)
+- `--append-system-prompt` (dynamic system prompt injection)
+- `--allowedTools` / `--disallowedTools` (channel-mode-based permissions)
+
+Tool permissions vary by channel mode:
+- **"chat" mode**: Read, WebSearch, WebFetch, limited Bash, Edit/Write restricted to own channel folder
+- **"full" mode**: All tools except Edit/Write to `/app/**` files
+
+### Journal System
+
+Per-channel journal at `/data/wendy/channels/{name}/journal/`:
+- Auto-nudges Wendy to write entries every `JOURNAL_NUDGE_INTERVAL` invocations (default 10)
+- Tracked via invocation counter in state manager
+- Stop hook (`config/hooks/journal_stop_check.sh`) checks journal before CLI exits
 
 ### Background Task System (Beads)
 
@@ -106,6 +165,14 @@ Unified via `notifications` table in SQLite:
 - **Readers**: bot (`watch_notifications` loop), proxy (task updates for Claude)
 - Separate `seen_by_wendy` and `seen_by_proxy` flags for independent processing
 - Synthetic messages (ID >= 9e18) are one-time: shown to Claude once then deleted from `message_history`
+
+### File Analysis (Gemini)
+
+The `/api/analyze_file` endpoint uses Gemini for multimodal analysis:
+- Supports images, audio (max 30min), and video (max 5min, 20MB)
+- Model selection: `gemini-2.5-pro` for video, `gemini-3-pro-preview` for other media
+- Video resolution auto-scaled based on duration to manage tokens
+- Requires `GEMINI_API_KEY` env var
 
 ## Important Gotchas
 
@@ -127,13 +194,16 @@ The codebase uses shorthand model names mapped to explicit IDs in `claude_cli.py
 
 `SENSITIVE_ENV_VARS` in `claude_cli.py` lists vars filtered from Claude CLI subprocess (DISCORD_TOKEN, API keys, etc). Claude uses proxy API instead of direct Discord access.
 
-### Claude Settings Hook
+### Claude Settings Hooks
 
-`config/claude_settings.json` blocks the Task tool via a PreToolUse hook, forcing Wendy to use beads (`bd`) for background tasks instead.
+`config/claude_settings.json` defines three hooks:
+- **PreToolUse (Task)**: Blocks the Task tool, forces Wendy to use beads (`bd`) instead
+- **PostToolUse (Read)**: Reminds about `analyze_file` after Read tool (for media files)
+- **Stop**: Checks journal before stopping (`journal_stop_check.sh`)
 
 ### Path Module
 
-All filesystem paths are centralized in `bot/paths.py`. Use its functions (`channel_dir()`, `beads_dir()`, `session_dir()`, etc.) instead of constructing paths manually.
+All filesystem paths are centralized in `bot/paths.py`. Use its functions (`channel_dir()`, `beads_dir()`, `session_dir()`, `journal_dir()`, etc.) instead of constructing paths manually.
 
 ## Channel Configuration
 
@@ -146,7 +216,7 @@ Channels are configured via `WENDY_CHANNEL_CONFIG` env var (JSON array):
 ]
 ```
 
-- `mode`: `"full"` (coding capabilities) or `"chat"` (restricted file access). Affects `--allowedTools`/`--disallowedTools` passed to Claude CLI.
+- `mode`: `"full"` (coding capabilities) or `"chat"` (restricted file access)
 - `model`: Override model shorthand (`"opus"`, `"haiku"`, or default `"sonnet"`)
 - `beads_enabled`: Enable background task queue for this channel
 - Webhook messages use the channel's configured model (same as regular messages)
@@ -159,7 +229,11 @@ Channels are configured via `WENDY_CHANNEL_CONFIG` env var (JSON array):
 - `WENDY_DB_PATH` - SQLite database path (default: `/data/wendy/shared/wendy.db`)
 - `SYSTEM_PROMPT_FILE` - Path to system prompt (default: `/app/config/system_prompt.txt`)
 - `CLAUDE_CLI_TIMEOUT` - Max seconds for CLI response (default: 300)
+- `JOURNAL_NUDGE_INTERVAL` - Invocations between journal nudges (default: 10)
 - `MESSAGE_LOGGER_GUILDS` - Comma-separated guild IDs for message archival
+
+### Proxy Service
+- `GEMINI_API_KEY` - Google Gemini API key for `/api/analyze_file`
 
 ### Orchestrator
 - `ORCHESTRATOR_CONCURRENCY` - Max concurrent agents (default: 1)
@@ -221,12 +295,6 @@ ssh ubuntu@100.120.250.100 "docker exec wendy-bot ls -lt /root/.claude/projects/
 
 # Search for specific patterns in the active session
 ssh ubuntu@100.120.250.100 "docker exec wendy-bot grep -c 'pattern' /root/.claude/projects/-data-wendy-channels-{CHANNEL}/{SESSION_ID}.jsonl"
-
-# Extract tool use patterns (e.g. image reads vs analyze_file)
-ssh ubuntu@100.120.250.100 "docker exec wendy-bot grep 'analyze_file\|\.jpg\|\.png' /root/.claude/projects/-data-wendy-channels-{CHANNEL}/{SESSION_ID}.jsonl | tail -30"
-
-# Check if a hook script exists in the running container
-ssh ubuntu@100.120.250.100 "docker exec wendy-bot cat /app/config/hooks/remind_analyze_file.sh"
 
 # Check the active claude_settings.json in the container
 ssh ubuntu@100.120.250.100 "docker exec wendy-bot cat /app/config/claude_settings.json"
