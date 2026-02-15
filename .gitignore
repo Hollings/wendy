@@ -2,6 +2,9 @@
 .env
 **/deploy/.env
 
+# Claude Code local secrets
+.claude/
+
 # Python
 __pycache__/
 *.py[cod]

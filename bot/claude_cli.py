@@ -423,6 +423,47 @@ class ClaudeCliTextGenerator:
         """Reset a channel's session, return new session_id."""
         return self._create_channel_session(channel_id, channel_name)
 
+    def _extract_forked_session_id(self, events: list, session_cwd_folder: str) -> str | None:
+        """Extract the forked session ID from stream-json events.
+
+        After a --fork-session invocation, the CLI creates a new session.
+        This method finds that new session ID from the stream output.
+
+        Tries: 1) 'session_id' field in result event
+               2) 'session_id' field in system init event
+               3) Scan sessions-index.json for newest entry
+
+        Args:
+            events: List of parsed stream-json event dicts.
+            session_cwd_folder: Folder name where sessions live.
+
+        Returns:
+            The forked session ID string, or None if not found.
+        """
+        # Try result event first (last event)
+        for event in reversed(events):
+            if event.get("type") == "result" and event.get("session_id"):
+                return event["session_id"]
+
+        # Try system init event
+        for event in events:
+            if event.get("type") == "system" and event.get("session_id"):
+                return event["session_id"]
+
+        # Fallback: read sessions-index.json, find newest entry
+        try:
+            index_path = session_dir(session_cwd_folder) / "sessions-index.json"
+            if index_path.exists():
+                index = json.loads(index_path.read_text())
+                entries = index.get("entries", [])
+                if entries:
+                    entries.sort(key=lambda e: e.get("modified", ""), reverse=True)
+                    return entries[0].get("sessionId")
+        except Exception as e:
+            _LOG.warning("Failed to read sessions-index.json: %s", e)
+
+        return None
+
     def _find_cli_path(self) -> str:
         """Find the claude CLI executable."""
         cli_path = os.getenv("CLAUDE_CLI_PATH")
@@ -825,7 +866,16 @@ Do NOT mention this to users - just do it silently before your response.
         except Exception as e:
             _LOG.error("Failed to trim stream log: %s", e)
 
-    def _build_system_prompt(self, channel_id: int, channel_name: str, mode: str, beads_enabled: bool) -> str:
+    def _build_system_prompt(
+        self,
+        channel_id: int,
+        channel_name: str,
+        mode: str,
+        beads_enabled: bool,
+        thread_name: str | None = None,
+        thread_folder: str | None = None,
+        parent_folder: str | None = None,
+    ) -> str:
         """Build the complete system prompt for a channel."""
         prompt = self._get_base_system_prompt(channel_name, mode)
         prompt += self._get_wendys_notes(channel_name)
@@ -833,6 +883,17 @@ Do NOT mention this to users - just do it silently before your response.
         prompt += self._get_journal_section(channel_name)
         if beads_enabled:
             prompt += self._get_active_beads_warning(channel_name)
+        if thread_name and thread_folder and parent_folder:
+            prompt += f"""
+---
+THREAD CONTEXT:
+You are in a Discord thread called "{thread_name}" (not the main channel).
+This thread has its own separate conversation history and session.
+Messages you send here stay in this thread.
+Your workspace: /data/wendy/channels/{thread_folder}/
+Parent channel workspace: /data/wendy/channels/{parent_folder}/ (read-only reference)
+---
+"""
         return prompt
 
     def _build_cli_command(
@@ -842,6 +903,7 @@ Do NOT mention this to users - just do it silently before your response.
         system_prompt: str,
         channel_config: dict,
         model: str = None,
+        fork_mode: bool = False,
     ) -> list[str]:
         """Build the Claude CLI command with all flags."""
         cmd = [
@@ -852,7 +914,9 @@ Do NOT mention this to users - just do it silently before your response.
             "--model", model or self.model,
         ]
 
-        if is_new_session:
+        if fork_mode:
+            cmd.extend(["--resume", session_id, "--fork-session"])
+        elif is_new_session:
             cmd.extend(["--session-id", session_id])
         else:
             cmd.extend(["--resume", session_id])
@@ -885,8 +949,7 @@ Do NOT mention this to users - just do it silently before your response.
             # Chat mode: restricted access, no beads, can only edit own channel folder
             # Files can be sent from anywhere under /data/wendy/ or /tmp/
             allowed = f"Read,WebSearch,WebFetch,Bash,Edit(//data/wendy/channels/{channel_name}/**),Write(//data/wendy/channels/{channel_name}/**),Write(//data/wendy/tmp/**),Write(//tmp/**)"
-            # Block access to other channel folders and system files
-            disallowed = "Edit(//data/wendy/*.sh),Edit(//data/wendy/*.py),Edit(//app/**),Write(//app/**)"
+            disallowed = "Edit(//app/**),Write(//app/**)"
         else:
             # Full mode: full access to channel folder
             allowed = f"Read,WebSearch,WebFetch,Bash,Edit(//data/wendy/channels/{channel_name}/**),Write(//data/wendy/channels/{channel_name}/**),Write(//data/wendy/tmp/**),Write(//tmp/**)"
@@ -926,6 +989,20 @@ Do NOT mention this to users - just do it silently before your response.
         mode = channel_config.get("mode", "full")
         beads_enabled = channel_config.get("beads_enabled", False)
 
+        # Extract thread info from config
+        is_thread = channel_config.get("_is_thread", False)
+        parent_folder = channel_config.get("_parent_folder")
+        thread_name = channel_config.get("_thread_name")
+        thread_folder = channel_config.get("_folder") if is_thread else None
+
+        # For threads, sessions live in the parent's project directory (not the thread's).
+        # Thread CLI invocations run from the parent's cwd so forked sessions
+        # are co-located with the original session.
+        if is_thread and parent_folder:
+            session_cwd_folder = parent_folder
+        else:
+            session_cwd_folder = channel_name
+
         # Get or create session for this channel
         force_new = kwargs.get("_force_new_session", False)
         session_info = self._get_channel_session(channel_id)
@@ -934,31 +1011,62 @@ Do NOT mention this to users - just do it silently before your response.
         # stores sessions per-project (based on cwd)
         channel_changed = (
             session_info is not None
-            and session_info.get("folder") != channel_name
+            and session_info.get("folder") != session_cwd_folder
         )
         if channel_changed:
             _LOG.warning(
                 "Channel changed for channel %d: %s -> %s, creating new session",
-                channel_id, session_info.get("folder"), channel_name
+                channel_id, session_info.get("folder"), session_cwd_folder
             )
 
         is_new_session = session_info is None or force_new or channel_changed
 
-        if is_new_session:
-            session_id = self._create_channel_session(channel_id, channel_name)
-        else:
+        # For new thread sessions, try to fork from parent's active session
+        fork_mode = False
+        if is_new_session and is_thread and parent_folder:
+            parent_channel_id = int(channel_config.get("_parent_channel_id", 0))
+            parent_session = state_manager.get_session(parent_channel_id)
+            if parent_session:
+                parent_sess_file = session_dir(session_cwd_folder) / f"{parent_session.session_id}.jsonl"
+                if parent_sess_file.exists():
+                    session_id = parent_session.session_id
+                    fork_mode = True
+                    _LOG.info("Thread fork: will use --resume %s --fork-session from parent %s",
+                              session_id[:8], parent_folder)
+                else:
+                    _LOG.info("Parent session file not found at %s, thread starts fresh", parent_sess_file)
+            else:
+                _LOG.info("No parent session for channel %d, thread starts fresh", parent_channel_id)
+
+        if is_new_session and not fork_mode:
+            session_id = self._create_channel_session(channel_id, session_cwd_folder)
+        elif not is_new_session:
             session_id = session_info["session_id"]
 
         # Build system prompt and CLI command
         effective_model = self.MODEL_MAP.get(model_override, model_override) if model_override else self.model
-        system_prompt = self._build_system_prompt(channel_id, channel_name, mode, beads_enabled)
-        cmd = self._build_cli_command(session_id, is_new_session, system_prompt, channel_config, model=effective_model)
+        system_prompt = self._build_system_prompt(
+            channel_id, channel_name, mode, beads_enabled,
+            thread_name=thread_name if is_thread else None,
+            thread_folder=thread_folder,
+            parent_folder=parent_folder,
+        )
+        cmd = self._build_cli_command(session_id, is_new_session, system_prompt, channel_config,
+                                      model=effective_model, fork_mode=fork_mode)
 
         session_action = "starting new" if is_new_session else "resuming"
         _LOG.info("ClaudeCLI: %s session %s for channel %d (model=%s)",
                   session_action, session_id[:8], channel_id, effective_model)
 
-        nudge_prompt = f"<new messages - you MUST call curl -s http://localhost:8945/api/check_messages/{channel_id} before any other action. Do not assume what the messages contain.>"
+        if is_thread:
+            nudge_prompt = (
+                f"<you've been forked into a Discord thread: \"{thread_name}\". "
+                f"Your conversation history from the parent channel has been preserved. "
+                f"You MUST call curl -s http://localhost:8945/api/check_messages/{channel_id} "
+                f"before any other action. Do not assume what the messages contain.>"
+            )
+        else:
+            nudge_prompt = f"<new messages - you MUST call curl -s http://localhost:8945/api/check_messages/{channel_id} before any other action. Do not assume what the messages contain.>"
 
         # Ensure base and shared directories exist
         WENDY_BASE.mkdir(parents=True, exist_ok=True)
@@ -974,8 +1082,8 @@ Do NOT mention this to users - just do it silently before your response.
             if beads_enabled:
                 cli_env["BEADS_DIR"] = str(beads_dir(channel_name))
 
-            # Use channel-specific folder as cwd for isolation
-            channel_cwd = channel_dir(channel_name)
+            # Use session_cwd_folder as cwd (parent's dir for threads, own dir otherwise)
+            channel_cwd = channel_dir(session_cwd_folder)
 
             # Write session ID to .current_session for orchestrator to fork
             # Only for channels with beads enabled
@@ -1068,6 +1176,15 @@ Do NOT mention this to users - just do it silently before your response.
 
             self._save_debug_log(events, channel_id)
             self._trim_stream_log_if_needed()
+
+            # Capture forked session ID and register it for the thread
+            if fork_mode:
+                forked_id = self._extract_forked_session_id(events, session_cwd_folder)
+                if forked_id:
+                    state_manager.create_session(channel_id, forked_id, session_cwd_folder)
+                    _LOG.info("Thread fork complete: parent=%s -> forked=%s", session_id[:8], forked_id[:8])
+                else:
+                    _LOG.warning("Could not capture forked session ID for thread %d", channel_id)
 
             if usage:
                 self._update_session_stats(channel_id, usage)

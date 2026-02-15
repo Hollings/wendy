@@ -286,6 +286,14 @@ class StateManager:
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
 
+            -- Thread registry (maps thread IDs to parent channels and folder names)
+            CREATE TABLE IF NOT EXISTS thread_registry (
+                thread_id INTEGER PRIMARY KEY,
+                parent_channel_id INTEGER NOT NULL,
+                folder_name TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
             -- Indexes for notifications table
             CREATE INDEX IF NOT EXISTS idx_notifications_unseen_wendy
                 ON notifications(seen_by_wendy) WHERE seen_by_wendy = 0;
@@ -933,6 +941,48 @@ class StateManager:
         conn = self._get_conn()
         rows = conn.execute("SELECT key, value FROM usage_state").fetchall()
         return {row["key"]: row["value"] for row in rows}
+
+    # =========================================================================
+    # Thread Registry
+    # =========================================================================
+
+    def register_thread(self, thread_id: int, parent_channel_id: int, folder_name: str) -> None:
+        """Register a thread -> parent mapping. INSERT OR IGNORE for race safety.
+
+        Args:
+            thread_id: Discord thread channel ID.
+            parent_channel_id: Discord parent channel ID.
+            folder_name: Folder name for the thread workspace.
+        """
+        conn = self._get_conn()
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO thread_registry (thread_id, parent_channel_id, folder_name)
+            VALUES (?, ?, ?)
+            """,
+            (thread_id, parent_channel_id, folder_name)
+        )
+        conn.commit()
+        _LOG.info(
+            "Registered thread %d -> parent %d (folder=%s)",
+            thread_id, parent_channel_id, folder_name
+        )
+
+    def get_thread_folder(self, thread_id: int) -> str | None:
+        """Look up folder_name for a thread_id.
+
+        Args:
+            thread_id: Discord thread channel ID.
+
+        Returns:
+            Folder name if registered, None otherwise.
+        """
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT folder_name FROM thread_registry WHERE thread_id = ?",
+            (thread_id,)
+        ).fetchone()
+        return row["folder_name"] if row else None
 
     # =========================================================================
     # Migration Helpers

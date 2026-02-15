@@ -264,9 +264,17 @@ class WendyOutbox(commands.Cog):
 
             channel = self.bot.get_channel(channel_id)
             if not channel:
-                _LOG.warning("Channel %s not found, skipping message", channel_id)
-                outbox_file.unlink()
-                return
+                # Thread channels may not be cached - try fetching from API
+                try:
+                    channel = await self.bot.fetch_channel(channel_id)
+                except (discord.NotFound, discord.Forbidden):
+                    _LOG.warning("Channel %s not found or inaccessible, skipping message", channel_id)
+                    outbox_file.unlink()
+                    return
+                except discord.HTTPException as e:
+                    _LOG.warning("Failed to fetch channel %s: %s, skipping message", channel_id, e)
+                    outbox_file.unlink()
+                    return
 
             if "actions" in data:
                 await self._process_actions(channel, data["actions"], outbox_file.name)

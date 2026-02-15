@@ -221,6 +221,14 @@ class MessageLoggerCog(commands.Cog):
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 );
 
+                -- Thread registry (maps thread IDs to parent channels and folder names)
+                CREATE TABLE IF NOT EXISTS thread_registry (
+                    thread_id INTEGER PRIMARY KEY,
+                    parent_channel_id INTEGER NOT NULL,
+                    folder_name TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
                 -- Indexes for notifications table
                 CREATE INDEX IF NOT EXISTS idx_notifications_unseen_wendy
                     ON notifications(seen_by_wendy) WHERE seen_by_wendy = 0;

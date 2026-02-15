@@ -28,6 +28,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 from pathlib import Path
 
 import discord
@@ -37,6 +38,8 @@ from .claude_cli import ClaudeCliError, ClaudeCliTextGenerator
 from .paths import (
     DB_PATH,
     attachments_dir,
+    claude_md_path,
+    ensure_channel_dirs,
     ensure_shared_dirs,
     validate_channel_name,
 )
@@ -287,6 +290,14 @@ class WendyCog(commands.Cog):
         # Check channel whitelist and get config
         if not self._channel_allowed(message):
             return
+
+        # Resolve thread config if this is a thread of a whitelisted channel
+        if message.channel.id not in self.channel_configs:
+            thread_config = self._resolve_thread_config(message)
+            if thread_config:
+                self.channel_configs[message.channel.id] = thread_config
+                self._setup_thread_directory(thread_config)
+
         channel_config = self.channel_configs.get(message.channel.id, {})
         channel_name = channel_config.get("_folder") or channel_config.get("name", "default")
 
@@ -336,7 +347,8 @@ class WendyCog(commands.Cog):
 
         Allows message if:
         - Bot is directly mentioned (any channel), OR
-        - Channel is in the whitelist
+        - Channel is in the whitelist, OR
+        - Channel is a thread whose parent is in the whitelist
 
         Args:
             message: Discord message to check.
@@ -351,7 +363,14 @@ class WendyCog(commands.Cog):
         # Check whitelist
         if not self.whitelist_channels:
             return False
-        return message.channel.id in self.whitelist_channels
+        if message.channel.id in self.whitelist_channels:
+            return True
+
+        # Check if this is a thread of a whitelisted channel
+        if isinstance(message.channel, discord.Thread):
+            return message.channel.parent_id in self.whitelist_channels
+
+        return False
 
     async def _should_respond(self, message: discord.Message) -> bool:
         """Determine if bot should actively respond to this message.
@@ -367,7 +386,90 @@ class WendyCog(commands.Cog):
             return True
 
         # Respond in whitelisted channels
-        return message.channel.id in self.whitelist_channels
+        if message.channel.id in self.whitelist_channels:
+            return True
+
+        # Respond in threads of whitelisted channels
+        if isinstance(message.channel, discord.Thread):
+            return message.channel.parent_id in self.whitelist_channels
+
+        return False
+
+    def _resolve_thread_config(self, message: discord.Message) -> dict | None:
+        """Resolve thread configuration from parent channel config.
+
+        If the message is in a Discord thread whose parent is a whitelisted
+        channel, builds a config dict for the thread inheriting the parent's
+        mode, model, and beads_enabled settings.
+
+        Args:
+            message: Discord message to check.
+
+        Returns:
+            Thread config dict, or None if not a thread of a configured parent.
+        """
+        if not isinstance(message.channel, discord.Thread):
+            return None
+
+        parent_id = message.channel.parent_id
+        parent_config = self.channel_configs.get(parent_id)
+        if not parent_config:
+            return None
+
+        parent_folder = parent_config.get("_folder") or parent_config.get("name", "default")
+        thread_id = message.channel.id
+        folder_name = f"{parent_folder}_t_{thread_id}"
+        thread_name = message.channel.name or "unknown-thread"
+
+        config = {
+            "id": str(thread_id),
+            "name": thread_name,
+            "mode": parent_config.get("mode", "chat"),
+            "model": parent_config.get("model"),
+            "beads_enabled": parent_config.get("beads_enabled", False),
+            "_folder": folder_name,
+            "_is_thread": True,
+            "_parent_folder": parent_folder,
+            "_parent_channel_id": parent_id,
+            "_thread_name": thread_name,
+        }
+
+        # Register in SQLite for proxy access
+        state_manager.register_thread(thread_id, parent_id, folder_name)
+
+        _LOG.info(
+            "Resolved thread config: thread=%d parent=%d folder=%s",
+            thread_id, parent_id, folder_name,
+        )
+        return config
+
+    def _setup_thread_directory(self, thread_config: dict) -> None:
+        """Set up the workspace directory for a new thread.
+
+        Creates channel dirs and copies parent's CLAUDE.md on first creation.
+        Session forking happens lazily in generate() via --fork-session.
+
+        Args:
+            thread_config: Thread config dict from _resolve_thread_config().
+        """
+        from .paths import channel_dir
+
+        folder_name = thread_config["_folder"]
+        parent_folder = thread_config["_parent_folder"]
+        beads_enabled = thread_config.get("beads_enabled", False)
+
+        thread_dir = channel_dir(folder_name)
+        is_new = not thread_dir.exists()
+
+        ensure_channel_dirs(folder_name, beads_enabled=beads_enabled)
+
+        if is_new:
+            # Copy parent's CLAUDE.md
+            parent_md = claude_md_path(parent_folder)
+            thread_md = claude_md_path(folder_name)
+            if parent_md.exists() and not thread_md.exists():
+                shutil.copy2(parent_md, thread_md)
+                _LOG.info("Copied CLAUDE.md from %s to %s", parent_folder, folder_name)
 
     async def _generate_response(
         self, message: discord.Message, job: GenerationJob, model_override: str = None

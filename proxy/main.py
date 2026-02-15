@@ -90,11 +90,13 @@ def get_channel_name(channel_id: int) -> str | None:
     """Get channel name for a channel ID from config.
 
     Returns the channel's folder name (_folder key takes precedence over name).
+    Falls back to thread_registry for thread channel IDs.
     """
     cfg = _CHANNEL_CONFIG.get(channel_id)
-    if not cfg:
-        return None
-    return cfg.get("_folder") or cfg.get("name")
+    if cfg:
+        return cfg.get("_folder") or cfg.get("name")
+    # Thread fallback: query thread_registry table
+    return state_manager.get_thread_folder(channel_id)
 
 
 # Load config at startup

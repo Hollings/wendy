@@ -390,6 +390,17 @@ async def proxy_websocket(websocket: WebSocket, name: str):
             pass
 
 
+def _clean_proxy_headers(headers: dict) -> dict:
+    """Strip headers that conflict with the proxy's own framing.
+
+    httpx auto-decompresses gzip, so forwarding content-encoding/content-length
+    from the upstream causes mismatches (body is decompressed but headers say gzip).
+    This breaks HTTP/2 proxies like Caddy.
+    """
+    skip = {"content-encoding", "content-length", "transfer-encoding"}
+    return {k: v for k, v in headers.items() if k.lower() not in skip}
+
+
 @app.api_route("/game/{name}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def proxy_http(name: str, path: str, request: Request):
     """Proxy HTTP requests to game containers."""
@@ -407,9 +418,14 @@ async def proxy_http(name: str, path: str, request: Request):
         # Get request body
         body = await request.body()
 
-        # Forward headers (except host)
+        # Forward headers, but strip hop-by-hop and encoding headers.
+        # We must not forward accept-encoding because httpx can only
+        # decompress gzip/deflate (not brotli), so if the upstream sends
+        # brotli we'd pass through raw bytes and strip the content-encoding
+        # header, resulting in garbled output.
         headers = dict(request.headers)
         headers.pop("host", None)
+        headers.pop("accept-encoding", None)
 
         response = await client.request(
             method=request.method,
@@ -418,11 +434,12 @@ async def proxy_http(name: str, path: str, request: Request):
             content=body,
         )
 
-        # Return response
+        # Return response with cleaned headers (httpx decompresses gzip,
+        # so we must not forward the original encoding/length headers)
         return Response(
             content=response.content,
             status_code=response.status_code,
-            headers=dict(response.headers),
+            headers=_clean_proxy_headers(dict(response.headers)),
         )
 
 
@@ -437,5 +454,5 @@ async def proxy_game_root(name: str, request: Request):
         return Response(
             content=response.content,
             status_code=response.status_code,
-            headers=dict(response.headers),
+            headers=_clean_proxy_headers(dict(response.headers)),
         )

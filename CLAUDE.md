@@ -273,7 +273,8 @@ GIT_SSH_COMMAND="ssh -i ~/.ssh/id_ed25519" git push origin main
 
 ```bash
 # Test webhook for #coding channel (triggers Wendy with channel's configured model)
-curl -s -X POST https://discord.com/api/webhooks/1463041136888119513/BQ_Yn3TlVGWjo_sAj4z8VvT3B3FjoPc_jCGB_AIU1LpVG4IlZlPDQ4BNvPZr9ZhsDqoL \
+# Webhook URL is in .claude/CLAUDE.md (gitignored secrets file)
+curl -s -X POST $WENDY_TEST_WEBHOOK \
   -H "Content-Type: application/json" \
   -d '{"content":"Wendy, quick test - what is 2+2?"}'
 ```
