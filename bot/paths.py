@@ -62,6 +62,12 @@ TMP_DIR: Path = WENDY_BASE / "tmp"
 PROMPTS_DIR: Path = WENDY_BASE / "prompts"
 """Directory for dynamic context prompt files (topics, people, behavior)."""
 
+FRAGMENTS_DIR: Path = WENDY_BASE / "claude_fragments"
+"""Directory for CLAUDE.md fragment files (common and per-channel)."""
+
+FRAGMENTS_SETTINGS: Path = WENDY_BASE / "claude_fragments.json"
+"""Settings file mapping channel IDs to human-readable names."""
+
 # =============================================================================
 # Shared Resource Paths
 # =============================================================================
@@ -231,6 +237,32 @@ def attachments_dir(channel_name: str) -> Path:
     return channel_dir(channel_name) / "attachments"
 
 
+def fragments_dir() -> Path:
+    """Get the directory for CLAUDE.md fragment files.
+
+    Returns:
+        Path to the fragments directory.
+
+    Example:
+        >>> fragments_dir()
+        Path('/data/wendy/claude_fragments')
+    """
+    return FRAGMENTS_DIR
+
+
+def fragments_settings_path() -> Path:
+    """Get the path to the fragments settings JSON file.
+
+    Returns:
+        Path to the settings file.
+
+    Example:
+        >>> fragments_settings_path()
+        Path('/data/wendy/claude_fragments.json')
+    """
+    return FRAGMENTS_SETTINGS
+
+
 def journal_dir(channel_name: str) -> Path:
     """Get the journal directory for a channel.
 
@@ -281,3 +313,4 @@ def ensure_shared_dirs() -> None:
     OUTBOX_DIR.mkdir(exist_ok=True)
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+    FRAGMENTS_DIR.mkdir(parents=True, exist_ok=True)

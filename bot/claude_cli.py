@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from .context_loader import build_dynamic_context, setup_prompts_dir
+from .fragment_loader import load_fragments, setup_fragments_dir
 from .paths import (
     SHARED_DIR,
     WENDY_BASE,
@@ -153,7 +154,10 @@ Your workspace for this channel is /data/wendy/channels/{channel_name}/
 - This persists between conversations
 
 SELF-CUSTOMIZATION:
-You can edit /data/wendy/channels/{channel_name}/CLAUDE.md to customize your own behavior. Anything you write there becomes part of your system instructions on the next message. Use this to remember things, set personal preferences, or adjust how you behave. Changes take effect immediately - no restart needed.
+Your channel instructions are assembled from fragment files in /data/wendy/claude_fragments/.
+Files matching common_*.md and {channel_id}_*.md are loaded for this channel, sorted by the 2-digit order number.
+You can edit any fragment file to customize behavior. Changes take effect on the next message.
+To see available fragments: ls /data/wendy/claude_fragments/
 
 MESSAGE HISTORY DATABASE:
 You have full read access to the message history at /data/wendy/shared/wendy.db. Use query_db.py to search messages, check past conversations, or find old content.
@@ -608,6 +612,9 @@ class ClaudeCliTextGenerator:
         # Seed prompt files for dynamic context loading
         setup_prompts_dir()
 
+        # Seed fragment files for CLAUDE.md fragments
+        setup_fragments_dir()
+
         # Ensure secrets directory exists (at base level for shared access)
         secrets_dir = WENDY_BASE / "secrets"
         secrets_dir.mkdir(exist_ok=True, mode=0o700)
@@ -892,7 +899,7 @@ Do NOT mention this to users - just do it silently before your response.
         # Dynamic context: always_top (people files)
         if dynamic_context and dynamic_context.get("always_top"):
             prompt += dynamic_context["always_top"]
-        prompt += self._get_wendys_notes(channel_name)
+        prompt += load_fragments(str(channel_id), channel_name)
         prompt += self._get_tool_instructions(channel_id, channel_name)
         prompt += self._get_journal_section(channel_name)
         if beads_enabled:
@@ -966,13 +973,13 @@ Parent channel workspace: /data/wendy/channels/{parent_folder}/ (read-only refer
         channel_name = channel_config.get("_folder", channel_config.get("name", "default"))
 
         if mode == "chat":
-            # Chat mode: restricted access, no beads, can only edit own channel folder
+            # Chat mode: restricted access, no beads, can only edit own channel folder + fragments
             # Files can be sent from anywhere under /data/wendy/ or /tmp/
-            allowed = f"Read,WebSearch,WebFetch,Bash,Edit(//data/wendy/channels/{channel_name}/**),Write(//data/wendy/channels/{channel_name}/**),Write(//data/wendy/tmp/**),Write(//tmp/**)"
+            allowed = f"Read,WebSearch,WebFetch,Bash,Edit(//data/wendy/channels/{channel_name}/**),Write(//data/wendy/channels/{channel_name}/**),Edit(//data/wendy/claude_fragments/**),Write(//data/wendy/claude_fragments/**),Write(//data/wendy/tmp/**),Write(//tmp/**)"
             disallowed = "Edit(//app/**),Write(//app/**)"
         else:
-            # Full mode: full access to channel folder
-            allowed = f"Read,WebSearch,WebFetch,Bash,Edit(//data/wendy/channels/{channel_name}/**),Write(//data/wendy/channels/{channel_name}/**),Write(//data/wendy/tmp/**),Write(//tmp/**)"
+            # Full mode: full access to channel folder + fragments
+            allowed = f"Read,WebSearch,WebFetch,Bash,Edit(//data/wendy/channels/{channel_name}/**),Write(//data/wendy/channels/{channel_name}/**),Edit(//data/wendy/claude_fragments/**),Write(//data/wendy/claude_fragments/**),Write(//data/wendy/tmp/**),Write(//tmp/**)"
             disallowed = "Edit(//app/**),Write(//app/**)"
 
         # Dev mode: add access to dev-repo and remove all restrictions

@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**See also:** [`CONTRIBUTING.md`](CONTRIBUTING.md) for rules on configuration, module dependencies, and anti-patterns.
+
 ## Overview
 
 Wendy is a Discord bot powered by Claude Code CLI. She runs as multiple Docker services on an Orange Pi home server, using the Claude Code subscription (not API credits) for LLM inference.
@@ -24,6 +26,9 @@ ruff check --fix .
 ```
 
 CI runs lint (ruff) and tests (pytest with Python 3.11) on push/PR to main via `.github/workflows/test.yml`.
+
+Ruff config in `pyproject.toml`: line-length 120, rules E/W/F/I/B/UP, ignores E501/B008/B905, relaxed for tests.
+Pytest uses `asyncio_mode = "auto"` (no need for `@pytest.mark.asyncio` decorators).
 
 ## Architecture
 
@@ -63,15 +68,17 @@ Bot, proxy, and orchestrator share a single Dockerfile and two external Docker v
 
 | Module | Key File(s) | Responsibility |
 |--------|-------------|----------------|
-| `bot/claude_cli.py` | ~1200 lines | Spawns Claude CLI, manages sessions, handles streaming output |
-| `bot/wendy_cog.py` | ~750 lines | Discord event handling, message routing, attachment saving |
+| `bot/claude_cli.py` | ~1300 lines | Spawns Claude CLI, manages sessions, handles streaming output |
+| `bot/wendy_cog.py` | ~850 lines | Discord event handling, message routing, attachment saving |
 | `bot/wendy_outbox.py` | ~450 lines | Watches outbox dir, sends messages/reactions to Discord |
-| `bot/state_manager.py` | ~1000 lines | Unified SQLite state (sessions, last_seen, notifications, usage) |
+| `bot/state_manager.py` | ~1100 lines | Unified SQLite state (sessions, last_seen, notifications, usage) |
 | `bot/message_logger.py` | ~400 lines | Message caching and archival |
+| `bot/context_loader.py` | ~310 lines | Dynamic context loading - selects topic files based on recent messages |
+| `bot/fragment_loader.py` | ~130 lines | Fragment-based CLAUDE.md loader - scans, sorts, assembles per-channel fragments |
 | `bot/paths.py` | Centralized paths | All filesystem paths - use this instead of constructing paths manually |
 | `bot/conversation.py` | Data structures | Conversation/message dataclasses |
 | `proxy/main.py` | ~1400 lines | FastAPI proxy: all API endpoints |
-| `orchestrator/main.py` | ~1200 lines | Background task polling, agent spawning, usage monitoring |
+| `orchestrator/main.py` | ~1170 lines | Background task polling, agent spawning, usage monitoring |
 
 ### Proxy API Endpoints
 
@@ -108,18 +115,37 @@ Prevents stale replies when users send messages while Wendy is thinking:
 /data/wendy/
 +-- channels/              # Per-channel workspaces (cwd for Claude CLI)
 |   +-- {name}/            # Each channel gets isolated workspace
-|       +-- CLAUDE.md      # Wendy's self-editable notes (loaded as system prompt)
+|       +-- CLAUDE.md      # Legacy self-notes (deprecated, migrating to fragments)
 |       +-- attachments/   # Downloaded Discord files (per-channel isolation)
 |       +-- journal/       # Long-term memory entries (auto-nudged)
 |       +-- .claude/       # Claude Code settings (hooks config)
 |       +-- .beads/        # Task queue (only if beads_enabled)
 |       +-- .current_session  # Session ID for agent forking
++-- claude_fragments/      # CLAUDE.md fragment files (seeded from config/claude_fragments/)
+|   +-- common_01_base.md  # Loaded for ALL channels, order 1
+|   +-- {channel_id}_50_self_notes.md  # Per-channel fragments
++-- claude_fragments.json  # Channel ID -> name mapping (reference only)
 +-- shared/
 |   +-- outbox/            # Message queue to Discord
 |   +-- wendy.db           # SQLite database (all state)
++-- prompts/               # Dynamic topic files (seeded from config/prompts/, editable)
+|   +-- manifest.json      # Topic definitions with descriptions and keywords
+|   +-- people/            # Per-person context files (always loaded)
+|   +-- behavior.md        # Behavioral anchors (always loaded)
+|   +-- runescape.md       # Topic files (loaded when relevant)
++-- secrets/
+|   +-- runtime.json       # Runtime secrets (writable by Wendy)
 +-- stream.jsonl           # Rolling log of Claude CLI events (max 5000 lines)
 +-- tmp/                   # Scratch space
 ```
+
+### Thread Support
+
+Discord threads get their own isolated workspace:
+- Thread registry tracked in SQLite (`thread_registry` table in `state_manager.py`)
+- `register_thread(thread_id, parent_channel_id, folder_name)` creates the mapping
+- `get_thread_folder(thread_id)` returns the folder name (pattern: `{parent_channel}_t_{thread_id}`)
+- Threads inherit their parent channel's config (mode, model, beads_enabled)
 
 ### Session Management
 
@@ -141,6 +167,33 @@ Key flags passed to the `claude` subprocess:
 Tool permissions vary by channel mode:
 - **"chat" mode**: Read, WebSearch, WebFetch, limited Bash, Edit/Write restricted to own channel folder
 - **"full" mode**: All tools except Edit/Write to `/app/**` files
+
+### Dynamic Context Loading (Topic System)
+
+`bot/context_loader.py` builds topic-aware system prompts per invocation:
+1. Reads recent messages from SQLite (no proxy call, no `last_seen` side effects)
+2. Uses Haiku CLI call (15s timeout) to semantically select relevant topic files from `config/prompts/manifest.json`
+3. Falls back to keyword matching if Haiku returns nothing
+4. Assembles three sections: `always_top` (people files) + selected `topics` + `always_bottom` (behavioral anchors)
+
+Topic files live in `config/prompts/` and are seeded to `/data/wendy/prompts/` at startup. The manifest defines available topics with descriptions and keyword lists. Wendy can edit her copies at runtime (the `/data/wendy/prompts/` copies, not the `/app/config/` originals).
+
+### Fragment System (CLAUDE.md Fragments)
+
+`bot/fragment_loader.py` replaces the monolithic per-channel CLAUDE.md with named fragments:
+
+**Filename convention:** `{identifier}_{order}_{title}.md`
+- `identifier`: `common` (all channels) or a numeric Discord channel ID
+- `order`: Zero-padded 2-digit number (01-99) for sorting
+- `title`: Underscore-separated description
+
+**Loading:** Given a channel ID, scans `/data/wendy/claude_fragments/` for `common_*.md` and `{channel_id}_*.md`, sorts by order number, concatenates with separators. Common and channel-specific fragments interleave by order.
+
+**Seeding:** `config/claude_fragments/` is copied to `/data/wendy/claude_fragments/` at startup (same pattern as prompts -- never overwrites existing files).
+
+**Settings:** `config/claude_fragments.json` maps channel IDs to human-readable names for reference. The loader doesn't need this file; it receives channel_id from the existing code path.
+
+**Backward compat:** Legacy per-channel `CLAUDE.md` files are still loaded after fragments. If the old file has content, it's appended with a "LEGACY NOTES" label.
 
 ### Journal System
 
@@ -178,10 +231,11 @@ The `/api/analyze_file` endpoint uses Gemini for multimodal analysis:
 
 ### Duplicate Schema Definition
 
-The SQLite schema is defined in **3 places** that must stay in sync:
+The SQLite schema is defined in **4 places** that must stay in sync:
 1. `bot/state_manager.py:_init_schema()` - **primary source of truth**
 2. `bot/message_logger.py:_init_db()` - copy for startup ordering
-3. `wendy-sites/backend/main.py` - notifications only, separate container
+3. `proxy/main.py` - thread_registry and other tables
+4. `wendy-sites/backend/main.py` - notifications only, separate container
 
 ### Model IDs
 
@@ -196,14 +250,21 @@ The codebase uses shorthand model names mapped to explicit IDs in `claude_cli.py
 
 ### Claude Settings Hooks
 
-`config/claude_settings.json` defines three hooks:
+`config/claude_settings.json` defines three hooks (mounted read-only at `/app/config/` in the container):
 - **PreToolUse (Task)**: Blocks the Task tool, forces Wendy to use beads (`bd`) instead
-- **PostToolUse (Read)**: Reminds about `analyze_file` after Read tool (for media files)
-- **Stop**: Checks journal before stopping (`journal_stop_check.sh`)
+- **PostToolUse (Read)**: `hooks/remind_analyze_file.sh` - reminds about `analyze_file` after Read tool (for media files)
+- **Stop**: `hooks/journal_stop_check.sh` - checks journal before CLI exits
+
+Additional config files:
+- `config/agent_claude_md.txt` - Reference info for background agents (project templates, deployment notes)
+- `config/BD_USAGE.md` - Beads task system documentation (referenced by system prompt)
+- `config/prompts/` - Dynamic topic files and manifest (see Dynamic Context Loading above)
+- `config/claude_fragments/` - CLAUDE.md fragment files (seeded to `/data/wendy/claude_fragments/`)
+- `config/claude_fragments.json` - Channel ID to name mapping (reference for fragment files)
 
 ### Path Module
 
-All filesystem paths are centralized in `bot/paths.py`. Use its functions (`channel_dir()`, `beads_dir()`, `session_dir()`, `journal_dir()`, etc.) instead of constructing paths manually.
+All filesystem paths are centralized in `bot/paths.py`. Use its functions (`channel_dir()`, `beads_dir()`, `session_dir()`, `journal_dir()`, `attachments_dir()`, `claude_md_path()`, `current_session_file()`, `fragments_dir()`, `fragments_settings_path()`, etc.) instead of constructing paths manually. Also includes `validate_channel_name()` for folder safety and `ensure_channel_dirs()` / `ensure_shared_dirs()` for directory setup.
 
 ## Channel Configuration
 
@@ -236,10 +297,24 @@ Channels are configured via `WENDY_CHANNEL_CONFIG` env var (JSON array):
 - `GEMINI_API_KEY` - Google Gemini API key for `/api/analyze_file`
 
 ### Orchestrator
-- `ORCHESTRATOR_CONCURRENCY` - Max concurrent agents (default: 1)
+- `ORCHESTRATOR_CONCURRENCY` - Max concurrent agents (default: 1, prod: 3)
 - `ORCHESTRATOR_POLL_INTERVAL` - Seconds between task checks (default: 30)
 - `ORCHESTRATOR_AGENT_TIMEOUT` - Max agent runtime in seconds (default: 1800)
 - `ORCHESTRATOR_NOTIFY_CHANNEL` - Discord channel for task notifications
+- `AGENT_SYSTEM_PROMPT_FILE` - Path to agent reference file (default: `/app/config/agent_claude_md.txt`)
+
+### Claude Sync Integration
+- `CLAUDE_SYNC_KEY` - Auth key for claude-sync service
+- `CLAUDE_SYNC_URL` - URL for claude-sync service
+- `CLAUDE_MACHINE_ID` - Machine identifier (`wendy-bot` or `wendy-orchestrator`)
+
+## Dependencies
+
+Each module has its own `requirements.txt` installed in the shared Dockerfile:
+- `bot/requirements.txt` - `discord.py>=2.3.0`
+- `proxy/requirements.txt` - FastAPI, uvicorn, httpx, pydantic, python-multipart
+- `orchestrator/requirements.txt` - Minimal (stdlib only, but needs beads CLI in container)
+- `pyproject.toml` - Central config for ruff + pytest (dev/test deps only)
 
 ## Secrets Management
 

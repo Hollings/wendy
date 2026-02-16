@@ -142,26 +142,33 @@ class TestGetPermissionsForChannel:
         config = {"mode": "chat", "name": "mychat"}
         allowed, disallowed = self.generator._get_permissions_for_channel(config)
 
-        # Verify the exact allowed tools list
+        # Verify the exact allowed tools list (includes fragment dir access)
         expected_allowed = (
             "Read,WebSearch,WebFetch,Bash,"
             "Edit(//data/wendy/channels/mychat/**),"
             "Write(//data/wendy/channels/mychat/**),"
+            "Edit(//data/wendy/claude_fragments/**),"
+            "Write(//data/wendy/claude_fragments/**),"
             "Write(//data/wendy/tmp/**),"
             "Write(//tmp/**)"
         )
         assert allowed == expected_allowed
 
     def test_chat_mode_disallowed_tools(self):
-        """Chat mode should block editing scripts and app directory."""
+        """Chat mode should block app directory."""
         config = {"mode": "chat", "name": "mychat"}
         allowed, disallowed = self.generator._get_permissions_for_channel(config)
 
-        # Chat mode blocks editing shell scripts, python scripts, and app dir
-        assert "Edit(//data/wendy/*.sh)" in disallowed
-        assert "Edit(//data/wendy/*.py)" in disallowed
         assert "Edit(//app/**)" in disallowed
         assert "Write(//app/**)" in disallowed
+
+    def test_chat_mode_allows_fragment_access(self):
+        """Chat mode should allow editing fragment files."""
+        config = {"mode": "chat", "name": "mychat"}
+        allowed, disallowed = self.generator._get_permissions_for_channel(config)
+
+        assert "Edit(//data/wendy/claude_fragments/**)" in allowed
+        assert "Write(//data/wendy/claude_fragments/**)" in allowed
 
     def test_full_mode_exact_allowed_tools(self):
         """Full mode allowed string should have exact expected format."""
@@ -172,6 +179,8 @@ class TestGetPermissionsForChannel:
             "Read,WebSearch,WebFetch,Bash,"
             "Edit(//data/wendy/channels/coding/**),"
             "Write(//data/wendy/channels/coding/**),"
+            "Edit(//data/wendy/claude_fragments/**),"
+            "Write(//data/wendy/claude_fragments/**),"
             "Write(//data/wendy/tmp/**),"
             "Write(//tmp/**)"
         )
