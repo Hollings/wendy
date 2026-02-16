@@ -196,7 +196,7 @@ class DeployCog(commands.Cog):
                     content=f"Checking out `{ref}` and pulling latest..."
                 )
                 code, stdout, stderr = await self._run_shell_command(
-                    f"git checkout {ref} && git pull origin {ref} --ff-only",
+                    f"git checkout -B {ref} origin/{ref}",
                     cwd=DEV_REPO_PATH,
                 )
                 if code != 0:
