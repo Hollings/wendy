@@ -43,7 +43,7 @@ services:
       - /srv/secrets/wendy/dev-bot.env
     environment:
       - WENDY_DB_PATH=/data/wendy/shared/wendy.db
-      - WENDY_SITES_URL=http://127.0.0.1:8930
+      - WENDY_SITES_URL=http://127.0.0.1:8915
       - WENDY_GAMES_URL=http://127.0.0.1:8940
 
   orchestrator:
