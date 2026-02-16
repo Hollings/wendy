@@ -205,6 +205,12 @@ class DeployCog(commands.Cog):
                     )
                     return
 
+                # Ensure dev compose file exists (branches may predate it)
+                code, _, _ = await self._run_shell_command(
+                    "git checkout origin/main -- deploy/docker-compose.dev.yml",
+                    cwd=DEV_REPO_PATH,
+                )
+
                 # Step 3: Stop existing containers
                 await status_msg.edit(content="Stopping existing containers...")
                 code, stdout, stderr = await self._run_shell_command(
