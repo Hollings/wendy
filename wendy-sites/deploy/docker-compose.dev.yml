@@ -4,8 +4,8 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
     container_name: wendy-dev-sites
-    ports:
-      - "0.0.0.0:8915:8000"
+    network_mode: host
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8915"]
     env_file:
       - /srv/secrets/wendy/dev-sites.env
     environment:
@@ -17,7 +17,7 @@ services:
       - /var/lib/docker/volumes/wendy_dev_claude_config/_data:/data/claude:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8915/health"]
       interval: 30s
       timeout: 10s
       retries: 3
