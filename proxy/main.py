@@ -33,6 +33,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import random
 import sqlite3
 import subprocess
 import sys
@@ -505,6 +506,34 @@ SYNTHETIC_ID_THRESHOLD: int = 9_000_000_000_000_000_000
 MAX_MESSAGE_LIMIT: int = 200
 """Upper bound for limit/count parameters on check_messages."""
 
+RANDOM_EMOJIS: list[str] = [
+    "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "😇",
+    "🙂", "🙃", "😉", "😌", "😍", "🥰", "😘", "😗", "😙", "😚",
+    "😋", "😛", "😝", "😜", "🤪", "🤨", "🧐", "🤓", "😎", "🥸",
+    "🤩", "🥳", "😏", "😒", "😞", "😔", "😟", "😕", "🙁", "☹️",
+    "😣", "😖", "😫", "😩", "🥺", "😢", "😭", "😤", "😠", "😡",
+    "🤬", "🤯", "😳", "🥵", "🥶", "😱", "😨", "😰", "😥", "😓",
+    "🤗", "🤔", "🤭", "🤫", "🤥", "😶", "😐", "😑", "😬", "🙄",
+    "😯", "😦", "😧", "😮", "😲", "🥱", "😴", "🤤", "😪", "😵",
+    "🤐", "🥴", "🤢", "🤮", "🤧", "😷", "🤒", "🤕", "🤑", "🤠",
+    "👍", "👎", "👌", "✌️", "🤞", "🤟", "🤘", "🤙", "👈", "👉",
+    "🔥", "💯", "✨", "⭐", "🌟", "💫", "🎉", "🎊", "🎈", "🎁",
+]
+"""Random emojis to append to outgoing messages."""
+
+
+def _append_random_emoji(text: str) -> str:
+    """Append a random emoji to the end of a message.
+
+    Args:
+        text: Original message text.
+
+    Returns:
+        Message with random emoji appended.
+    """
+    emoji = random.choice(RANDOM_EMOJIS)
+    return f"{text} {emoji}"
+
 
 def check_for_new_messages(channel_id: int) -> list[dict]:
     """Check if new messages have arrived since last check_messages call.
@@ -651,6 +680,9 @@ async def send_message(request: SendMessageRequest) -> dict:
             for i, action in enumerate(request.actions):
                 if action.type == "send_message":
                     text = action.content or ""
+                    # Append random emoji before validation
+                    text = _append_random_emoji(text)
+                    action.content = text
                     if len(text) > DISCORD_MAX_MESSAGE_LENGTH:
                         raise HTTPException(
                             status_code=400,
@@ -681,6 +713,8 @@ async def send_message(request: SendMessageRequest) -> dict:
 
         # Single message mode
         msg_text = request.content or request.message or ""
+        # Append random emoji
+        msg_text = _append_random_emoji(msg_text)
 
         # Validate message length - Discord has a 2000 char limit
         if len(msg_text) > DISCORD_MAX_MESSAGE_LENGTH:
