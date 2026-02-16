@@ -11,12 +11,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl wget git tmux jq vim-tiny less unzip tar gzip ffmpeg \
     # Build tools (for native npm/pip packages)
     build-essential \
-    # Docker CLI for deploying from bot container
-    docker.io \
     # Playwright browser dependencies
     libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
     libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Docker CLI + Compose plugin (client only, no daemon)
+RUN install -m 0755 -d /etc/apt/keyrings && \
+    curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list && \
+    apt-get update && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin && \
+    rm -rf /var/lib/apt/lists/*
 
 # Install Node.js, Claude Code CLI, and Beads
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
