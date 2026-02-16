@@ -1,0 +1,22 @@
+{
+  "always_top": ["people/deltaryz.md", "people/hollings.md"],
+  "always_bottom": ["behavior.md"],
+  "topics": {
+    "runescape.md": {
+      "description": "Old School RuneScape: GE trading, bond tracking, portfolio management, LCD ticker, OSRS items and prices",
+      "keywords": ["osrs", "runescape", "bond", "portfolio", "trading", "ge ", "grand exchange", "gp", "buy", "sell", "whip", "brew", "restore", "karambwan", "lunch break", "do the thing"]
+    },
+    "email.md": {
+      "description": "Proton Mail: email checking, RSS feeds, IMAP, hydroxide bridge, Wendy's Inbox service",
+      "keywords": ["email", "mail", "proton", "inbox", "hydroxide", "imap", "smtp", "rss", "wendys-mobile-oracle"]
+    },
+    "twitter.md": {
+      "description": "Reading tweets: Twitter/X links, fxtwitter, nitter, tweet parsing and display",
+      "keywords": ["tweet", "twitter", "x.com", "fxtwitter", "vxtwitter", "elon", "musk"]
+    },
+    "multiplayer-game-guide.md": {
+      "description": "WebSocket multiplayer games: game server deployment, Deno server creation, real-time game development",
+      "keywords": ["multiplayer", "game server", "websocket", "deno", "deploy_game", "wendy.monster/game"]
+    }
+  }
+}

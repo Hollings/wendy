@@ -20,6 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from .context_loader import build_dynamic_context, setup_prompts_dir
 from .paths import (
     SHARED_DIR,
     WENDY_BASE,
@@ -598,6 +599,9 @@ class ClaudeCliTextGenerator:
         # Ensure shared directories exist
         ensure_shared_dirs()
 
+        # Seed prompt files for dynamic context loading
+        setup_prompts_dir()
+
         # Ensure secrets directory exists (at base level for shared access)
         secrets_dir = WENDY_BASE / "secrets"
         secrets_dir.mkdir(exist_ok=True, mode=0o700)
@@ -875,9 +879,13 @@ Do NOT mention this to users - just do it silently before your response.
         thread_name: str | None = None,
         thread_folder: str | None = None,
         parent_folder: str | None = None,
+        dynamic_context: dict[str, str] | None = None,
     ) -> str:
         """Build the complete system prompt for a channel."""
         prompt = self._get_base_system_prompt(channel_name, mode)
+        # Dynamic context: always_top (people files)
+        if dynamic_context and dynamic_context.get("always_top"):
+            prompt += dynamic_context["always_top"]
         prompt += self._get_wendys_notes(channel_name)
         prompt += self._get_tool_instructions(channel_id, channel_name)
         prompt += self._get_journal_section(channel_name)
@@ -894,6 +902,12 @@ Your workspace: /data/wendy/channels/{thread_folder}/
 Parent channel workspace: /data/wendy/channels/{parent_folder}/ (read-only reference)
 ---
 """
+        # Dynamic context: selected topics
+        if dynamic_context and dynamic_context.get("topics"):
+            prompt += dynamic_context["topics"]
+        # Dynamic context: always_bottom (behavioral anchors)
+        if dynamic_context and dynamic_context.get("always_bottom"):
+            prompt += dynamic_context["always_bottom"]
         return prompt
 
     def _build_cli_command(
@@ -1043,6 +1057,13 @@ Parent channel workspace: /data/wendy/channels/{parent_folder}/ (read-only refer
         elif not is_new_session:
             session_id = session_info["session_id"]
 
+        # Load dynamic context (topic files selected by Haiku or keywords)
+        try:
+            dynamic_context = await build_dynamic_context(channel_id, self.cli_path)
+        except Exception as e:
+            _LOG.warning("Dynamic context loading failed: %s", e)
+            dynamic_context = None
+
         # Build system prompt and CLI command
         effective_model = self.MODEL_MAP.get(model_override, model_override) if model_override else self.model
         system_prompt = self._build_system_prompt(
@@ -1050,6 +1071,7 @@ Parent channel workspace: /data/wendy/channels/{parent_folder}/ (read-only refer
             thread_name=thread_name if is_thread else None,
             thread_folder=thread_folder,
             parent_folder=parent_folder,
+            dynamic_context=dynamic_context,
         )
         cmd = self._build_cli_command(session_id, is_new_session, system_prompt, channel_config,
                                       model=effective_model, fork_mode=fork_mode)

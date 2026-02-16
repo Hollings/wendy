@@ -59,6 +59,9 @@ SHARED_DIR: Path = WENDY_BASE / "shared"
 TMP_DIR: Path = WENDY_BASE / "tmp"
 """Scratch space for temporary files."""
 
+PROMPTS_DIR: Path = WENDY_BASE / "prompts"
+"""Directory for dynamic context prompt files (topics, people, behavior)."""
+
 # =============================================================================
 # Shared Resource Paths
 # =============================================================================
@@ -277,3 +280,4 @@ def ensure_shared_dirs() -> None:
     SHARED_DIR.mkdir(parents=True, exist_ok=True)
     OUTBOX_DIR.mkdir(exist_ok=True)
     TMP_DIR.mkdir(parents=True, exist_ok=True)
+    PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
