@@ -13,6 +13,7 @@ services:
       - wendy_data:/data/wendy
       - claude_config:/root/.claude
       - /srv/secrets/wendy:/secrets:ro
+      - /srv/secrets/wendy:/srv/secrets/wendy:ro
       - /srv/wendy-bot/config:/app/config:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - /srv/wendy-bot-dev:/srv/wendy-bot-dev
