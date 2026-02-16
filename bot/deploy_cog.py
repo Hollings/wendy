@@ -108,6 +108,57 @@ class DeployCog(commands.Cog):
         )
         return proc.returncode or 0, stdout, stderr
 
+    async def _run_with_progress(
+        self, command: str, status_msg, prefix: str, cwd: str | None = None
+    ) -> tuple[int, str]:
+        """Run a shell command with live progress updates to a Discord message.
+
+        Merges stdout+stderr, reads line by line, and edits the status message
+        every 10 seconds with the latest output line.
+
+        Args:
+            command: The shell command to execute.
+            status_msg: The Discord message to edit with progress.
+            prefix: Status prefix shown before the log line.
+            cwd: Optional working directory for the command.
+
+        Returns:
+            Tuple of (return_code, full_output).
+        """
+        _LOG.info("Running with progress: %s (cwd: %s)", command, cwd or "default")
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=cwd,
+        )
+        last_update = 0.0
+        last_line = ""
+        all_output = []
+
+        while True:
+            line_bytes = await proc.stdout.readline()
+            if not line_bytes:
+                break
+            line = line_bytes.decode("utf-8", errors="replace").rstrip()
+            if line:
+                all_output.append(line)
+                last_line = line
+                now = asyncio.get_event_loop().time()
+                if now - last_update >= 10:
+                    last_update = now
+                    display_line = last_line[:120]
+                    try:
+                        await status_msg.edit(
+                            content=f"{prefix}\n```{display_line}```"
+                        )
+                    except Exception:
+                        pass
+
+        await proc.wait()
+        _LOG.info("Progress command exited with code %s", proc.returncode)
+        return proc.returncode or 0, "\n".join(all_output)
+
     async def _perform_deploy(
         self, ctx: commands.Context, ref: str
     ) -> None:
@@ -162,14 +213,18 @@ class DeployCog(commands.Cog):
                 if code != 0:
                     _LOG.warning("Docker down had non-zero exit: %s", stderr or stdout)
 
-                # Step 4: Build and start new containers
+                # Step 4: Build and start new containers (with live progress)
                 await status_msg.edit(content="Building and starting containers...")
-                code, stdout, stderr = await self._run_shell_command(
-                    f"docker compose -f {DEV_COMPOSE_FILE} -p {DEV_PROJECT_NAME} up -d --build"
+                code, output = await self._run_with_progress(
+                    f"docker compose -f {DEV_COMPOSE_FILE} -p {DEV_PROJECT_NAME} up -d --build",
+                    status_msg,
+                    "Building and starting containers...",
                 )
                 if code != 0:
+                    # Show last 500 chars of output on failure
+                    tail = output[-500:] if len(output) > 500 else output
                     await status_msg.edit(
-                        content=f"Failed to build/start: ```{stderr or stdout}```"
+                        content=f"Failed to build/start: ```{tail}```"
                     )
                     return
 
