@@ -1,0 +1,28 @@
+services:
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: wendy-dev-sites
+    ports:
+      - "0.0.0.0:8930:8000"
+    env_file:
+      - /srv/secrets/wendy/dev-sites.env
+    environment:
+      - SITES_DIR=/data/sites
+      - BASE_URL=https://dev.wendy.monster
+    volumes:
+      - wendy_dev_sites_data:/data/sites
+      - /var/lib/docker/volumes/wendy_dev_data/_data:/data/wendy
+      - /var/lib/docker/volumes/wendy_dev_claude_config/_data:/data/claude:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  wendy_dev_sites_data:
+    external: true
+    name: wendy_dev_sites_data

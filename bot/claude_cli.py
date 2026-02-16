@@ -75,7 +75,13 @@ These are filtered out to prevent the CLI from accessing sensitive credentials
 that should only be available to the parent bot process.
 """
 
-# Tool instructions template - {channel_id} and {channel_name} are substituted
+PROXY_PORT = os.getenv("WENDY_PROXY_PORT", "8945")
+"""Port number for the Wendy proxy API service."""
+
+DEV_MODE = os.getenv("WENDY_DEV_MODE", "") == "1"
+"""Whether Wendy is running in dev mode with extended permissions."""
+
+# Tool instructions template - {channel_id}, {channel_name}, and {proxy_port} are substituted
 TOOL_INSTRUCTIONS_TEMPLATE = """
 ---
 REAL-TIME CHANNEL TOOLS (Channel ID: {channel_id})
@@ -91,30 +97,30 @@ RESPONSE EXPECTATIONS:
 - Even a brief acknowledgment ("gotcha!", "nice", "haha") is better than silence.
 
 1. SEND A MESSAGE (REQUIRED to respond):
-   curl -X POST http://localhost:8945/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "your message here"}}'
+   curl -X POST http://localhost:{proxy_port}/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "your message here"}}'
 
    With attachment (file can be anywhere under /data/wendy/ or /tmp/):
-   curl -X POST http://localhost:8945/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "check this out", "attachment": "/data/wendy/channels/{channel_name}/output.png"}}'
+   curl -X POST http://localhost:{proxy_port}/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "check this out", "attachment": "/data/wendy/channels/{channel_name}/output.png"}}'
 
    Reply to a specific message (use sparingly - only when referencing a specific post for context):
-   curl -X POST http://localhost:8945/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "great point", "reply_to": MESSAGE_ID}}'
+   curl -X POST http://localhost:{proxy_port}/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "great point", "reply_to": MESSAGE_ID}}'
 
    This is the ONLY way to send messages to users. Your final output goes nowhere.
 
 2. CHECK FOR NEW MESSAGES (optional, use before responding):
-   curl -s http://localhost:8945/api/check_messages/{channel_id}
+   curl -s http://localhost:{proxy_port}/api/check_messages/{channel_id}
 
    Shows the last 10 messages to see if anyone sent new messages while you were thinking.
    Note: Always use -s flag with curl for cleaner output.
 
 3. ADD EMOJI REACTION (use sparingly for effect):
-   curl -X POST http://localhost:8945/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "actions": [{{"type": "add_reaction", "message_id": MESSAGE_ID, "emoji": "thumbsup"}}]}}'
+   curl -X POST http://localhost:{proxy_port}/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "actions": [{{"type": "add_reaction", "message_id": MESSAGE_ID, "emoji": "thumbsup"}}]}}'
 
    Batch actions (send message + react in one call):
-   curl -X POST http://localhost:8945/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "actions": [{{"type": "send_message", "content": "nice!", "reply_to": MSG_ID}}, {{"type": "add_reaction", "message_id": MSG_ID, "emoji": "fire"}}]}}'
+   curl -X POST http://localhost:{proxy_port}/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "actions": [{{"type": "send_message", "content": "nice!", "reply_to": MSG_ID}}, {{"type": "add_reaction", "message_id": MSG_ID, "emoji": "fire"}}]}}'
 
 4. SEARCH CUSTOM EMOJIS (for custom server emojis):
-   curl -s "http://localhost:8945/api/emojis?search=keyword"
+   curl -s "http://localhost:{proxy_port}/api/emojis?search=keyword"
 
 WORKFLOW:
 1. Read/process the user's request
@@ -650,7 +656,7 @@ class ClaudeCliTextGenerator:
 
     def _get_tool_instructions(self, channel_id: int, channel_name: str) -> str:
         """Get instructions for Wendy's API tools."""
-        return TOOL_INSTRUCTIONS_TEMPLATE.format(channel_id=channel_id, channel_name=channel_name)
+        return TOOL_INSTRUCTIONS_TEMPLATE.format(channel_id=channel_id, channel_name=channel_name, proxy_port=PROXY_PORT)
 
     def _get_journal_section(self, channel_name: str) -> str:
         """Build the journal section for the system prompt.
@@ -969,6 +975,11 @@ Parent channel workspace: /data/wendy/channels/{parent_folder}/ (read-only refer
             allowed = f"Read,WebSearch,WebFetch,Bash,Edit(//data/wendy/channels/{channel_name}/**),Write(//data/wendy/channels/{channel_name}/**),Write(//data/wendy/tmp/**),Write(//tmp/**)"
             disallowed = "Edit(//app/**),Write(//app/**)"
 
+        # Dev mode: add access to dev-repo and remove all restrictions
+        if DEV_MODE:
+            allowed += ",Edit(//data/wendy/dev-repo/**),Write(//data/wendy/dev-repo/**)"
+            disallowed = ""
+
         return allowed, disallowed
 
     async def generate(
@@ -1084,11 +1095,11 @@ Parent channel workspace: /data/wendy/channels/{parent_folder}/ (read-only refer
             nudge_prompt = (
                 f"<you've been forked into a Discord thread: \"{thread_name}\". "
                 f"Your conversation history from the parent channel has been preserved. "
-                f"You MUST call curl -s http://localhost:8945/api/check_messages/{channel_id} "
+                f"You MUST call curl -s http://localhost:{PROXY_PORT}/api/check_messages/{channel_id} "
                 f"before any other action. Do not assume what the messages contain.>"
             )
         else:
-            nudge_prompt = f"<new messages - you MUST call curl -s http://localhost:8945/api/check_messages/{channel_id} before any other action. Do not assume what the messages contain.>"
+            nudge_prompt = f"<new messages - you MUST call curl -s http://localhost:{PROXY_PORT}/api/check_messages/{channel_id} before any other action. Do not assume what the messages contain.>"
 
         # Ensure base and shared directories exist
         WENDY_BASE.mkdir(parents=True, exist_ok=True)
@@ -1272,6 +1283,21 @@ Parent channel workspace: /data/wendy/channels/{parent_folder}/ (read-only refer
                     filtered_lines.append(line)
 
                 content = "\n".join(filtered_lines)
+
+            # Load dev system prompt additions if in dev mode
+            dev_additions_path = os.getenv("DEV_SYSTEM_PROMPT_ADDITIONS")
+            if dev_additions_path:
+                additions_file = Path(dev_additions_path)
+                if additions_file.exists():
+                    try:
+                        additions = additions_file.read_text().strip()
+                        if additions:
+                            # Replace {proxy_port} placeholder with actual port
+                            additions = additions.replace("{proxy_port}", PROXY_PORT)
+                            content += "\n\n" + additions
+                            _LOG.info("Loaded dev system prompt additions from %s", dev_additions_path)
+                    except Exception as e:
+                        _LOG.warning("Failed to read dev system prompt additions: %s", e)
 
             return content
         except Exception as e:

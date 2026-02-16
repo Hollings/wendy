@@ -53,6 +53,7 @@ async def load_extensions(bot: commands.Bot) -> None:
         "bot.message_logger",
         "bot.wendy_cog",
         "bot.wendy_outbox",
+        "bot.deploy_cog",
     ]
 
     for ext in extensions:

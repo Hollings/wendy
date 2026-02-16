@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  bot:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: wendy-dev-bot
+    restart: unless-stopped
+    command: ["python", "-m", "bot"]
+    network_mode: host
+    volumes:
+      - wendy_dev_data:/data/wendy
+      - wendy_dev_claude_config:/root/.claude
+      - wendy_dev_repo:/data/wendy/dev-repo
+      - /srv/secrets/wendy:/secrets:ro
+      - /srv/wendy-bot-dev/config:/app/config:ro
+    env_file:
+      - /srv/secrets/wendy/dev-bot.env
+    environment:
+      - WENDY_DB_PATH=/data/wendy/shared/wendy.db
+      - SYSTEM_PROMPT_FILE=/app/config/system_prompt.txt
+      - CLAUDE_CLI_TIMEOUT=300
+      - WENDY_SECRETS_FILE=/data/wendy/secrets/runtime.json
+      - WENDY_PROXY_PORT=8965
+      - WENDY_DEV_MODE=1
+      - DEV_SYSTEM_PROMPT_ADDITIONS=/app/config/dev_system_prompt_additions.txt
+    depends_on:
+      - proxy
+
+  proxy:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: wendy-dev-proxy
+    restart: unless-stopped
+    command: ["uvicorn", "proxy.main:app", "--host", "0.0.0.0", "--port", "8965"]
+    network_mode: host
+    volumes:
+      - wendy_dev_data:/data/wendy
+      - /srv/secrets/wendy:/secrets:ro
+    env_file:
+      - /srv/secrets/wendy/dev-bot.env
+    environment:
+      - WENDY_DB_PATH=/data/wendy/shared/wendy.db
+      - WENDY_SITES_URL=http://127.0.0.1:8930
+      - WENDY_GAMES_URL=http://127.0.0.1:8940
+
+  orchestrator:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: wendy-dev-orchestrator
+    restart: unless-stopped
+    command: ["python", "-m", "orchestrator"]
+    network_mode: host
+    volumes:
+      - wendy_dev_data:/data/wendy
+      - wendy_dev_claude_config:/root/.claude
+      - /srv/secrets/wendy:/secrets:ro
+      - /srv/wendy-bot-dev/config:/app/config:ro
+    env_file:
+      - /srv/secrets/wendy/dev-bot.env
+    environment:
+      - ORCHESTRATOR_CONCURRENCY=1
+      - ORCHESTRATOR_POLL_INTERVAL=30
+      - ORCHESTRATOR_WORKING_DIR=/data/wendy
+      - ORCHESTRATOR_PROXY_URL=http://127.0.0.1:8965
+      - AGENT_SYSTEM_PROMPT_FILE=/app/config/agent_claude_md.txt
+      - WENDY_DB_PATH=/data/wendy/shared/wendy.db
+    depends_on:
+      - proxy
+
+volumes:
+  wendy_dev_data:
+    external: true
+    name: wendy_dev_data
+  wendy_dev_claude_config:
+    external: true
+    name: wendy_dev_claude_config
+  wendy_dev_repo:
+    external: true
+    name: wendy_dev_repo
