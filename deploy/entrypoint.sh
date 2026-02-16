@@ -6,6 +6,9 @@ if [ -f /app/config/claude-sync/setup-hooks.sh ]; then
     bash /app/config/claude-sync/setup-hooks.sh
 fi
 
+# Allow git operations on bind-mounted repos (different ownership)
+git config --global --add safe.directory /srv/wendy-bot-dev
+
 # Setup git credentials if GITHUB_PAT is set (dev mode)
 if [ -n "${GITHUB_PAT:-}" ]; then
     git config --global credential.helper store
