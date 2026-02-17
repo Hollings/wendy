@@ -20,6 +20,16 @@
             "command": "/app/config/hooks/remind_analyze_file.sh"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/app/config/hooks/log_bash_tool.sh",
+            "async": true
+          }
+        ]
       }
     ],
     "Stop": [

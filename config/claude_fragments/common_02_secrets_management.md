@@ -1,3 +1,8 @@
+---
+type: common
+order: 2
+---
+
 ## Secrets Management
 
 **ALL sensitive data (API keys, tokens, passwords, SSH keys) MUST be stored via secrets.py.**
