@@ -1,0 +1,376 @@
+"""Background task runner (Beads).
+
+Asyncio replacement for v1's orchestrator service (~1170 lines -> ~200 lines).
+Polls beads task queues, forks sessions, spawns Claude CLI agents, notifies on completion.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+
+from .config import parse_channel_configs, resolve_model
+from .paths import WENDY_BASE, beads_dir, channel_dir, current_session_file, session_dir
+from .state import state as state_manager
+
+_LOG = logging.getLogger(__name__)
+
+# Configuration
+CONCURRENCY: int = int(os.getenv("ORCHESTRATOR_CONCURRENCY", "3"))
+POLL_INTERVAL: int = int(os.getenv("ORCHESTRATOR_POLL_INTERVAL", "30"))
+AGENT_TIMEOUT: int = int(os.getenv("ORCHESTRATOR_AGENT_TIMEOUT", "1800"))
+NOTIFY_CHANNEL: str = os.getenv("ORCHESTRATOR_NOTIFY_CHANNEL", "")
+AGENT_SYSTEM_PROMPT_FILE: Path = Path(os.getenv("AGENT_SYSTEM_PROMPT_FILE", "/app/config/agent_claude_md.txt"))
+LOG_DIR: Path = WENDY_BASE / "orchestrator_logs"
+MAX_LOG_FILES: int = 50
+CLOSED_TASK_GRACE_PERIOD: int = int(os.getenv("ORCHESTRATOR_CLOSED_GRACE_PERIOD", "5"))
+
+AGENT_PROMPT_TEMPLATE = """================================================================================
+FORKED SESSION - BACKGROUND AGENT MODE
+================================================================================
+
+The conversation above is from Wendy's session BEFORE this fork.
+You are now a BACKGROUND AGENT working on a specific task.
+
+TASK ID: {task_id}
+TITLE: {title}
+
+TASK DESCRIPTION:
+{description}
+
+--------------------------------------------------------------------------------
+YOUR ROLE:
+- You have Wendy's context from before the fork - use it
+- You are working in the BACKGROUND - Wendy continues separately
+- You CANNOT send Discord messages or deploy
+- You CAN read/write files, run bash, etc.
+
+WHEN DONE:
+- Use `bd comment {task_id} "your notes"` to leave context for Wendy
+- Run `bd close {task_id}` when successfully completed
+- If stuck, leave a comment explaining why
+
+GO.
+================================================================================
+"""
+
+
+@dataclass
+class ChannelBeads:
+    """A channel with beads enabled."""
+    name: str
+    beads_path: Path
+    session_path: Path
+    current_session_path: Path
+
+
+@dataclass
+class RunningAgent:
+    """A running Claude CLI agent subprocess."""
+    task_id: str
+    title: str
+    channel_name: str
+    process: asyncio.subprocess.Process
+    started_at: datetime
+    log_path: Path
+    closed_detected_at: datetime | None = field(default=None)
+
+
+class TaskRunner:
+    """Polls beads for tasks, spawns agents, monitors completion."""
+
+    def __init__(self) -> None:
+        self.agents: dict[str, RunningAgent] = {}
+        self.beads_channels: list[ChannelBeads] = []
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _load_beads_channels(self) -> list[ChannelBeads]:
+        """Find channels with beads_enabled from config."""
+        channels = []
+        for cfg in parse_channel_configs().values():
+            if not cfg.get("beads_enabled"):
+                continue
+            name = cfg.get("_folder") or cfg.get("name")
+            if not name:
+                continue
+            channels.append(ChannelBeads(
+                name=name,
+                beads_path=beads_dir(name),
+                session_path=session_dir(name),
+                current_session_path=current_session_file(name),
+            ))
+        return channels
+
+    async def run(self) -> None:
+        """Main polling loop. Runs as asyncio.create_task()."""
+        self.beads_channels = self._load_beads_channels()
+        if not self.beads_channels:
+            _LOG.info("No beads-enabled channels, task runner idle")
+            return
+
+        _LOG.info("Task runner started: channels=%s concurrency=%d poll=%ds",
+                  [c.name for c in self.beads_channels], CONCURRENCY, POLL_INTERVAL)
+
+        # Init beads for channels that need it
+        for channel in self.beads_channels:
+            if not channel.beads_path.exists():
+                await self._run_bd(["bd", "init"], channel.name)
+
+        while True:
+            try:
+                await self._check_agents()
+                await self._check_closed_tasks()
+
+                available = CONCURRENCY - len(self.agents)
+                if available > 0:
+                    for channel in self.beads_channels:
+                        if available <= 0:
+                            break
+                        tasks = await self._get_ready_tasks(channel)
+                        for task in tasks:
+                            task_id = task.get("id")
+                            if task_id in self.agents:
+                                continue
+                            if await self._claim_task(task_id, channel.name):
+                                agent = await self._spawn_agent(task, channel)
+                                if agent:
+                                    self.agents[task_id] = agent
+                                    available -= 1
+                                else:
+                                    await self._run_bd(["bd", "reopen", task_id], channel.name)
+                            if available <= 0:
+                                break
+
+                self._cleanup_logs()
+            except Exception:
+                _LOG.exception("Task runner loop error")
+
+            await asyncio.sleep(POLL_INTERVAL)
+
+    async def _run_bd(self, cmd: list[str], channel_name: str, timeout: int = 30) -> tuple[int, str, str]:
+        """Run a bd command in a channel directory."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=channel_dir(channel_name),
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            return proc.returncode, stdout.decode(), stderr.decode()
+        except TimeoutError:
+            _LOG.warning("bd command timed out: %s", cmd)
+            return -1, "", "timeout"
+        except FileNotFoundError:
+            _LOG.error("bd command not found")
+            return -1, "", "not found"
+
+    async def _get_ready_tasks(self, channel: ChannelBeads) -> list[dict]:
+        """Get ready, unassigned tasks from a channel's beads queue."""
+        if not (channel.beads_path / "issues.jsonl").exists():
+            return []
+        code, stdout, stderr = await self._run_bd(
+            ["bd", "ready", "--unassigned", "--sort", "priority", "--json"],
+            channel.name,
+        )
+        if code != 0 or not stdout.strip():
+            return []
+        try:
+            tasks = json.loads(stdout)
+            for t in tasks:
+                t["_channel_name"] = channel.name
+            return tasks
+        except json.JSONDecodeError:
+            return []
+
+    async def _claim_task(self, task_id: str, channel_name: str) -> bool:
+        """Claim a task atomically."""
+        code, _, _ = await self._run_bd(["bd", "update", task_id, "--claim"], channel_name, timeout=10)
+        return code == 0
+
+    async def _get_task_details(self, task_id: str, channel_name: str) -> dict | None:
+        """Get full task details."""
+        code, stdout, _ = await self._run_bd(["bd", "show", task_id, "--json"], channel_name, timeout=10)
+        if code != 0:
+            return None
+        try:
+            data = json.loads(stdout)
+            return data[0] if isinstance(data, list) and data else data
+        except json.JSONDecodeError:
+            return None
+
+    async def _spawn_agent(self, task: dict, channel: ChannelBeads) -> RunningAgent | None:
+        """Fork session and spawn a Claude CLI agent for a task."""
+        task_id = task.get("id", "unknown")
+        title = task.get("title", "Untitled")
+        channel_name = channel.name
+
+        # Get full details
+        details = await self._get_task_details(task_id, channel_name)
+        description = (details or task).get("description", "")
+        labels = (details or task).get("labels", [])
+
+        # Parse model from labels (e.g., "model:opus")
+        model = None
+        for label in labels or []:
+            if label.startswith("model:"):
+                model = label.split(":", 1)[1]
+                break
+        model = resolve_model(model or "opus")
+
+        prompt = AGENT_PROMPT_TEMPLATE.format(task_id=task_id, title=title, description=description)
+
+        # Create log file
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_path = LOG_DIR / f"agent_{task_id}_{ts}.log"
+
+        try:
+            # Check for session to fork from
+            fork_session_id = None
+            if channel.current_session_path.exists():
+                try:
+                    fork_session_id = channel.current_session_path.read_text().strip()
+                    sess_file = channel.session_path / f"{fork_session_id}.jsonl"
+                    if not sess_file.exists():
+                        fork_session_id = None
+                except Exception:
+                    fork_session_id = None
+
+            cmd = ["claude"]
+            if fork_session_id:
+                cmd.extend(["--resume", fork_session_id, "--fork-session"])
+                _LOG.info("Forking from session %s for task %s", fork_session_id[:8], task_id)
+
+            cmd.extend([
+                "-p", prompt,
+                "--max-turns", "9999",
+                "--allowedTools", "Read", "Write", "Edit", "Bash", "Glob", "Grep", "TodoWrite",
+                "--output-format", "stream-json",
+                "--verbose",
+                "--model", model,
+            ])
+
+            # Append agent system prompt if available
+            if AGENT_SYSTEM_PROMPT_FILE.exists():
+                try:
+                    context = AGENT_SYSTEM_PROMPT_FILE.read_text().strip()
+                    if context:
+                        cmd.extend(["--append-system-prompt", context])
+                except Exception:
+                    pass
+
+            log_file = open(log_path, "w")
+            log_file.write(f"Task: {task_id} - {title}\n")
+            log_file.write(f"Channel: {channel_name}\n")
+            log_file.write(f"Model: {model}\n")
+            log_file.write(f"Started: {datetime.now().isoformat()}\n")
+            log_file.write("=" * 60 + "\n\n")
+            log_file.flush()
+
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=log_file,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=channel_dir(channel_name),
+            )
+
+            _LOG.info("Spawned agent for task %s: %s (model=%s)", task_id, title, model)
+            return RunningAgent(
+                task_id=task_id,
+                title=title,
+                channel_name=channel_name,
+                process=proc,
+                started_at=datetime.now(),
+                log_path=log_path,
+            )
+
+        except Exception:
+            _LOG.exception("Failed to spawn agent for task %s", task_id)
+            return None
+
+    async def _check_agents(self) -> None:
+        """Check running agents for completion or timeout."""
+        finished = []
+        for task_id, agent in self.agents.items():
+            duration = datetime.now() - agent.started_at
+            secs = duration.total_seconds()
+
+            # Check timeout
+            if agent.process.returncode is None and secs > AGENT_TIMEOUT:
+                _LOG.warning("Agent %s timed out after %s", task_id, duration)
+                try:
+                    agent.process.kill()
+                except Exception:
+                    pass
+                await self._run_bd(["bd", "reopen", task_id], agent.channel_name)
+                self._notify_completion(task_id, agent.title, False, f"{duration} (TIMEOUT)")
+                finished.append(task_id)
+                continue
+
+            # Check completion
+            if agent.process.returncode is not None:
+                _LOG.info("Agent %s completed (exit=%d) after %s",
+                          task_id, agent.process.returncode, duration)
+                await self._run_bd(["bd", "close", task_id], agent.channel_name)
+                self._notify_completion(task_id, agent.title, True, str(duration))
+                finished.append(task_id)
+
+        for tid in finished:
+            del self.agents[tid]
+
+    async def _check_closed_tasks(self) -> None:
+        """Kill agents whose tasks were closed externally."""
+        to_kill = []
+        for task_id, agent in self.agents.items():
+            if agent.process.returncode is not None:
+                agent.closed_detected_at = None
+                continue
+
+            details = await self._get_task_details(task_id, agent.channel_name)
+            if details and details.get("status") == "closed":
+                now = datetime.now()
+                if agent.closed_detected_at is None:
+                    agent.closed_detected_at = now
+                    _LOG.info("Task %s closed externally, grace period %ds", task_id, CLOSED_TASK_GRACE_PERIOD)
+                elif (now - agent.closed_detected_at).total_seconds() >= CLOSED_TASK_GRACE_PERIOD:
+                    to_kill.append(task_id)
+
+        for task_id in to_kill:
+            agent = self.agents[task_id]
+            _LOG.info("Killing agent for externally-closed task %s", task_id)
+            try:
+                agent.process.kill()
+            except Exception:
+                pass
+            duration = datetime.now() - agent.started_at
+            self._notify_completion(task_id, agent.title, False, f"{duration} (CANCELLED)")
+            del self.agents[task_id]
+
+    def _notify_completion(self, task_id: str, title: str, success: bool, duration: str) -> None:
+        """Write completion notification to SQLite."""
+        status = "completed" if success else "failed"
+        channel_id = int(NOTIFY_CHANNEL) if NOTIFY_CHANNEL else None
+        try:
+            state_manager.add_notification(
+                type="task_completion",
+                source="task_runner",
+                title=title,
+                channel_id=channel_id,
+                payload={"task_id": task_id, "status": status, "duration": duration},
+            )
+            state_manager.cleanup_old_notifications(keep_count=100)
+        except Exception:
+            _LOG.exception("Failed to write completion notification for %s", task_id)
+
+    def _cleanup_logs(self) -> None:
+        """Trim old agent log files."""
+        try:
+            logs = sorted(LOG_DIR.glob("agent_*.log"), key=lambda f: f.stat().st_mtime)
+            for old in logs[:-MAX_LOG_FILES]:
+                old.unlink()
+        except Exception:
+            pass

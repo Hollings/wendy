@@ -24,6 +24,7 @@ from .paths import (
     ensure_shared_dirs,
 )
 from .state import state as state_manager
+from .tasks import TaskRunner
 
 _LOG = logging.getLogger(__name__)
 
@@ -90,6 +91,10 @@ class WendyBot(commands.Bot):
 
         # Cache emoji list for the API
         self._cache_emojis_task = self.loop.create_task(self._cache_emojis())
+
+        # Start background task runner (beads)
+        self._task_runner = TaskRunner()
+        self.loop.create_task(self._task_runner.run())
 
     async def close(self) -> None:
         """Cleanup on shutdown."""
