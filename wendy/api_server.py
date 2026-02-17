@@ -4,12 +4,17 @@ Replaces the v1 proxy service. Runs in-process, calls discord.py directly.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import os
 import sqlite3
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import aiohttp
 from aiohttp import web
 
 from .config import (
@@ -399,6 +404,317 @@ async def handle_emojis(request: web.Request) -> web.Response:
     return web.json_response({"custom": emojis})
 
 
+# =============================================================================
+# Deploy proxy endpoints
+# =============================================================================
+
+WENDY_SITES_URL = os.getenv("WENDY_SITES_URL", "http://wendy-sites:8910")
+WENDY_GAMES_URL = os.getenv("WENDY_GAMES_URL", "http://wendy-games:8920")
+WENDY_DEPLOY_TOKEN = os.getenv("WENDY_DEPLOY_TOKEN", "")
+WENDY_GAMES_TOKEN = os.getenv("WENDY_GAMES_TOKEN", "")
+
+
+async def handle_deploy_site(request: web.Request) -> web.Response:
+    """POST /api/deploy_site -- proxy deploy to wendy-sites."""
+    if not WENDY_DEPLOY_TOKEN:
+        return web.json_response({"error": "WENDY_DEPLOY_TOKEN not configured"}, status=500)
+
+    try:
+        reader = await request.multipart()
+        name = None
+        file_content = None
+
+        async for part in reader:
+            if part.name == "name":
+                name = (await part.read()).decode()
+            elif part.name == "files":
+                file_content = await part.read()
+
+        if not name or file_content is None:
+            return web.json_response({"error": "name and files fields required"}, status=400)
+
+        form = aiohttp.FormData()
+        form.add_field("name", name)
+        form.add_field("files", file_content, filename="site.tar.gz", content_type="application/gzip")
+
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
+            async with session.post(
+                f"{WENDY_SITES_URL}/api/deploy",
+                data=form,
+                headers={"Authorization": f"Bearer {WENDY_DEPLOY_TOKEN}"},
+            ) as resp:
+                if resp.status != 200:
+                    detail = await resp.text()
+                    return web.json_response({"error": f"Deploy failed: {detail}"}, status=resp.status)
+                result = await resp.json()
+
+        return web.json_response({
+            "success": True,
+            "url": result.get("url"),
+            "message": result.get("message", "Site deployed"),
+        })
+    except aiohttp.ClientError as e:
+        return web.json_response({"error": f"Cannot connect to wendy-sites: {e}"}, status=502)
+    except Exception as e:
+        _LOG.error("deploy_site error: %s", e)
+        return web.json_response({"error": "Internal server error"}, status=500)
+
+
+async def handle_deploy_game(request: web.Request) -> web.Response:
+    """POST /api/deploy_game -- proxy deploy to wendy-games."""
+    if not WENDY_GAMES_TOKEN:
+        return web.json_response({"error": "WENDY_GAMES_TOKEN not configured"}, status=500)
+
+    try:
+        reader = await request.multipart()
+        name = None
+        file_content = None
+
+        async for part in reader:
+            if part.name == "name":
+                name = (await part.read()).decode()
+            elif part.name == "files":
+                file_content = await part.read()
+
+        if not name or file_content is None:
+            return web.json_response({"error": "name and files fields required"}, status=400)
+
+        form = aiohttp.FormData()
+        form.add_field("name", name)
+        form.add_field("files", file_content, filename="game.tar.gz", content_type="application/gzip")
+
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
+            async with session.post(
+                f"{WENDY_GAMES_URL}/api/deploy",
+                data=form,
+                headers={"Authorization": f"Bearer {WENDY_GAMES_TOKEN}"},
+            ) as resp:
+                if resp.status != 200:
+                    detail = await resp.text()
+                    return web.json_response({"error": f"Deploy failed: {detail}"}, status=resp.status)
+                result = await resp.json()
+
+        return web.json_response({
+            "success": True,
+            "url": result.get("url"),
+            "ws": result.get("ws"),
+            "port": result.get("port"),
+            "message": result.get("message", "Game deployed"),
+        })
+    except aiohttp.ClientError as e:
+        return web.json_response({"error": f"Cannot connect to wendy-games: {e}"}, status=502)
+    except Exception as e:
+        _LOG.error("deploy_game error: %s", e)
+        return web.json_response({"error": "Internal server error"}, status=500)
+
+
+async def handle_game_logs(request: web.Request) -> web.Response:
+    """GET /api/game_logs/{name} -- fetch game server logs."""
+    name = request.match_info["name"]
+    lines = int(request.query.get("lines", "100"))
+
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+            async with session.get(
+                f"{WENDY_GAMES_URL}/api/games/{name}/logs",
+                params={"lines": lines},
+                headers={"Authorization": f"Bearer {WENDY_GAMES_TOKEN}"},
+            ) as resp:
+                if resp.status == 404:
+                    return web.json_response({"name": name, "logs": f"Game '{name}' not found"})
+                if resp.status != 200:
+                    return web.json_response({"name": name, "logs": f"Error: {await resp.text()}"})
+                return web.json_response(await resp.json())
+    except aiohttp.ClientError as e:
+        return web.json_response({"name": name, "logs": f"Connection error: {e}"})
+
+
+# =============================================================================
+# Gemini file analysis
+# =============================================================================
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MAX_FILE_SIZE = 20 * 1024 * 1024
+GEMINI_MAX_VIDEO_DURATION = 5 * 60
+GEMINI_MAX_AUDIO_DURATION = 30 * 60
+
+SUPPORTED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"}
+SUPPORTED_AUDIO_TYPES = {"audio/wav", "audio/mp3", "audio/mpeg", "audio/aiff", "audio/aac", "audio/ogg", "audio/flac"}
+SUPPORTED_VIDEO_TYPES = {"video/mp4", "video/mpeg", "video/quicktime", "video/avi", "video/x-flv", "video/webm", "video/x-ms-wmv", "video/3gpp"}
+SUPPORTED_MEDIA_TYPES = SUPPORTED_IMAGE_TYPES | SUPPORTED_AUDIO_TYPES | SUPPORTED_VIDEO_TYPES
+
+EXTENSION_TO_MIME = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".webp": "image/webp", ".heic": "image/heic", ".heif": "image/heif",
+    ".wav": "audio/wav", ".mp3": "audio/mpeg", ".aiff": "audio/aiff",
+    ".aac": "audio/aac", ".ogg": "audio/ogg", ".flac": "audio/flac",
+    ".mp4": "video/mp4", ".mpeg": "video/mpeg", ".mpg": "video/mpeg",
+    ".mov": "video/quicktime", ".avi": "video/avi", ".flv": "video/x-flv",
+    ".webm": "video/webm", ".wmv": "video/x-ms-wmv", ".3gp": "video/3gpp",
+}
+
+
+def _infer_media_type(filename: str | None, content_type: str | None) -> str:
+    if content_type and content_type != "application/octet-stream":
+        return content_type
+    if filename:
+        ext = Path(filename).suffix.lower()
+        if ext in EXTENSION_TO_MIME:
+            return EXTENSION_TO_MIME[ext]
+    return content_type or ""
+
+
+def _get_media_duration(content: bytes, media_type: str) -> float | None:
+    if media_type not in SUPPORTED_AUDIO_TYPES and media_type not in SUPPORTED_VIDEO_TYPES:
+        return None
+    try:
+        suffix = ".mp4" if media_type.startswith("video/") else ".mp3"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+            f.write(content)
+            temp_path = f.name
+        try:
+            result = subprocess.run(
+                ["ffprobe", "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", temp_path],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return float(result.stdout.strip())
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+    except Exception:
+        pass
+    return None
+
+
+def _get_gemini_model(media_type: str) -> str:
+    return "gemini-2.5-pro" if media_type in SUPPORTED_VIDEO_TYPES else "gemini-3-pro-preview"
+
+
+def _get_video_resolution(duration: float | None) -> str:
+    if duration is None:
+        return "MEDIA_RESOLUTION_MEDIUM"
+    if duration <= 30:
+        return "MEDIA_RESOLUTION_HIGH"
+    if duration <= 120:
+        return "MEDIA_RESOLUTION_MEDIUM"
+    return "MEDIA_RESOLUTION_LOW"
+
+
+async def handle_analyze_file(request: web.Request) -> web.Response:
+    """POST /api/analyze_file -- analyze media via Gemini API."""
+    if not GEMINI_API_KEY:
+        return web.json_response({"error": "GEMINI_API_KEY not configured"}, status=500)
+
+    try:
+        reader = await request.multipart()
+        prompt = None
+        file_content = None
+        filename = None
+        content_type = None
+
+        async for part in reader:
+            if part.name == "prompt":
+                prompt = (await part.read()).decode()
+            elif part.name == "file":
+                filename = part.filename
+                content_type = part.headers.get("Content-Type")
+                file_content = await part.read()
+
+        if not prompt or file_content is None:
+            return web.json_response({"error": "prompt and file fields required"}, status=400)
+
+        media_type = _infer_media_type(filename, content_type)
+        if media_type not in SUPPORTED_MEDIA_TYPES:
+            return web.json_response({"error": f"Unsupported file type: {media_type}"}, status=400)
+
+        if len(file_content) > GEMINI_MAX_FILE_SIZE:
+            return web.json_response(
+                {"error": f"File too large ({len(file_content) / 1024 / 1024:.1f}MB). Max 20MB."},
+                status=400,
+            )
+
+        duration = _get_media_duration(file_content, media_type)
+        if duration is not None:
+            if media_type in SUPPORTED_VIDEO_TYPES and duration > GEMINI_MAX_VIDEO_DURATION:
+                return web.json_response({"error": f"Video too long ({duration / 60:.1f} min). Max 5 min."}, status=400)
+            if media_type in SUPPORTED_AUDIO_TYPES and duration > GEMINI_MAX_AUDIO_DURATION:
+                return web.json_response({"error": f"Audio too long ({duration / 60:.1f} min). Max 30 min."}, status=400)
+
+        model = _get_gemini_model(media_type)
+        file_b64 = base64.standard_b64encode(file_content).decode()
+        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+        body: dict = {
+            "contents": [{"parts": [
+                {"inline_data": {"mime_type": media_type, "data": file_b64}},
+                {"text": prompt},
+            ]}]
+        }
+        if media_type in SUPPORTED_VIDEO_TYPES:
+            body["generation_config"] = {"media_resolution": _get_video_resolution(duration)}
+
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
+            async with session.post(
+                gemini_url, headers={"x-goog-api-key": GEMINI_API_KEY}, json=body,
+            ) as resp:
+                if resp.status != 200:
+                    detail = await resp.text()
+                    return web.json_response({"error": f"Gemini API error: {detail}"}, status=502)
+                result = await resp.json()
+
+        try:
+            analysis = result["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError):
+            return web.json_response({"error": f"Unexpected Gemini response: {result}"}, status=502)
+
+        return web.json_response({
+            "success": True, "analysis": analysis, "media_type": media_type, "model": model,
+        })
+    except aiohttp.ClientError as e:
+        return web.json_response({"error": f"Gemini connection error: {e}"}, status=502)
+    except Exception as e:
+        _LOG.error("analyze_file error: %s", e)
+        return web.json_response({"error": "Internal server error"}, status=500)
+
+
+# =============================================================================
+# Usage tracking
+# =============================================================================
+
+USAGE_DATA_FILE = WENDY_BASE / "usage_data.json"
+USAGE_FORCE_CHECK_FILE = WENDY_BASE / "usage_force_check"
+
+
+async def handle_usage(request: web.Request) -> web.Response:
+    """GET /api/usage -- Claude Code usage stats."""
+    if not USAGE_DATA_FILE.exists():
+        return web.json_response({"error": "Usage data not available yet"}, status=404)
+    try:
+        data = json.loads(USAGE_DATA_FILE.read_text())
+        week_all = data.get("week_all_percent", 0)
+        week_sonnet = data.get("week_sonnet_percent", 0)
+        updated = data.get("updated_at", "unknown")
+        data["message"] = (
+            f"Claude Code Usage (as of {updated}):\n"
+            f"- Weekly (all models): {week_all}%\n"
+            f"- Weekly (Sonnet only): {week_sonnet}%"
+        )
+        return web.json_response(data)
+    except Exception as e:
+        _LOG.error("usage error: %s", e)
+        return web.json_response({"error": "Failed to read usage data"}, status=500)
+
+
+async def handle_usage_refresh(request: web.Request) -> web.Response:
+    """POST /api/usage/refresh -- force immediate usage check."""
+    try:
+        USAGE_FORCE_CHECK_FILE.touch()
+        return web.json_response({"success": True, "message": "Usage refresh requested. Check back in ~30s."})
+    except Exception as e:
+        _LOG.error("usage refresh error: %s", e)
+        return web.json_response({"error": "Internal server error"}, status=500)
+
+
 async def handle_health(request: web.Request) -> web.Response:
     """GET /health"""
     return web.json_response({"status": "ok"})
@@ -406,10 +722,16 @@ async def handle_health(request: web.Request) -> web.Response:
 
 def create_app() -> web.Application:
     """Create the aiohttp application with all routes."""
-    app = web.Application()
+    app = web.Application(client_max_size=30 * 1024 * 1024)  # 30MB for file uploads
     app.router.add_post("/api/send_message", handle_send_message)
     app.router.add_get("/api/check_messages/{channel_id}", handle_check_messages)
     app.router.add_get("/api/emojis", handle_emojis)
+    app.router.add_post("/api/deploy_site", handle_deploy_site)
+    app.router.add_post("/api/deploy_game", handle_deploy_game)
+    app.router.add_get("/api/game_logs/{name}", handle_game_logs)
+    app.router.add_post("/api/analyze_file", handle_analyze_file)
+    app.router.add_get("/api/usage", handle_usage)
+    app.router.add_post("/api/usage/refresh", handle_usage_refresh)
     app.router.add_get("/health", handle_health)
     return app
 

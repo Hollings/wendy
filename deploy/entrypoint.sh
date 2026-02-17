@@ -1,12 +1,12 @@
 #!/bin/bash
-# Wendy Bot entrypoint - setup hooks then run main command
+# Wendy v2 entrypoint - setup hooks then run main command
 
 # Setup Claude sync hooks (if config exists)
 if [ -f /app/config/claude-sync/setup-hooks.sh ]; then
     bash /app/config/claude-sync/setup-hooks.sh
 fi
 
-# Allow git operations on bind-mounted repos (different ownership)
+# Allow git operations on bind-mounted repos
 git config --global --add safe.directory /srv/wendy-bot-dev
 
 # Setup git credentials if GITHUB_PAT is set (dev mode)
@@ -18,5 +18,4 @@ if [ -n "${GITHUB_PAT:-}" ]; then
     git config --global user.email "wendy@wendy.monster"
 fi
 
-# Execute the main command
 exec "$@"

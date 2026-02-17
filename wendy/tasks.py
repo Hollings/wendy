@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -86,6 +87,7 @@ class TaskRunner:
     def __init__(self) -> None:
         self.agents: dict[str, RunningAgent] = {}
         self.beads_channels: list[ChannelBeads] = []
+        self._last_usage_check: float = 0.0
         LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     def _load_beads_channels(self) -> list[ChannelBeads]:
@@ -146,6 +148,7 @@ class TaskRunner:
                                 break
 
                 self._cleanup_logs()
+                await self._check_usage()
             except Exception:
                 _LOG.exception("Task runner loop error")
 
@@ -365,6 +368,47 @@ class TaskRunner:
             state_manager.cleanup_old_notifications(keep_count=100)
         except Exception:
             _LOG.exception("Failed to write completion notification for %s", task_id)
+
+    async def _check_usage(self) -> None:
+        """Periodically check Claude Code usage via get_usage.sh."""
+        usage_poll_interval = 3600  # 1 hour
+        usage_script = Path("/app/scripts/get_usage.sh")
+        usage_data_file = WENDY_BASE / "usage_data.json"
+        force_check_file = WENDY_BASE / "usage_force_check"
+
+        now = time.time()
+        force = force_check_file.exists()
+        if force:
+            try:
+                force_check_file.unlink()
+            except Exception:
+                pass
+
+        if not force and now - self._last_usage_check < usage_poll_interval:
+            return
+        self._last_usage_check = now
+
+        if not usage_script.exists():
+            return
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "bash", str(usage_script),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=WENDY_BASE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+            if proc.returncode != 0:
+                return
+
+            usage = json.loads(stdout.decode())
+            usage["updated_at"] = datetime.now().isoformat()
+            usage_data_file.write_text(json.dumps(usage, indent=2))
+            _LOG.info("Usage: week_all=%s%%, week_sonnet=%s%%",
+                      usage.get("week_all_percent", 0), usage.get("week_sonnet_percent", 0))
+        except Exception:
+            _LOG.warning("Usage check failed", exc_info=True)
 
     def _cleanup_logs(self) -> None:
         """Trim old agent log files."""

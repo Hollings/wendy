@@ -1,83 +1,29 @@
 version: '3.8'
 
 services:
-  bot:
+  wendy:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    container_name: wendy-bot
+    container_name: wendy
     restart: unless-stopped
-    command: ["python", "-m", "bot"]
+    command: ["python", "-m", "wendy"]
     network_mode: host
     volumes:
       - wendy_data:/data/wendy
       - claude_config:/root/.claude
       - /srv/secrets/wendy:/secrets:ro
-      - /srv/secrets/wendy:/srv/secrets/wendy:ro
       - /srv/wendy-bot/config:/app/config:ro
       - /var/run/docker.sock:/var/run/docker.sock
-      - /srv/wendy-bot-dev:/srv/wendy-bot-dev
     env_file:
       - /srv/secrets/wendy/bot.env
     environment:
       - WENDY_DB_PATH=/data/wendy/shared/wendy.db
       - SYSTEM_PROMPT_FILE=/app/config/system_prompt.txt
       - CLAUDE_CLI_TIMEOUT=300
-      - WENDY_SECRETS_FILE=/data/wendy/secrets/runtime.json
-      - MESSAGE_LOGGER_GUILDS=1020445108707000331
-      - CLAUDE_SYNC_KEY=${CLAUDE_SYNC_KEY:-}
-      - CLAUDE_SYNC_URL=https://claude.cee.wtf
-      - CLAUDE_MACHINE_ID=wendy-bot
-      # WENDY_DEV_CHANNEL_ID comes from env_file (bot.env)
-    depends_on:
-      - proxy
-
-  proxy:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
-    container_name: wendy-proxy
-    restart: unless-stopped
-    command: ["uvicorn", "proxy.main:app", "--host", "0.0.0.0", "--port", "8945"]
-    network_mode: host
-    volumes:
-      - wendy_data:/data/wendy
-      - /srv/secrets/wendy:/secrets:ro
-    env_file:
-      - /srv/secrets/wendy/bot.env
-    environment:
-      - WENDY_DB_PATH=/data/wendy/shared/wendy.db
-      - WENDY_SITES_URL=http://127.0.0.1:8910
-      - WENDY_GAMES_URL=http://127.0.0.1:8920
-
-  orchestrator:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
-    container_name: wendy-orchestrator
-    restart: unless-stopped
-    command: ["python", "-m", "orchestrator"]
-    network_mode: host
-    volumes:
-      - wendy_data:/data/wendy
-      - claude_config:/root/.claude
-      - /srv/secrets/wendy:/secrets:ro
-      - /srv/wendy-bot/config:/app/config:ro
-    env_file:
-      - /srv/secrets/wendy/bot.env
-    environment:
+      - WENDY_PROXY_PORT=8945
       - ORCHESTRATOR_CONCURRENCY=3
-      - ORCHESTRATOR_POLL_INTERVAL=30
-      - ORCHESTRATOR_WORKING_DIR=/data/wendy
-      - ORCHESTRATOR_PROXY_URL=http://127.0.0.1:8945
-      - AGENT_SYSTEM_PROMPT_FILE=/app/config/agent_claude_md.txt
-      - WENDY_DB_PATH=/data/wendy/shared/wendy.db
-      - ORCHESTRATOR_NOTIFY_CHANNEL=1461429474250850365
-      - CLAUDE_SYNC_KEY=${CLAUDE_SYNC_KEY:-}
-      - CLAUDE_SYNC_URL=https://claude.cee.wtf
-      - CLAUDE_MACHINE_ID=wendy-orchestrator
-    depends_on:
-      - proxy
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
 
 volumes:
   wendy_data:
