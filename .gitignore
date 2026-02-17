@@ -1,39 +1,15 @@
-# Environment files with secrets
-.env
-**/deploy/.env
-
-# Claude Code local secrets
-.claude/
-
-# Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.env
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
 .venv/
 venv/
-ENV/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs and databases
-*.log
-*.db
-*.sqlite3
-
-# Docker
-docker-compose.override.yml
-
-# Temporary files
-*.tmp
-*.temp
-/tmp/
