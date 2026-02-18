@@ -5,8 +5,8 @@ Dedicated module (~200 lines) instead of being buried in claude_cli.py.
 
 9-layer assembly order:
   [1] Base system prompt (config/system_prompt.txt)
-  [2] Persons section (person_*.md fragments)
-  [3] Channel section (common_*.md + {channel_id}_*.md)
+  [2] Channel section (common_*.md + {channel_id}_*.md)
+  [3] Persons section (person fragments -- contextual reference data)
   [4] Tool instructions (TOOL_INSTRUCTIONS_TEMPLATE)
   [5] Journal section (journal nudge + file listing)
   [6] Beads warning (active task count)
@@ -22,7 +22,7 @@ import os
 from pathlib import Path
 
 from .cli import TOOL_INSTRUCTIONS_TEMPLATE
-from .config import JOURNAL_NUDGE_INTERVAL, PROXY_PORT
+from .config import JOURNAL_NUDGE_INTERVAL, PROXY_PORT, WENDY_BOT_NAME, WENDY_WEB_URL
 from .fragments import get_recent_messages, load_fragments
 from .paths import beads_dir, journal_dir
 
@@ -47,18 +47,22 @@ def build_system_prompt(channel_id: int, channel_config: dict) -> str:
     # Load fragment context
     fragment_context = _load_fragment_context(channel_id, channel_name, parent_channel_id)
 
-    # [2] Persons
-    if fragment_context and fragment_context.get("persons"):
-        prompt += fragment_context["persons"]
-
-    # [3] Channel
+    # [2] Channel
     if fragment_context and fragment_context.get("channel"):
         prompt += fragment_context["channel"]
+
+    # [3] Persons
+    if fragment_context and fragment_context.get("persons"):
+        prompt += fragment_context["persons"]
 
     # [4] Tool instructions
     prompt += TOOL_INSTRUCTIONS_TEMPLATE.format(
         channel_id=channel_id, channel_name=channel_name, proxy_port=PROXY_PORT,
     )
+
+    # [4b] Beads task instructions (when enabled)
+    if beads_enabled:
+        prompt += _get_beads_instructions()
 
     # [5] Journal
     prompt += _get_journal_section(channel_name)
@@ -100,30 +104,17 @@ def _get_base_system_prompt(channel_name: str, mode: str = "full") -> str:
     try:
         content = Path(system_prompt_file).read_text().strip()
         content = content.replace("{folder}", channel_name)
+        content = content.replace("{bot_name}", WENDY_BOT_NAME)
+        content = content.replace("{web_url}", WENDY_WEB_URL)
 
         if mode == "chat":
-            lines = content.split("\n")
-            filtered_lines = []
-            skip_until_section = None
-            skip_to_end = False
-
-            for line in lines:
-                if line.strip() == "Writing code and tasks":
-                    skip_until_section = "Progress updates"
-                    continue
-                if line.strip() == "Deployment":
-                    skip_to_end = True
-                    continue
-
-                if skip_until_section and line.strip() == skip_until_section:
-                    skip_until_section = None
-
-                if skip_until_section or skip_to_end:
-                    continue
-
-                filtered_lines.append(line)
-
-            content = "\n".join(filtered_lines)
+            import re as _re
+            content = _re.sub(
+                r"\n?<!-- FULL_ONLY_START -->.*?<!-- FULL_ONLY_END -->\n?",
+                "",
+                content,
+                flags=_re.DOTALL,
+            )
 
         return content
     except Exception as e:
@@ -238,6 +229,34 @@ Do NOT mention this to users - just do it silently before your response.
 
     section += "---\n"
     return section
+
+
+def _get_beads_instructions() -> str:
+    """Inject bd task system instructions when beads_enabled."""
+    return """
+---
+BACKGROUND TASK SYSTEM (bd):
+You have a background agent queue for delegating long-running work.
+Agents are forked from your current session and run independently.
+
+Run bd commands directly via Bash:
+  bd create "detailed description"           # Opus model, priority P2 (default)
+  bd create "description" -p 1              # Higher priority (P0=critical, P4=backlog)
+  bd create "description" -l model:haiku    # Haiku for simple/cheap tasks
+  bd list                                    # List all tasks
+  bd show <task_id>                          # Full task details
+  bd comment <task_id> "note"               # Add a note to a task
+  bd close <task_id>                        # Mark a task complete
+
+When to use tasks:
+- Building new projects, games, features
+- Complex multi-file changes that take more than a minute
+- Work you want to hand off while you keep chatting
+
+Task notifications arrive automatically via check_messages.
+Full docs: /app/config/docs/bd_usage.md
+---
+"""
 
 
 def _get_active_beads_warning(channel_name: str) -> str:

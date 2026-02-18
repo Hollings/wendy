@@ -134,6 +134,20 @@ class StateManager:
                 ON bash_tool_log(session_id);
             CREATE INDEX IF NOT EXISTS idx_bash_tool_log_created
                 ON bash_tool_log(created_at);
+
+            CREATE TABLE IF NOT EXISTS session_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id INTEGER NOT NULL,
+                session_id TEXT NOT NULL,
+                folder TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                ended_at INTEGER,
+                message_count INTEGER DEFAULT 0,
+                total_input_tokens INTEGER DEFAULT 0,
+                total_output_tokens INTEGER DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_history_channel
+                ON session_history(channel_id, started_at);
         """)
         conn.commit()
         _LOG.info("Schema initialized at %s", self.db_path)
@@ -165,6 +179,26 @@ class StateManager:
 
     def create_session(self, channel_id: int, session_id: str, folder: str) -> None:
         conn = self._get_conn()
+        now = int(time.time())
+
+        existing = conn.execute(
+            "SELECT * FROM channel_sessions WHERE channel_id = ?",
+            (channel_id,)
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO session_history
+                    (channel_id, session_id, folder, started_at, ended_at,
+                     message_count, total_input_tokens, total_output_tokens)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (existing["channel_id"], existing["session_id"], existing["folder"],
+                 existing["created_at"], now,
+                 existing["message_count"], existing["total_input_tokens"],
+                 existing["total_output_tokens"])
+            )
+
         conn.execute(
             """
             INSERT OR REPLACE INTO channel_sessions
@@ -173,7 +207,7 @@ class StateManager:
                  total_cache_read_tokens, total_cache_create_tokens)
             VALUES (?, ?, ?, ?, 0, 0, 0, 0, 0)
             """,
-            (channel_id, session_id, folder, int(time.time()))
+            (channel_id, session_id, folder, now)
         )
         conn.commit()
         _LOG.info("Created session %s for channel %d (folder=%s)", session_id[:8], channel_id, folder)
@@ -287,7 +321,7 @@ class StateManager:
         conn = self._get_conn()
         rows = conn.execute(
             """
-            SELECT message_id, author_nickname as author, content, timestamp
+            SELECT message_id, author_id, author_nickname as author, content, timestamp
             FROM message_history
             WHERE channel_id = ?
             ORDER BY message_id DESC
@@ -449,6 +483,55 @@ class StateManager:
             (key, value)
         )
         conn.commit()
+
+    # =========================================================================
+    # Session History
+    # =========================================================================
+
+    def get_session_history(self, channel_id: int, limit: int = 10) -> list[dict]:
+        """Return recent archived sessions for a channel, newest first."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            """
+            SELECT * FROM session_history
+            WHERE channel_id = ?
+            ORDER BY started_at DESC
+            LIMIT ?
+            """,
+            (channel_id, limit)
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_session_by_id(self, session_id_prefix: str) -> dict | None:
+        """Look up a session by ID or prefix. Checks history then active sessions."""
+        conn = self._get_conn()
+
+        row = conn.execute(
+            "SELECT * FROM session_history WHERE session_id = ?",
+            (session_id_prefix,)
+        ).fetchone()
+        if row:
+            return dict(row)
+
+        row = conn.execute(
+            "SELECT * FROM session_history WHERE session_id LIKE ?",
+            (session_id_prefix + "%",)
+        ).fetchone()
+        if row:
+            return dict(row)
+
+        row = conn.execute(
+            """
+            SELECT channel_id, session_id, folder, created_at AS started_at
+            FROM channel_sessions
+            WHERE session_id LIKE ?
+            """,
+            (session_id_prefix + "%",)
+        ).fetchone()
+        if row:
+            return dict(row)
+
+        return None
 
 
 # Global singleton

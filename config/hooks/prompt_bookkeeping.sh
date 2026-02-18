@@ -1,10 +1,11 @@
 #!/bin/bash
 # Stop hook: reminds Wendy to update fragment files before finishing.
-# Fires periodically based on invocation count since last fragment file write.
+# Fires periodically based on invocation count AND a minimum time interval.
 #
 # Only fires when:
 #   - stop_hook_active is false (prevents infinite loops)
 #   - invocations_since_write >= threshold
+#   - at least MIN_INTERVAL seconds have passed since last fire
 #   - claude_fragments directory exists
 
 INPUT=$(cat)
@@ -25,22 +26,30 @@ fi
 
 # Initialize state file if missing
 if [ ! -f "$STATE_FILE" ]; then
-  echo '{"invocations_since_write": 0, "last_check": "never"}' > "$STATE_FILE"
+  echo '{"invocations_since_write": 0, "last_fired_at": 0}' > "$STATE_FILE"
   exit 0
 fi
 
-# Increment invocation counter
+# Read current state
 INVOCATIONS=$(jq -r '.invocations_since_write // 0' < "$STATE_FILE")
+LAST_FIRED=$(jq -r '.last_fired_at // 0' < "$STATE_FILE")
 INVOCATIONS=$((INVOCATIONS + 1))
+NOW=$(date +%s)
 
-# Update state
-jq --argjson inv "$INVOCATIONS" '.invocations_since_write = $inv | .last_check_str = (now | todate)' < "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+# Update state with incremented count
+jq --argjson inv "$INVOCATIONS" --argjson now "$NOW" \
+  '.invocations_since_write = $inv | .last_check_at = $now' \
+  < "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
 
-THRESHOLD=12
+THRESHOLD=25
+MIN_INTERVAL=7200  # 2 hours in seconds
 
-if [ "$INVOCATIONS" -ge "$THRESHOLD" ] 2>/dev/null; then
-  # Reset counter
-  jq '.invocations_since_write = 0' < "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+TIME_SINCE=$((NOW - LAST_FIRED))
+
+if [ "$INVOCATIONS" -ge "$THRESHOLD" ] && [ "$TIME_SINCE" -ge "$MIN_INTERVAL" ] 2>/dev/null; then
+  # Reset counter and record fire time
+  jq --argjson now "$NOW" '.invocations_since_write = 0 | .last_fired_at = $now' \
+    < "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
 
   jq -n '{
     decision: "block",

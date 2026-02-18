@@ -1,7 +1,6 @@
 """Tests for wendy.sessions."""
 from __future__ import annotations
 
-import json
 from unittest import mock
 
 from wendy import sessions
@@ -52,9 +51,10 @@ def test_get_session(tmp_path):
 def test_reset_session(tmp_path):
     sm = _setup_state(tmp_path)
     with mock.patch.object(sessions, "state_manager", sm):
-        sessions.create_session(123, "general")
-        new_sid = sessions.reset_session(123, "general")
+        old_sid = sessions.create_session(123, "general")
+        returned_old, new_sid = sessions.reset_session(123, "general")
 
+        assert returned_old == old_sid
         info = sm.get_session(123)
         assert info.session_id == new_sid
         assert info.message_count == 0
@@ -65,13 +65,11 @@ def test_update_stats(tmp_path):
     with mock.patch.object(sessions, "state_manager", sm):
         sessions.create_session(123, "general")
 
-        # Mock truncate_if_needed since it accesses filesystem
-        with mock.patch.object(sessions, "truncate_if_needed"):
-            sessions.update_stats(123, {
-                "input_tokens": 100,
-                "output_tokens": 50,
-                "cache_read_input_tokens": 10,
-            })
+        sessions.update_stats(123, {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cache_read_input_tokens": 10,
+        })
 
         info = sm.get_session(123)
         assert info.message_count == 1
@@ -87,125 +85,25 @@ def test_update_stats_no_session(tmp_path):
         sessions.update_stats(999, {"input_tokens": 100})
 
 
-# =========================================================================
-# Message counting
-# =========================================================================
+def test_resume_session(tmp_path):
+    sm = _setup_state(tmp_path)
+    with mock.patch.object(sessions, "state_manager", sm):
+        sessions.create_session(123, "general")
+        original_sid = sm.get_session(123).session_id
+
+        sessions.resume_session(123, "explicit-session-id", "general")
+
+        info = sm.get_session(123)
+        assert info.session_id == "explicit-session-id"
+        assert info.session_id != original_sid
 
 
-def test_count_discord_messages_in_tool_result():
-    content = json.dumps([
-        {"message_id": 1, "author": "alice", "content": "hello"},
-        {"message_id": 2, "author": "bob", "content": "world"},
-    ])
-    assert sessions._count_discord_messages_in_tool_result(content) == 2
+def test_reset_session_archives_history(tmp_path):
+    sm = _setup_state(tmp_path)
+    with mock.patch.object(sessions, "state_manager", sm):
+        old_sid = sessions.create_session(123, "general")
+        sessions.reset_session(123, "general")
 
-
-def test_count_discord_messages_in_tool_result_not_messages():
-    assert sessions._count_discord_messages_in_tool_result("not json") == 0
-    assert sessions._count_discord_messages_in_tool_result("[]") == 0
-    assert sessions._count_discord_messages_in_tool_result('[{"key": "val"}]') == 0
-
-
-def test_count_discord_messages():
-    messages = [
-        {
-            "type": "user",
-            "message": {
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "content": json.dumps([
-                            {"message_id": 1, "author": "alice", "content": "hello"},
-                            {"message_id": 2, "author": "bob", "content": "world"},
-                        ]),
-                    }
-                ]
-            }
-        },
-        {"type": "assistant", "message": {"content": "response"}},
-        {
-            "type": "user",
-            "message": {
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "content": json.dumps([
-                            {"message_id": 3, "author": "charlie", "content": "hi"},
-                        ]),
-                    }
-                ]
-            }
-        },
-    ]
-    assert sessions._count_discord_messages(messages) == 3
-
-
-def test_count_discord_messages_empty():
-    assert sessions._count_discord_messages([]) == 0
-
-
-# =========================================================================
-# Truncation
-# =========================================================================
-
-
-def test_truncate_if_needed_no_file(tmp_path):
-    # Should not crash when session file doesn't exist
-    sess_dir = tmp_path / "sessions"
-    sess_dir.mkdir()
-    with mock.patch.object(sessions, "session_dir", return_value=sess_dir):
-        sessions.truncate_if_needed("nonexistent-session", "general")
-
-
-def test_truncate_if_needed_under_limit(tmp_path):
-    sess_dir = tmp_path / "sessions"
-    sess_dir.mkdir()
-    session_file = sess_dir / "test-session.jsonl"
-
-    # Write a session with only a few messages (under MAX_DISCORD_MESSAGES)
-    messages = [
-        {"type": "user", "message": {"content": [{"type": "tool_result", "content": json.dumps([{"message_id": i, "author": "a", "content": "x"}])}]}}
-        for i in range(5)
-    ]
-    with open(session_file, "w") as f:
-        for msg in messages:
-            f.write(json.dumps(msg) + "\n")
-
-    with mock.patch.object(sessions, "session_dir", return_value=sess_dir):
-        sessions.truncate_if_needed("test-session", "general")
-
-    # File should remain unchanged
-    with open(session_file) as f:
-        lines = f.readlines()
-    assert len(lines) == 5
-
-
-def test_truncate_if_needed_over_limit(tmp_path):
-    sess_dir = tmp_path / "sessions"
-    sess_dir.mkdir()
-    session_file = sess_dir / "test-session.jsonl"
-
-    # Write a session with many messages (over MAX_DISCORD_MESSAGES = 50)
-    # Each "user" message contains 2 discord messages in its tool_result
-    messages = []
-    for i in range(60):
-        messages.append({
-            "type": "user",
-            "message": {"content": [{"type": "tool_result", "content": json.dumps([
-                {"message_id": i * 2, "author": "a", "content": f"msg {i * 2}"},
-                {"message_id": i * 2 + 1, "author": "b", "content": f"msg {i * 2 + 1}"},
-            ])}]}
-        })
-        messages.append({"type": "assistant", "message": {"content": f"response {i}"}})
-
-    with open(session_file, "w") as f:
-        for msg in messages:
-            f.write(json.dumps(msg) + "\n")
-
-    with mock.patch.object(sessions, "session_dir", return_value=sess_dir):
-        sessions.truncate_if_needed("test-session", "general")
-
-    # File should be shorter now
-    with open(session_file) as f:
-        lines = f.readlines()
-    assert len(lines) < 120  # original was 120 lines (60 user + 60 assistant)
+        history = sm.get_session_history(123)
+        assert len(history) == 1
+        assert history[0]["session_id"] == old_sid

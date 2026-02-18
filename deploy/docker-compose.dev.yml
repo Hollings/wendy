@@ -1,83 +1,86 @@
 version: '3.8'
 
+# Local development compose. Uses .env from the project root for credentials.
+#
+#   docker compose -f deploy/docker-compose.dev.yml up --build
+#
+# Claude sessions persist in a named volume (wendy_claude_dev) so you only
+# need to `claude login` once:
+#
+#   docker compose -f deploy/docker-compose.dev.yml exec wendy claude login
+#
+# Games use a bind mount instead of a named volume. Create the directory first:
+#
+#   mkdir -p /tmp/wendy-games-dev
+
 services:
-  bot:
+  wendy:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    container_name: wendy-dev-bot
-    restart: unless-stopped
-    command: ["python", "-m", "bot"]
+    container_name: wendy-dev
+    restart: "no"
+    command: ["python", "-m", "wendy"]
     network_mode: host
     volumes:
-      - wendy_dev_data:/data/wendy
-      - wendy_dev_claude_config:/root/.claude
-      - wendy_dev_repo:/data/wendy/dev-repo
-      - /srv/secrets/wendy:/secrets:ro
-      - /srv/wendy-bot-dev/config:/app/config:ro
+      - ..:/app                              # live source -- no rebuild needed for code changes
+      - wendy_data_dev:/data/wendy
+      - wendy_claude_dev:/root/.claude
+      - /var/run/docker.sock:/var/run/docker.sock
     env_file:
-      - /srv/secrets/wendy/dev-bot.env
+      - ../.env
     environment:
+      - WENDY_BASE_DIR=/data/wendy
       - WENDY_DB_PATH=/data/wendy/shared/wendy.db
       - SYSTEM_PROMPT_FILE=/app/config/system_prompt.txt
       - CLAUDE_CLI_TIMEOUT=300
-      - WENDY_SECRETS_FILE=/data/wendy/secrets/runtime.json
-      - WENDY_PROXY_PORT=8965
-      - WENDY_DEV_MODE=1
-      - DEV_SYSTEM_PROMPT_ADDITIONS=/app/config/dev_system_prompt_additions.txt
-    depends_on:
-      - proxy
+      - WENDY_PROXY_PORT=8945
+      - ORCHESTRATOR_CONCURRENCY=3
+      - WENDY_WEB_URL=http://localhost:8910
 
-  proxy:
+  web:
     build:
       context: ..
-      dockerfile: deploy/Dockerfile
-    container_name: wendy-dev-proxy
-    restart: unless-stopped
-    command: ["uvicorn", "proxy.main:app", "--host", "0.0.0.0", "--port", "8965"]
-    network_mode: host
+      dockerfile: services/web/Dockerfile
+    container_name: wendy-web-dev
+    restart: "no"
+    ports:
+      - "0.0.0.0:8910:8000"
+    networks:
+      - web
     volumes:
-      - wendy_dev_data:/data/wendy
-      - /srv/secrets/wendy:/secrets:ro
+      - sites_data_dev:/data/sites
+      - /tmp/wendy-games-dev:/data/games      # bind mount so game containers can access via host path
+      - wendy_data_dev:/data/wendy
+      - wendy_claude_dev:/data/claude:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     env_file:
-      - /srv/secrets/wendy/dev-bot.env
+      - ../.env
     environment:
       - WENDY_DB_PATH=/data/wendy/shared/wendy.db
-      - WENDY_SITES_URL=http://127.0.0.1:8915
-      - WENDY_GAMES_URL=http://127.0.0.1:8940
+      - SITES_DIR=/data/sites
+      - GAMES_DIR=/data/games
+      - HOST_GAMES_DIR=/tmp/wendy-games-dev   # must match the bind mount source above
+      - BASE_PORT=8921
+      - MAX_GAMES=20
+      - BASE_URL=https://wendy.monster
+      - DOCKER_NETWORK=deploy_web
 
-  orchestrator:
+  # Build the Deno game runtime image (run once: docker compose --profile build up runtime-builder)
+  runtime-builder:
     build:
       context: ..
-      dockerfile: deploy/Dockerfile
-    container_name: wendy-dev-orchestrator
-    restart: unless-stopped
-    command: ["python", "-m", "orchestrator"]
-    network_mode: host
-    volumes:
-      - wendy_dev_data:/data/wendy
-      - wendy_dev_claude_config:/root/.claude
-      - /srv/secrets/wendy:/secrets:ro
-      - /srv/wendy-bot-dev/config:/app/config:ro
-    env_file:
-      - /srv/secrets/wendy/dev-bot.env
-    environment:
-      - ORCHESTRATOR_CONCURRENCY=1
-      - ORCHESTRATOR_POLL_INTERVAL=30
-      - ORCHESTRATOR_WORKING_DIR=/data/wendy
-      - ORCHESTRATOR_PROXY_URL=http://127.0.0.1:8965
-      - AGENT_SYSTEM_PROMPT_FILE=/app/config/agent_claude_md.txt
-      - WENDY_DB_PATH=/data/wendy/shared/wendy.db
-    depends_on:
-      - proxy
+      dockerfile: services/runtime/Dockerfile
+    image: wendy-games-runtime
+    command: ["echo", "Runtime image built"]
+    profiles:
+      - build
 
 volumes:
-  wendy_dev_data:
-    external: true
-    name: wendy_dev_data
-  wendy_dev_claude_config:
-    external: true
-    name: wendy_dev_claude_config
-  wendy_dev_repo:
-    external: true
-    name: wendy_dev_repo
+  wendy_data_dev:
+  wendy_claude_dev:
+  sites_data_dev:
+
+networks:
+  web:
+    name: deploy_web

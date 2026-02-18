@@ -135,11 +135,89 @@ def test_execute_select_error():
     assert execute_select(code, [], [], "123", "") is False
 
 
+def test_parse_fragment_sticky(tmp_path):
+    f = tmp_path / "topic_sticky.md"
+    f.write_text("---\ntype: topic\norder: 1\nkeywords: [test]\nsticky: 3\n---\nContent.")
+    frag = parse_fragment(f)
+    assert frag is not None
+    assert frag.sticky == 3
+
+
+def test_parse_fragment_sticky_default(tmp_path):
+    f = tmp_path / "topic_no_sticky.md"
+    f.write_text("---\ntype: topic\norder: 1\nkeywords: [test]\n---\nContent.")
+    frag = parse_fragment(f)
+    assert frag is not None
+    assert frag.sticky is None
+
+
+def test_people_dir_with_frontmatter(tmp_path):
+    people_dir = tmp_path / "people"
+    people_dir.mkdir()
+    (people_dir / "alice.md").write_text(
+        "---\ntype: person\norder: 50\nkeywords: [alice]\nmatch_authors: true\n---\nAlice content."
+    )
+    frags = scan_fragments(tmp_path)
+    assert len(frags) == 1
+    assert frags[0].type == "person"
+    assert frags[0].content == "Alice content."
+    assert frags[0].keywords == ["alice"]
+
+
+def test_people_dir_no_frontmatter(tmp_path):
+    people_dir = tmp_path / "people"
+    people_dir.mkdir()
+    (people_dir / "bob-smith.md").write_text("Bob is a cool guy.")
+    frags = scan_fragments(tmp_path)
+    assert len(frags) == 1
+    frag = frags[0]
+    assert frag.type == "person"
+    assert frag.match_authors is True
+    assert "bob-smith" in frag.keywords
+    assert "bob" in frag.keywords
+    assert "smith" in frag.keywords
+    assert frag.content == "Bob is a cool guy."
+
+
+def test_scan_fragments_includes_people_dir(tmp_path):
+    (tmp_path / "common_01.md").write_text("---\ntype: common\norder: 1\n---\nCommon")
+    people_dir = tmp_path / "people"
+    people_dir.mkdir()
+    (people_dir / "charlie.md").write_text("Charlie is around.")
+    frags = scan_fragments(tmp_path)
+    types = {f.type for f in frags}
+    assert "common" in types
+    assert "person" in types
+    assert len(frags) == 2
+
+
+def test_topic_sticky_per_fragment(tmp_path):
+    """Per-fragment sticky overrides TOPIC_STICKY_TURNS."""
+    from wendy.fragments import TOPIC_STICKY_TURNS
+    (tmp_path / "topic_short.md").write_text(
+        "---\ntype: topic\norder: 1\nkeywords: [rareword]\nsticky: 1\n---\nShort sticky."
+    )
+    # First call: keyword matches, topic loaded and state recorded
+    result1 = load_fragments("123", "test", messages=[{"content": "rareword here"}],
+                             authors=[], frag_dir=tmp_path, state_dir=tmp_path)
+    assert "Short sticky." in result1["topics"]
+
+    # Second call: keyword gone, sticky=1 so still loaded (turns_stale=1 <= 1)
+    result2 = load_fragments("123", "test", messages=[{"content": "something else"}],
+                             authors=[], frag_dir=tmp_path, state_dir=tmp_path)
+    assert "Short sticky." in result2["topics"]
+
+    # Third call: turns_stale=2 > sticky=1, should drop
+    result3 = load_fragments("123", "test", messages=[{"content": "something else"}],
+                             authors=[], frag_dir=tmp_path, state_dir=tmp_path)
+    assert "Short sticky." not in result3["topics"]
+
+
 def test_load_fragments_returns_sections(tmp_path):
     (tmp_path / "common_01.md").write_text("---\ntype: common\norder: 1\n---\nCommon stuff")
     (tmp_path / "anchor_01.md").write_text("---\ntype: anchor\norder: 1\n---\nAnchor stuff")
 
-    result = load_fragments("123", "test", messages=[], authors=[], frag_dir=tmp_path)
+    result = load_fragments("123", "test", messages=[], authors=[], frag_dir=tmp_path, state_dir=tmp_path)
     assert "channel" in result
     assert "persons" in result
     assert "topics" in result

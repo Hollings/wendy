@@ -36,7 +36,7 @@ project-name/
 
 Deploy to wendy.monster with:
 ```bash
-./scripts/wendy/deploy.sh project-name
+/data/wendy/deploy.sh project-name
 ```
 
 ### Game servers (server.ts detected):
@@ -50,7 +50,7 @@ game-name/
 
 Deploy to wendy.monster/game/<name>/ with:
 ```bash
-./scripts/wendy/deploy.sh game-name
+/data/wendy/deploy.sh game-name
 ```
 
 ## Game Server Helper Library

@@ -7,6 +7,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2 libpangocairo-1.0-0 fonts-dejavu-core \
     curl wget git tmux jq vim-tiny less unzip tar gzip ffmpeg \
+    sqlite3 imagemagick \
     build-essential \
     libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
     libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 \
@@ -22,7 +23,7 @@ RUN install -m 0755 -d /etc/apt/keyrings && \
 # Node.js, Claude Code CLI, Beads
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
-    && npm install -g @anthropic-ai/claude-code @beads/bd playwright \
+    && npm install -g @anthropic-ai/claude-code @beads/bd@0.41.0 playwright \
     && rm -rf /var/lib/apt/lists/*
 
 # Playwright Chromium
@@ -33,7 +34,7 @@ COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 # Common tools
-RUN pip install --no-cache-dir pytest ruff numpy imageio matplotlib
+RUN pip install --no-cache-dir pytest ruff numpy imageio matplotlib Pillow requests
 
 # Copy application code
 COPY . .

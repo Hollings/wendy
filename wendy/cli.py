@@ -61,6 +61,11 @@ RESPONSE EXPECTATIONS:
    Reply to a specific message (use sparingly - only when referencing a specific post for context):
    curl -X POST http://localhost:{proxy_port}/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "great point", "reply_to": MESSAGE_ID}}'
 
+   The response includes a "new_messages" array with any messages that arrived while you were working. Check it — if there are new messages, respond to them too before finishing.
+
+   If the API returns an error about new messages, check them and incorporate into your reply. If you've already checked and want to send anyway:
+   curl -X POST http://localhost:{proxy_port}/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "your message", "force": true}}'
+
    This is the ONLY way to send messages to users. Your final output goes nowhere.
 
 2. CHECK FOR NEW MESSAGES (optional, use before responding):
@@ -109,17 +114,45 @@ Your workspace for this channel is /data/wendy/channels/{channel_name}/
 - This persists between conversations
 
 SELF-CUSTOMIZATION:
-Your channel instructions are assembled from fragment files in /data/wendy/claude_fragments/.
-Files matching common_*.md and {channel_id}_*.md are loaded for this channel, sorted by the 2-digit order number.
-You can edit any fragment file to customize behavior. Changes take effect on the next message.
+Your instructions are assembled from fragment files in /data/wendy/claude_fragments/.
+Fragment types:
+- common_*.md       -- loaded every turn, all channels
+- {channel_id}_*.md -- loaded for this channel only
+- topic_*.md        -- keyword-triggered (frontmatter: keywords, sticky)
+- people/*.md       -- loaded when that person is in the conversation (match by author name/ID)
+- anchor_*.md       -- always loaded, appended at the end (behavioral reinforcement)
+You can edit any fragment file or create new ones. Changes take effect on the next message.
+Person files in people/ need no frontmatter -- the filename becomes the keyword.
 To see available fragments: ls /data/wendy/claude_fragments/
 
+DEPLOYMENT:
+Deploy static sites and Deno game servers live.
+
+Deploy a static site (must contain index.html):
+  # Create a tarball of your site files (files at root, not in a subfolder)
+  tar czf /tmp/mysite.tar.gz -C /path/to/site/dir .
+  curl -X POST http://localhost:{proxy_port}/api/deploy_site \
+    -F "name=mysite" \
+    -F "files=@/tmp/mysite.tar.gz"
+
+Deploy a Deno game server (must contain server.ts at root):
+  tar czf /tmp/mygame.tar.gz -C /path/to/game/dir .
+  curl -X POST http://localhost:{proxy_port}/api/deploy_game \
+    -F "name=mygame" \
+    -F "files=@/tmp/mygame.tar.gz"
+
+Both return JSON with {{success, url, message}}. Games also return {{ws, port}}.
+Game servers run Deno with: --allow-net --allow-read=/data,/app --allow-write=/data --allow-env=PORT,STATE_FILE
+Import helper lib as: import {{ ... }} from "/app/lib.ts" (WebSocket, state persistence utils)
+
+Deployed URLs: {{web_url}}/sitename/ and {{web_url}}/game/gamename/
+
 MESSAGE HISTORY DATABASE:
-You have full read access to the message history at /data/wendy/shared/wendy.db. Use query_db.py to search messages, check past conversations, or find old content.
+You have full read access to the message history at /data/wendy/shared/wendy.db. Use sqlite3 directly to search messages, check past conversations, or find old content.
 
 Usage:
-  python3 /app/scripts/query_db.py "SELECT * FROM message_history WHERE content LIKE '%keyword%' LIMIT 20"
-  python3 /app/scripts/query_db.py --schema    # Show all tables
+  sqlite3 /data/wendy/shared/wendy.db "SELECT * FROM message_history WHERE content LIKE '%keyword%' LIMIT 20"
+  sqlite3 /data/wendy/shared/wendy.db .schema    # Show all tables
 
 Key tables:
 - message_history: Full raw messages (message_id, channel_id, guild_id, author_id, author_nickname, is_bot, content, timestamp, attachment_urls, reply_to_id)
@@ -195,6 +228,7 @@ def build_cli_command(
         "--output-format", "stream-json",
         "--verbose",
         "--model", model,
+        "--effort", "medium",
     ]
 
     if fork_mode:
@@ -402,6 +436,14 @@ async def run_cli(
 
     is_new_session = session_info is None or force_new_session or channel_changed
 
+    # If session exists in DB but JSONL doesn't exist on disk (e.g. after !clear),
+    # treat as new so we use --session-id instead of --resume
+    if not is_new_session and session_info:
+        sess_file = session_dir(session_cwd_folder) / f"{session_info.session_id}.jsonl"
+        if not sess_file.exists():
+            _LOG.info("Session %s has no JSONL on disk, treating as new", session_info.session_id[:8])
+            is_new_session = True
+
     # For new thread sessions, try to fork from parent
     fork_mode = False
     session_id = ""
@@ -547,3 +589,11 @@ async def run_cli(
             except Exception:
                 pass
         raise ClaudeCliError(f"Timed out after {timeout}s") from None
+
+    except asyncio.CancelledError:
+        if proc and proc.returncode is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        raise

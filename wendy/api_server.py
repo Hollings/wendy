@@ -17,11 +17,11 @@ from typing import TYPE_CHECKING
 import aiohttp
 from aiohttp import web
 
+from . import config as _config
 from .config import (
     DISCORD_MAX_MESSAGE_LENGTH,
     MAX_MESSAGE_LIMIT,
     SYNTHETIC_ID_THRESHOLD,
-    WENDY_BOT_ID,
 )
 from .paths import SHARED_DIR, WENDY_BASE, attachments_dir
 from .state import state as state_manager
@@ -95,7 +95,7 @@ def check_for_new_messages(channel_id: int) -> list[dict]:
             AND m.content NOT LIKE '-%'
             ORDER BY m.message_id ASC
             """,
-            (channel_id, last_seen, WENDY_BOT_ID)
+            (channel_id, last_seen, _config.WENDY_BOT_ID)
         ).fetchall()
 
         real_rows = [r for r in rows if r["message_id"] < SYNTHETIC_ID_THRESHOLD]
@@ -158,18 +158,20 @@ async def handle_send_message(request: web.Request) -> web.Response:
         return web.json_response({"error": "Invalid channel_id"}, status=400)
 
     # Check for new messages (interrupt system)
-    new_messages = check_for_new_messages(channel_id)
-    if new_messages:
-        return web.json_response({
-            "error": "New messages received since your last check. Review them and retry.",
-            "new_messages": new_messages,
-            "guidance": (
-                "Prefer sending ONE message that responds to all users at once, "
-                "rather than one message per person. Edit your reply to address everyone, then retry. "
-                "IMPORTANT: Do NOT mention this to users. No references to 'catching duplicates', "
-                "'interrupts', 'warnings', or anything about internal systems. Just naturally respond to everyone."
-            ),
-        })
+    force = bool(body.get("force", False))
+    if not force:
+        new_messages = check_for_new_messages(channel_id)
+        if new_messages:
+            return web.json_response({
+                "error": "New messages received since your last check. Review them and retry.",
+                "new_messages": new_messages,
+                "guidance": (
+                    "Prefer sending ONE message that responds to all users at once, "
+                    "rather than one message per person. Edit your reply to address everyone, then retry. "
+                    "IMPORTANT: Do NOT mention this to users. No references to 'catching duplicates', "
+                    "'interrupts', 'warnings', or anything about internal systems. Just naturally respond to everyone."
+                ),
+            })
 
     if not _discord_bot:
         return web.json_response({"error": "Discord bot not ready"}, status=503)
@@ -230,7 +232,8 @@ async def handle_send_message(request: web.Request) -> web.Response:
                     status=400,
                 )
 
-        return web.json_response({"success": True, "results": results})
+        new_messages = check_for_new_messages(channel_id)
+        return web.json_response({"success": True, "results": results, "new_messages": new_messages})
 
     # Single message mode
     msg_text = body.get("content") or body.get("message") or ""
@@ -257,7 +260,8 @@ async def handle_send_message(request: web.Request) -> web.Response:
         reply_ref = discord.MessageReference(message_id=int(reply_to), channel_id=channel_id)
 
     await channel.send(content=msg_text or None, file=file_obj, reference=reply_ref)
-    return web.json_response({"success": True, "message": "Message sent"})
+    new_messages = check_for_new_messages(channel_id)
+    return web.json_response({"success": True, "message": "Message sent", "new_messages": new_messages})
 
 
 async def handle_check_messages(request: web.Request) -> web.Response:
@@ -303,7 +307,7 @@ async def handle_check_messages(request: web.Request) -> web.Response:
                         AND m.content NOT LIKE '!%' AND m.content NOT LIKE '-%'
                         ORDER BY m.message_id DESC LIMIT ?
                         """,
-                        (channel_id, since_id, WENDY_BOT_ID, limit)
+                        (channel_id, since_id, _config.WENDY_BOT_ID, limit)
                     ).fetchall()
                 else:
                     rows = conn.execute(
@@ -319,7 +323,7 @@ async def handle_check_messages(request: web.Request) -> web.Response:
                         AND m.content NOT LIKE '!%' AND m.content NOT LIKE '-%'
                         ORDER BY m.message_id DESC LIMIT ?
                         """,
-                        (channel_id, WENDY_BOT_ID, limit)
+                        (channel_id, _config.WENDY_BOT_ID, limit)
                     ).fetchall()
 
                 for row in rows:
@@ -408,14 +412,13 @@ async def handle_emojis(request: web.Request) -> web.Response:
 # Deploy proxy endpoints
 # =============================================================================
 
-WENDY_SITES_URL = os.getenv("WENDY_SITES_URL", "http://wendy-sites:8910")
-WENDY_GAMES_URL = os.getenv("WENDY_GAMES_URL", "http://wendy-games:8920")
+WENDY_WEB_URL = os.getenv("WENDY_WEB_URL", "http://localhost:8910")
 WENDY_DEPLOY_TOKEN = os.getenv("WENDY_DEPLOY_TOKEN", "")
-WENDY_GAMES_TOKEN = os.getenv("WENDY_GAMES_TOKEN", "")
+WENDY_GAMES_TOKEN = os.getenv("WENDY_GAMES_TOKEN", WENDY_DEPLOY_TOKEN)
 
 
 async def handle_deploy_site(request: web.Request) -> web.Response:
-    """POST /api/deploy_site -- proxy deploy to wendy-sites."""
+    """POST /api/deploy_site -- proxy deploy to wendy-web."""
     if not WENDY_DEPLOY_TOKEN:
         return web.json_response({"error": "WENDY_DEPLOY_TOKEN not configured"}, status=500)
 
@@ -439,7 +442,7 @@ async def handle_deploy_site(request: web.Request) -> web.Response:
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
             async with session.post(
-                f"{WENDY_SITES_URL}/api/deploy",
+                f"{WENDY_WEB_URL}/api/sites/deploy",
                 data=form,
                 headers={"Authorization": f"Bearer {WENDY_DEPLOY_TOKEN}"},
             ) as resp:
@@ -454,14 +457,14 @@ async def handle_deploy_site(request: web.Request) -> web.Response:
             "message": result.get("message", "Site deployed"),
         })
     except aiohttp.ClientError as e:
-        return web.json_response({"error": f"Cannot connect to wendy-sites: {e}"}, status=502)
+        return web.json_response({"error": f"Cannot connect to wendy-web: {e}"}, status=502)
     except Exception as e:
         _LOG.error("deploy_site error: %s", e)
         return web.json_response({"error": "Internal server error"}, status=500)
 
 
 async def handle_deploy_game(request: web.Request) -> web.Response:
-    """POST /api/deploy_game -- proxy deploy to wendy-games."""
+    """POST /api/deploy_game -- proxy deploy to wendy-web."""
     if not WENDY_GAMES_TOKEN:
         return web.json_response({"error": "WENDY_GAMES_TOKEN not configured"}, status=500)
 
@@ -485,7 +488,7 @@ async def handle_deploy_game(request: web.Request) -> web.Response:
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
             async with session.post(
-                f"{WENDY_GAMES_URL}/api/deploy",
+                f"{WENDY_WEB_URL}/api/games/deploy",
                 data=form,
                 headers={"Authorization": f"Bearer {WENDY_GAMES_TOKEN}"},
             ) as resp:
@@ -502,7 +505,7 @@ async def handle_deploy_game(request: web.Request) -> web.Response:
             "message": result.get("message", "Game deployed"),
         })
     except aiohttp.ClientError as e:
-        return web.json_response({"error": f"Cannot connect to wendy-games: {e}"}, status=502)
+        return web.json_response({"error": f"Cannot connect to wendy-web: {e}"}, status=502)
     except Exception as e:
         _LOG.error("deploy_game error: %s", e)
         return web.json_response({"error": "Internal server error"}, status=500)
@@ -516,7 +519,7 @@ async def handle_game_logs(request: web.Request) -> web.Response:
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             async with session.get(
-                f"{WENDY_GAMES_URL}/api/games/{name}/logs",
+                f"{WENDY_WEB_URL}/api/games/{name}/logs",
                 params={"lines": lines},
                 headers={"Authorization": f"Bearer {WENDY_GAMES_TOKEN}"},
             ) as resp:

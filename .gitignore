@@ -7,6 +7,12 @@ __pycache__/
 dist/
 build/
 .env
+wendy_secrets.json
+
+# Personal pack -- instance-specific, managed via scripts/pack-*.sh
+config/claude_fragments/people/*.md
+config/docs/deployment.md
+personal-pack.tar.gz
 *.db
 *.db-journal
 *.db-wal

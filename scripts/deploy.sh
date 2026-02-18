@@ -121,7 +121,7 @@ if [[ $SIZE -gt $MAX_SIZE ]]; then
     error "Project too large (max ${MAX_SIZE_HUMAN}). Current size: ${SIZE_KB}KB"
 fi
 
-# Deploy via proxy
+# Deploy via internal API
 echo "Deploying '$PROJECT_PATH' to ${FINAL_URL}..."
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${PROXY_URL}${API_ENDPOINT}" \
     -F "name=${TARGET_URL}" \

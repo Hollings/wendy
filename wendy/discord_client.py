@@ -13,7 +13,7 @@ from pathlib import Path
 import discord
 from discord.ext import commands, tasks
 
-from . import api_server
+from . import api_server, sessions
 from .cli import ClaudeCliError, run_cli, setup_wendy_scripts
 from .config import MESSAGE_LOGGER_GUILDS, PROXY_PORT, parse_channel_configs
 from .paths import (
@@ -22,6 +22,7 @@ from .paths import (
     claude_md_path,
     ensure_channel_dirs,
     ensure_shared_dirs,
+    session_dir,
 )
 from .state import state as state_manager
 from .tasks import TaskRunner
@@ -65,6 +66,107 @@ class WendyBot(commands.Bot):
 
         _LOG.info("WendyBot initialized with %d channels", len(self.whitelist_channels))
 
+        @self.command(name="version")
+        async def cmd_version(ctx: commands.Context) -> None:
+            """!version -- show the running git commit."""
+            import subprocess
+            try:
+                sha = subprocess.check_output(
+                    ["git", "rev-parse", "--short", "HEAD"],
+                    cwd="/app", stderr=subprocess.DEVNULL,
+                ).decode().strip()
+                msg = subprocess.check_output(
+                    ["git", "log", "-1", "--format=%s"],
+                    cwd="/app", stderr=subprocess.DEVNULL,
+                ).decode().strip()
+                await ctx.send(f"`{sha}` {msg}")
+            except Exception:
+                await ctx.send("version unknown")
+
+        @self.command(name="system")
+        async def cmd_system(ctx: commands.Context) -> None:
+            """!system -- upload the assembled system prompt as a text file."""
+            import io
+            channel_id = ctx.channel.id
+            channel_config = self.channel_configs.get(channel_id)
+            if channel_config is None:
+                await ctx.send("no config for this channel")
+                return
+            try:
+                from .prompt import build_system_prompt
+                prompt = build_system_prompt(channel_id, channel_config)
+                buf = io.BytesIO(prompt.encode("utf-8"))
+                await ctx.send(file=discord.File(buf, filename="system_prompt.txt"))
+            except Exception as e:
+                await ctx.send(f"error: {e}")
+
+        @self.command(name="clear")
+        async def cmd_clear(ctx: commands.Context) -> None:
+            """!clear -- reset the current Claude session."""
+            channel_id = ctx.channel.id
+            channel_config = self.channel_configs.get(channel_id)
+            if channel_config is None:
+                await ctx.send("not a configured channel")
+                return
+            folder = channel_config.get("_folder") or channel_config.get("name", "default")
+            old_id, new_id = sessions.reset_session(channel_id, folder)
+            if old_id:
+                await ctx.send(f"session cleared. old: `{old_id[:8]}` new: `{new_id[:8]}`")
+            else:
+                await ctx.send(f"new session started: `{new_id[:8]}`")
+
+        @self.command(name="resume")
+        async def cmd_resume(ctx: commands.Context, *, session_id_prefix: str = "") -> None:
+            """!resume <session_id> -- resume a previous session by ID or prefix."""
+            if not session_id_prefix:
+                await ctx.send("usage: `!resume <session_id>`")
+                return
+            channel_id = ctx.channel.id
+            channel_config = self.channel_configs.get(channel_id)
+            if channel_config is None:
+                await ctx.send("not a configured channel")
+                return
+            folder = channel_config.get("_folder") or channel_config.get("name", "default")
+            row = state_manager.get_session_by_id(session_id_prefix)
+            if not row:
+                await ctx.send("session not found")
+                return
+            full_id = row["session_id"]
+            sess_file = session_dir(folder) / f"{full_id}.jsonl"
+            if not sess_file.exists():
+                await ctx.send(
+                    f"warning: session file not found for `{full_id[:8]}`, resuming anyway"
+                )
+            sessions.resume_session(channel_id, full_id, folder)
+            await ctx.send(f"resumed session `{full_id[:8]}`")
+
+        @self.command(name="session")
+        async def cmd_session(ctx: commands.Context) -> None:
+            """!session -- show current session info."""
+            import datetime
+            channel_id = ctx.channel.id
+            sess = sessions.get_session(channel_id)
+            if not sess:
+                await ctx.send("no active session")
+                return
+            started = datetime.datetime.fromtimestamp(
+                sess.created_at, tz=datetime.timezone.utc
+            )
+            started_str = started.strftime("%Y-%m-%d %H:%M UTC")
+            total_tokens = sess.total_input_tokens + sess.total_output_tokens
+            total_in_with_cache = sess.total_input_tokens + sess.total_cache_read_tokens
+            if total_in_with_cache:
+                cache_rate = f"{sess.total_cache_read_tokens / total_in_with_cache:.0%}"
+            else:
+                cache_rate = "n/a"
+            lines = [
+                f"session: `{sess.session_id[:8]}`",
+                f"started: {started_str}",
+                f"turns: {sess.message_count}",
+                f"tokens: {total_tokens:,} (cache hit: {cache_rate})",
+            ]
+            await ctx.send("\n".join(lines))
+
     async def setup_hook(self) -> None:
         """Called when the bot is starting up (before on_ready)."""
         # Setup scripts and fragments
@@ -104,6 +206,8 @@ class WendyBot(commands.Bot):
 
     async def on_ready(self) -> None:
         _LOG.info("Logged in as %s (id=%d)", self.user.name, self.user.id)
+        from . import config as _config
+        _config.WENDY_BOT_ID = self.user.id
 
         # Ensure channel directories exist
         for cfg in self.channel_configs.values():
@@ -160,13 +264,19 @@ class WendyBot(commands.Bot):
         await self._save_attachments(message, channel_name)
 
         # Check if bot should respond
-        if not self._should_respond(message):
+        if not self._channel_allowed(message):
             return
 
         _LOG.info("Processing message from %s: %s...", message.author.display_name, message.content[:50])
 
-        # Check for existing generation
+        # Check for interrupt trigger ("WENDY" in all caps)
         existing_job = self._active_generations.get(message.channel.id)
+        if message.content.strip() == "WENDY":
+            if existing_job and existing_job.task and not existing_job.task.done():
+                self._interrupt_channel(message, existing_job, channel_config, channel_name)
+                return
+
+        # Check for existing generation
         if existing_job and existing_job.task and not existing_job.task.done():
             existing_job.new_message_pending = True
             _LOG.info("CLI already running in channel %s, marked pending", message.channel.id)
@@ -183,7 +293,9 @@ class WendyBot(commands.Bot):
         """Update cached message content when edited."""
         if not payload.guild_id:
             return
-        if MESSAGE_LOGGER_GUILDS and payload.guild_id not in MESSAGE_LOGGER_GUILDS:
+        in_logger_guild = bool(MESSAGE_LOGGER_GUILDS and payload.guild_id in MESSAGE_LOGGER_GUILDS)
+        in_whitelisted_channel = payload.channel_id in self.whitelist_channels
+        if not in_logger_guild and not in_whitelisted_channel:
             return
         data = payload.data
         if "content" not in data:
@@ -194,15 +306,6 @@ class WendyBot(commands.Bot):
             _LOG.error("Failed to update edited message %s: %s", payload.message_id, e)
 
     def _channel_allowed(self, message: discord.Message) -> bool:
-        if self.user in message.mentions:
-            return True
-        if message.channel.id in self.whitelist_channels:
-            return True
-        if isinstance(message.channel, discord.Thread):
-            return message.channel.parent_id in self.whitelist_channels
-        return False
-
-    def _should_respond(self, message: discord.Message) -> bool:
         if self.user in message.mentions:
             return True
         if message.channel.id in self.whitelist_channels:
@@ -320,6 +423,38 @@ class WendyBot(commands.Bot):
         """Build system prompt via prompt.py."""
         from .prompt import build_system_prompt
         return build_system_prompt(channel_id, channel_config)
+
+    def _interrupt_channel(
+        self,
+        message: discord.Message,
+        existing_job: GenerationJob,
+        channel_config: dict,
+        channel_name: str,
+    ) -> None:
+        """Cancel the running generation, reset session, and start a fresh one."""
+        channel_id = message.channel.id
+        model_override = channel_config.get("model")
+
+        # Replace the active generation BEFORE cancelling so the old job's finally
+        # block sees a different job and won't start its own restart.
+        new_job = GenerationJob()
+        self._active_generations[channel_id] = new_job
+
+        # Cancel the old task (CancelledError propagates into run_cli which kills the subprocess)
+        existing_job.task.cancel()
+        _LOG.info("Interrupted active generation for channel %s by %s", channel_id, message.author.display_name)
+
+        # Insert synthetic notice so Wendy sees it on check_messages
+        self._insert_synthetic_message(
+            channel_id,
+            "System",
+            f"[{message.author.display_name} interrupted you. Whatever you were doing may not be finished.]",
+        )
+
+        new_task = self.loop.create_task(
+            self._generate_response(message.channel, new_job, model_override=model_override)
+        )
+        new_job.task = new_task
 
     async def _generate_response(
         self,
@@ -467,7 +602,7 @@ class WendyBot(commands.Bot):
                     content = f"[{author}] {notif.title}{payload_content}"
 
                     self._insert_synthetic_message(channel_id, author, content)
-                    channels_to_wake.add(channel_id)
+                    # Don't add to channels_to_wake -- webhooks queue but don't wake Wendy
 
             if notification_ids:
                 state_manager.mark_notifications_seen_by_wendy(notification_ids)

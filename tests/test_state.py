@@ -246,6 +246,68 @@ def test_get_thread_missing(tmp_path):
 
 
 # =========================================================================
+# Session history
+# =========================================================================
+
+
+def test_session_archived_on_replace(tmp_path):
+    sm = _make_sm(tmp_path)
+    sm.create_session(123, "sess-1", "general")
+    sm.update_session_stats(123, input_tokens=50, output_tokens=25)
+
+    # Creating a new session should archive the old one
+    sm.create_session(123, "sess-2", "general")
+
+    history = sm.get_session_history(123)
+    assert len(history) == 1
+    assert history[0]["session_id"] == "sess-1"
+    assert history[0]["message_count"] == 1
+    assert history[0]["total_input_tokens"] == 50
+
+
+def test_session_not_archived_on_first_create(tmp_path):
+    sm = _make_sm(tmp_path)
+    sm.create_session(123, "sess-1", "general")
+
+    history = sm.get_session_history(123)
+    assert len(history) == 0
+
+
+def test_get_session_by_id_exact(tmp_path):
+    sm = _make_sm(tmp_path)
+    sm.create_session(123, "aaaa-bbbb-cccc", "general")
+    sm.create_session(123, "dddd-eeee-ffff", "general")  # archives first
+
+    result = sm.get_session_by_id("aaaa-bbbb-cccc")
+    assert result is not None
+    assert result["session_id"] == "aaaa-bbbb-cccc"
+
+
+def test_get_session_by_id_prefix(tmp_path):
+    sm = _make_sm(tmp_path)
+    sm.create_session(123, "aaaa-bbbb-cccc", "general")
+    sm.create_session(123, "dddd-eeee-ffff", "general")
+
+    result = sm.get_session_by_id("aaaa")
+    assert result is not None
+    assert result["session_id"] == "aaaa-bbbb-cccc"
+
+
+def test_get_session_by_id_active_session(tmp_path):
+    sm = _make_sm(tmp_path)
+    sm.create_session(123, "active-session-id", "general")
+
+    result = sm.get_session_by_id("active")
+    assert result is not None
+    assert result["session_id"] == "active-session-id"
+
+
+def test_get_session_by_id_not_found(tmp_path):
+    sm = _make_sm(tmp_path)
+    assert sm.get_session_by_id("nonexistent") is None
+
+
+# =========================================================================
 # Usage state
 # =========================================================================
 

@@ -24,6 +24,45 @@ services:
       - WENDY_PROXY_PORT=8945
       - ORCHESTRATOR_CONCURRENCY=3
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - WENDY_WEB_URL=http://localhost:8910
+
+  web:
+    build:
+      context: ..
+      dockerfile: services/web/Dockerfile
+    container_name: wendy-web
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:8910:8000"
+    networks:
+      - web
+    volumes:
+      - sites_data:/data/sites
+      - /srv/wendy-games/data:/data/games
+      - wendy_data:/data/wendy
+      - claude_config:/data/claude:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    env_file:
+      - /srv/secrets/wendy/sites.env
+    environment:
+      - WENDY_DB_PATH=/data/wendy/shared/wendy.db
+      - SITES_DIR=/data/sites
+      - GAMES_DIR=/data/games
+      - HOST_GAMES_DIR=/srv/wendy-games/data
+      - BASE_PORT=8921
+      - MAX_GAMES=20
+      - BASE_URL=https://wendy.monster
+      - DOCKER_NETWORK=wendy_web
+
+  # Build the Deno game runtime image
+  runtime-builder:
+    build:
+      context: ..
+      dockerfile: services/runtime/Dockerfile
+    image: wendy-games-runtime
+    command: ["echo", "Runtime image built"]
+    profiles:
+      - build
 
 volumes:
   wendy_data:
@@ -32,3 +71,10 @@ volumes:
   claude_config:
     external: true
     name: claude_config
+  sites_data:
+    external: true
+    name: wendy-sites_sites_data
+
+networks:
+  web:
+    name: wendy_web

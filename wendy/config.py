@@ -17,7 +17,7 @@ _LOG = logging.getLogger(__name__)
 
 MODEL_MAP: dict[str, str] = {
     "opus": "claude-opus-4-6",
-    "sonnet": "claude-sonnet-4-5-20250929",
+    "sonnet": "claude-sonnet-4-6",
     "haiku": "claude-haiku-4-5-20251001",
 }
 
@@ -25,13 +25,14 @@ MODEL_MAP: dict[str, str] = {
 # Constants
 # =============================================================================
 
-MAX_DISCORD_MESSAGES: int = 50
 MAX_STREAM_LOG_LINES: int = 5000
 PROXY_PORT: str = os.getenv("WENDY_PROXY_PORT", "8945")
 CLAUDE_CLI_TIMEOUT: int = int(os.getenv("CLAUDE_CLI_TIMEOUT", "300"))
 JOURNAL_NUDGE_INTERVAL: int = int(os.getenv("JOURNAL_NUDGE_INTERVAL", "10"))
 DISCORD_MAX_MESSAGE_LENGTH: int = 2000
-WENDY_BOT_ID: int = 771821437199581204
+WENDY_BOT_ID: int = int(os.getenv("WENDY_BOT_USER_ID", "0"))
+WENDY_BOT_NAME: str = os.getenv("WENDY_BOT_NAME", "Wendy")
+WENDY_WEB_URL: str = os.getenv("WENDY_WEB_URL", "wendy.monster")
 SYNTHETIC_ID_THRESHOLD: int = 9_000_000_000_000_000_000
 MAX_MESSAGE_LIMIT: int = 200
 DEV_MODE: bool = os.getenv("WENDY_DEV_MODE", "") == "1"
@@ -57,6 +58,8 @@ SENSITIVE_ENV_VARS: set[str] = {
     "WENDY_GAMES_TOKEN",
     "GEMINI_API_KEY",
     "CLAUDE_SYNC_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "GITHUB_PAT",
 }
 
 # =============================================================================

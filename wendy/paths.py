@@ -5,6 +5,7 @@ Leaf module -- zero internal imports.
 """
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -12,7 +13,7 @@ from pathlib import Path
 # Base Paths
 # =============================================================================
 
-WENDY_BASE: Path = Path("/data/wendy")
+WENDY_BASE: Path = Path(os.getenv("WENDY_BASE_DIR", "/data/wendy"))
 CHANNELS_DIR: Path = WENDY_BASE / "channels"
 SHARED_DIR: Path = WENDY_BASE / "shared"
 TMP_DIR: Path = WENDY_BASE / "tmp"
@@ -24,7 +25,7 @@ STREAM_LOG_FILE: Path = WENDY_BASE / "stream.jsonl"
 # Claude Session Paths
 # =============================================================================
 
-CLAUDE_PROJECTS_DIR: Path = Path("/root/.claude/projects")
+CLAUDE_PROJECTS_DIR: Path = Path(os.getenv("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))) / "projects"
 
 
 def _encode_path_for_claude(path: Path) -> str:

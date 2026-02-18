@@ -30,12 +30,13 @@ def test_get_base_system_prompt_chat_mode_filters(tmp_path):
     prompt_file = tmp_path / "prompt.txt"
     prompt_file.write_text(
         "Header\n"
-        "Writing code and tasks\n"
+        "<!-- FULL_ONLY_START -->\n"
         "This section should be removed\n"
-        "Progress updates\n"
+        "<!-- FULL_ONLY_END -->\n"
         "This should remain\n"
-        "Deployment\n"
+        "<!-- FULL_ONLY_START -->\n"
         "This should also be removed\n"
+        "<!-- FULL_ONLY_END -->\n"
     )
     with mock.patch.dict("os.environ", {"SYSTEM_PROMPT_FILE": str(prompt_file)}):
         result = _get_base_system_prompt("chat", mode="chat")
@@ -43,7 +44,6 @@ def test_get_base_system_prompt_chat_mode_filters(tmp_path):
         assert "This section should be removed" not in result
         assert "This should remain" in result
         assert "This should also be removed" not in result
-        assert "Deployment" not in result
 
 
 def test_get_journal_section(tmp_path):

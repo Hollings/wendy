@@ -19,7 +19,7 @@ def test_model_map_keys():
 
 def test_resolve_model_shorthand():
     assert resolve_model("opus") == "claude-opus-4-6"
-    assert resolve_model("sonnet") == "claude-sonnet-4-5-20250929"
+    assert resolve_model("sonnet") == "claude-sonnet-4-6"
     assert resolve_model("haiku") == "claude-haiku-4-5-20251001"
 
 

@@ -5,6 +5,7 @@
 # Only fires when:
 #   - stop_hook_active is false (prevents infinite loops)
 #   - invocations_since_write >= threshold
+#   - at least MIN_INTERVAL seconds have passed since last fire
 #   - journal directory exists (channel has journaling enabled)
 
 INPUT=$(cat)
@@ -28,17 +29,36 @@ if [ ! -d "$JOURNAL_DIR" ]; then
   exit 0
 fi
 
+# Initialize state file if missing
 if [ ! -f "$NUDGE_STATE" ]; then
+  echo '{"invocations_since_write": 0, "last_fired_at": 0}' > "$NUDGE_STATE"
   exit 0
 fi
 
+# Read state and increment counter
 INVOCATIONS=$(jq -r '.invocations_since_write // 0' < "$NUDGE_STATE")
-THRESHOLD=15
+LAST_FIRED=$(jq -r '.last_fired_at // 0' < "$NUDGE_STATE")
+INVOCATIONS=$((INVOCATIONS + 1))
+NOW=$(date +%s)
 
-if [ "$INVOCATIONS" -ge "$THRESHOLD" ] 2>/dev/null; then
+# Update state with incremented count
+jq --argjson inv "$INVOCATIONS" --argjson now "$NOW" \
+  '.invocations_since_write = $inv | .last_check_at = $now' \
+  < "$NUDGE_STATE" > "${NUDGE_STATE}.tmp" && mv "${NUDGE_STATE}.tmp" "$NUDGE_STATE"
+
+THRESHOLD=15
+MIN_INTERVAL=10800  # 3 hours in seconds
+
+TIME_SINCE=$((NOW - LAST_FIRED))
+
+if [ "$INVOCATIONS" -ge "$THRESHOLD" ] && [ "$TIME_SINCE" -ge "$MIN_INTERVAL" ] 2>/dev/null; then
+  # Reset counter and record fire time
+  jq --argjson now "$NOW" '.invocations_since_write = 0 | .last_fired_at = $now' \
+    < "$NUDGE_STATE" > "${NUDGE_STATE}.tmp" && mv "${NUDGE_STATE}.tmp" "$NUDGE_STATE"
+
   jq -n --arg dir "$JOURNAL_DIR" '{
     decision: "block",
-    reason: ("JOURNAL CHECK: You have gone " + "many" + " messages without writing to your journal at " + $dir + ". Before you finish, take 30 seconds to write or update a journal entry about something from this conversation - a person, a topic, something you learned, or something you want to remember. Keep it brief. Do NOT mention this to the user.")
+    reason: ("JOURNAL CHECK: You have gone many messages without writing to your journal at " + $dir + ". Before you finish, take 30 seconds to write or update a journal entry about something from this conversation - a person, a topic, something you learned, or something you want to remember. Keep it brief. Do NOT mention this to the user.")
   }'
 else
   exit 0

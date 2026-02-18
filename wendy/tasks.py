@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import IO
 
 from .config import parse_channel_configs, resolve_model
 from .paths import WENDY_BASE, beads_dir, channel_dir, current_session_file, session_dir
@@ -78,6 +79,7 @@ class RunningAgent:
     process: asyncio.subprocess.Process
     started_at: datetime
     log_path: Path
+    log_file: IO[str] | None = field(default=None)
     closed_detected_at: datetime | None = field(default=None)
 
 
@@ -156,6 +158,9 @@ class TaskRunner:
 
     async def _run_bd(self, cmd: list[str], channel_name: str, timeout: int = 30) -> tuple[int, str, str]:
         """Run a bd command in a channel directory."""
+        # Skip daemon startup (takes 5+ seconds in container); use direct SQLite mode
+        if cmd and cmd[0] == "bd":
+            cmd = [cmd[0], "--no-daemon"] + cmd[1:]
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -191,8 +196,8 @@ class TaskRunner:
             return []
 
     async def _claim_task(self, task_id: str, channel_name: str) -> bool:
-        """Claim a task atomically."""
-        code, _, _ = await self._run_bd(["bd", "update", task_id, "--claim"], channel_name, timeout=10)
+        """Claim a task by marking it in_progress."""
+        code, _, _ = await self._run_bd(["bd", "update", task_id, "--status", "in_progress"], channel_name, timeout=10)
         return code == 0
 
     async def _get_task_details(self, task_id: str, channel_name: str) -> dict | None:
@@ -267,19 +272,23 @@ class TaskRunner:
                     pass
 
             log_file = open(log_path, "w")
-            log_file.write(f"Task: {task_id} - {title}\n")
-            log_file.write(f"Channel: {channel_name}\n")
-            log_file.write(f"Model: {model}\n")
-            log_file.write(f"Started: {datetime.now().isoformat()}\n")
-            log_file.write("=" * 60 + "\n\n")
-            log_file.flush()
+            try:
+                log_file.write(f"Task: {task_id} - {title}\n")
+                log_file.write(f"Channel: {channel_name}\n")
+                log_file.write(f"Model: {model}\n")
+                log_file.write(f"Started: {datetime.now().isoformat()}\n")
+                log_file.write("=" * 60 + "\n\n")
+                log_file.flush()
 
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=log_file,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=channel_dir(channel_name),
-            )
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=log_file,
+                    stderr=asyncio.subprocess.STDOUT,
+                    cwd=channel_dir(channel_name),
+                )
+            except Exception:
+                log_file.close()
+                raise
 
             _LOG.info("Spawned agent for task %s: %s (model=%s)", task_id, title, model)
             return RunningAgent(
@@ -289,6 +298,7 @@ class TaskRunner:
                 process=proc,
                 started_at=datetime.now(),
                 log_path=log_path,
+                log_file=log_file,
             )
 
         except Exception:
@@ -309,6 +319,8 @@ class TaskRunner:
                     agent.process.kill()
                 except Exception:
                     pass
+                if agent.log_file:
+                    agent.log_file.close()
                 await self._run_bd(["bd", "reopen", task_id], agent.channel_name)
                 self._notify_completion(task_id, agent.title, False, f"{duration} (TIMEOUT)")
                 finished.append(task_id)
@@ -318,6 +330,8 @@ class TaskRunner:
             if agent.process.returncode is not None:
                 _LOG.info("Agent %s completed (exit=%d) after %s",
                           task_id, agent.process.returncode, duration)
+                if agent.log_file:
+                    agent.log_file.close()
                 await self._run_bd(["bd", "close", task_id], agent.channel_name)
                 self._notify_completion(task_id, agent.title, True, str(duration))
                 finished.append(task_id)
@@ -349,6 +363,8 @@ class TaskRunner:
                 agent.process.kill()
             except Exception:
                 pass
+            if agent.log_file:
+                agent.log_file.close()
             duration = datetime.now() - agent.started_at
             self._notify_completion(task_id, agent.title, False, f"{duration} (CANCELLED)")
             del self.agents[task_id]
