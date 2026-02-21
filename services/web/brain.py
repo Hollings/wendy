@@ -48,6 +48,12 @@ DB_PATH: Path = Path(os.getenv("WENDY_DB_PATH", "/data/wendy/shared/wendy.db"))
 CLAUDE_DIR: Path = Path("/data/claude")
 """Base directory for Claude Code data (projects, sessions)."""
 
+ORCHESTRATOR_LOGS_DIR: Path = Path("/data/wendy/orchestrator_logs")
+"""Directory containing agent_{task_id}_{ts}.log files from beads agents."""
+
+BEADS_JSONL: Path = Path("/data/wendy/channels/coding/.beads/issues.jsonl")
+"""Beads task list (issues.jsonl) — watched for live sidebar updates."""
+
 MAX_HISTORY: int = 50
 """Number of recent events to send to newly connected clients."""
 
@@ -66,6 +72,9 @@ connected_clients: set[WebSocket] = set()
 
 _watcher_task: asyncio.Task | None = None
 """Background task running tail_stream()."""
+
+_beads_watcher_task: asyncio.Task | None = None
+"""Background task running tail_beads()."""
 
 _latest_stats: dict = {
     "context_tokens": 0,
@@ -535,17 +544,178 @@ def get_agent_events(agent_id: str, limit: int = 50) -> list[str]:
 
 
 # =============================================================================
+# Channel Map
+# =============================================================================
+
+
+def get_channels_map() -> dict:
+    """Return {channel_id: display_name} from channel_sessions, preferring thread_name for threads.
+
+    Used to label channel chips in the feed UI.
+    """
+    try:
+        if not DB_PATH.exists():
+            return {}
+        with sqlite3.connect(DB_PATH) as conn:
+            rows = conn.execute(
+                """
+                SELECT cs.channel_id, COALESCE(tr.thread_name, cs.folder) AS display_name
+                FROM channel_sessions cs
+                LEFT JOIN thread_registry tr ON tr.thread_id = cs.channel_id
+                WHERE cs.channel_id IS NOT NULL AND cs.folder IS NOT NULL
+                """
+            ).fetchall()
+            return {str(row[0]): row[1] for row in rows}
+    except Exception as e:
+        _LOG.debug("Failed to get channels map: %s", e)
+        return {}
+
+
+# =============================================================================
+# Beads Watcher
+# =============================================================================
+
+
+def _read_beads_list() -> list[dict]:
+    """Read and deduplicate issues.jsonl, return sorted beads list."""
+    if not BEADS_JSONL.exists():
+        return []
+    issues: dict = {}
+    try:
+        for line in BEADS_JSONL.read_text().strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                if iid := data.get("id"):
+                    issues[iid] = data
+            except json.JSONDecodeError:
+                continue
+    except Exception as e:
+        _LOG.debug("Failed to read beads list: %s", e)
+        return []
+
+    beads = [
+        {
+            "id": iid,
+            "title": d.get("title", "Untitled"),
+            "status": d.get("status", "open"),
+            "created": d.get("created"),
+            "updated": d.get("updated", d.get("created")),
+        }
+        for iid, d in issues.items()
+    ]
+    order = {"in_progress": 0, "open": 1, "closed": 2, "tombstone": 3}
+    beads.sort(key=lambda b: (order.get(b["status"], 4),))
+    return beads
+
+
+def _extract_task_id(filename: str) -> str | None:
+    """Parse task_id from agent_{task_id}_{ts}.log filename."""
+    name = filename.removesuffix(".log")
+    parts = name.split("_")
+    # agent_<task_id>_<timestamp>  -> parts[0]="agent", parts[1]=task_id
+    if len(parts) >= 3 and parts[0] == "agent":
+        return parts[1]
+    return None
+
+
+async def tail_beads() -> None:
+    """Watch orchestrator logs and issues.jsonl; broadcast live bead updates.
+
+    Two broadcast types emitted:
+    - {"type": "beads_list", "beads": [...]}  when issues.jsonl changes
+    - {ts, bead_id, channel_id: null, event: {...}}  when an agent log grows
+    """
+    _LOG.info("Starting beads watcher...")
+    log_positions: dict[str, int] = {}
+
+    while True:
+        try:
+            watch_dirs = []
+            if ORCHESTRATOR_LOGS_DIR.exists():
+                watch_dirs.append(ORCHESTRATOR_LOGS_DIR)
+            if BEADS_JSONL.parent.exists():
+                watch_dirs.append(BEADS_JSONL.parent)
+
+            if not watch_dirs:
+                await asyncio.sleep(10)
+                continue
+
+            async for changes in awatch(*watch_dirs):
+                for change_type, path_str in changes:
+                    path = Path(path_str)
+
+                    # issues.jsonl changed -> broadcast updated beads list
+                    if path == BEADS_JSONL:
+                        beads = _read_beads_list()
+                        await broadcast(json.dumps({"type": "beads_list", "beads": beads}))
+                        continue
+
+                    # Agent log file changed -> tail new lines
+                    if (
+                        path.parent == ORCHESTRATOR_LOGS_DIR
+                        and path.suffix == ".log"
+                        and change_type != Change.deleted
+                    ):
+                        task_id = _extract_task_id(path.name)
+                        if not task_id:
+                            continue
+                        try:
+                            current_size = path.stat().st_size
+                            pos = log_positions.get(path_str, current_size)
+                            if current_size < pos:
+                                pos = 0  # file was truncated/replaced
+                            if current_size <= pos:
+                                log_positions[path_str] = current_size
+                                continue
+                            with open(path) as f:
+                                f.seek(pos)
+                                new_lines = f.readlines()
+                                log_positions[path_str] = f.tell()
+                            import time as _time
+                            ts = int(_time.time() * 1000)
+                            for line in new_lines:
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                # Try to parse as stream-json event
+                                try:
+                                    event_data = json.loads(line)
+                                    # Wrap as a bead event envelope
+                                    envelope = {
+                                        "ts": event_data.get("ts", ts),
+                                        "bead_id": task_id,
+                                        "channel_id": None,
+                                        "event": event_data.get("event", event_data),
+                                    }
+                                    await broadcast(json.dumps(envelope))
+                                except json.JSONDecodeError:
+                                    pass  # skip non-JSON log lines
+                        except (FileNotFoundError, OSError):
+                            pass
+
+        except Exception as e:
+            _LOG.exception("Beads watcher error: %s", e)
+            await asyncio.sleep(5)
+
+
+# =============================================================================
 # Watcher Control
 # =============================================================================
 
 
 def start_watcher() -> None:
-    """Start the file watcher background task.
+    """Start the file watcher background tasks.
 
-    Creates an asyncio task running tail_stream() if not already running.
+    Launches tail_stream() and tail_beads() if not already running.
     Called on FastAPI startup when auth is configured.
     """
-    global _watcher_task
+    global _watcher_task, _beads_watcher_task
     if _watcher_task is None or _watcher_task.done():
         _watcher_task = asyncio.create_task(tail_stream())
         _LOG.info("Brain feed watcher started")
+    if _beads_watcher_task is None or _beads_watcher_task.done():
+        _beads_watcher_task = asyncio.create_task(tail_beads())
+        _LOG.info("Brain beads watcher started")

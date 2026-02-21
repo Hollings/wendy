@@ -61,6 +61,7 @@ import httpx
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.websockets import WebSocketDisconnect
 
@@ -80,6 +81,12 @@ app.add_middleware(
 
 DEPLOY_TOKEN: str = os.environ.get("DEPLOY_TOKEN", "")
 STATIC_DIR: Path = Path(__file__).parent / "static"
+
+# Serve React brain-ui build assets (/assets/...) before any catch-all routes.
+# Must be registered after STATIC_DIR is defined.
+_brain_assets = STATIC_DIR / "brain" / "assets"
+if _brain_assets.is_dir():
+    app.mount("/assets", StaticFiles(directory=_brain_assets), name="brain-assets")
 
 # Sites
 SITES_DIR: Path = Path(os.environ.get("SITES_DIR", "/data/sites"))
@@ -522,6 +529,10 @@ async def brain_websocket(websocket: WebSocket, token: str = Query("")) -> None:
         return
     await websocket.accept()
     try:
+        # Send channel names so the UI can label channel chips immediately
+        channels_map = brain.get_channels_map()
+        await websocket.send_text(json.dumps({"type": "channels_map", "channels": channels_map}))
+
         for event in brain.get_recent_events():
             await websocket.send_text(event)
         while True:
@@ -540,6 +551,12 @@ async def brain_websocket(websocket: WebSocket, token: str = Query("")) -> None:
 @app.get("/api/brain/stats")
 async def brain_stats(_auth: None = Depends(_require_brain_auth)) -> dict:
     return brain.get_stats()
+
+
+@app.get("/api/brain/channels")
+async def brain_channels(_auth: None = Depends(_require_brain_auth)) -> dict:
+    """Return {channel_id: folder_name} mapping for channel chip labels."""
+    return {"channels": brain.get_channels_map()}
 
 
 @app.get("/api/brain/usage")

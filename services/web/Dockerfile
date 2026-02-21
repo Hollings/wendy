@@ -1,3 +1,17 @@
+# ── Stage 1: build the React brain UI ────────────────────────────────────────
+FROM node:20-slim AS brain-builder
+
+WORKDIR /build
+
+COPY services/web/brain-ui/package*.json ./
+RUN npm ci
+
+COPY services/web/brain-ui/ ./
+# Build to ./dist (overrides the local-dev outDir in vite.config.js)
+RUN npx vite build --outDir ./dist --emptyOutDir
+
+
+# ── Stage 2: Python web service ───────────────────────────────────────────────
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -16,6 +30,9 @@ COPY services/web/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY services/web/ .
+
+# Inject the React build output so FastAPI can serve it
+COPY --from=brain-builder /build/dist/ ./static/brain/
 
 EXPOSE 8000
 

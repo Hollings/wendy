@@ -228,7 +228,7 @@ def build_cli_command(
         "--output-format", "stream-json",
         "--verbose",
         "--model", model,
-        "--effort", "medium",
+        "--effort", "low",
     ]
 
     if fork_mode:

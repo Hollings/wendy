@@ -60,6 +60,7 @@ class WendyBot(commands.Bot):
         self.whitelist_channels: set[int] = set(self.channel_configs.keys())
         self._active_generations: dict[int, GenerationJob] = {}
         self._api_runner = None
+        self._presence_updated_at: float = 0
 
         # Ensure shared directories
         ensure_shared_dirs()
@@ -396,7 +397,7 @@ class WendyBot(commands.Bot):
             "_thread_name": thread_name,
         }
 
-        state_manager.register_thread(thread_id, parent_id, folder_name)
+        state_manager.register_thread(thread_id, parent_id, folder_name, thread_name)
         _LOG.info("Resolved thread config: thread=%d parent=%d folder=%s", thread_id, parent_id, folder_name)
         return config
 
@@ -456,6 +457,31 @@ class WendyBot(commands.Bot):
         )
         new_job.task = new_task
 
+    async def _maybe_update_presence(self) -> None:
+        """Update Discord presence with usage stats if stale (>15 min)."""
+        import time
+        if time.monotonic() - self._presence_updated_at < 900:
+            return
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "/app/scripts/get_usage.sh",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await proc.communicate()
+            data = json.loads(stdout.decode())
+            week_pct = data.get("week_all_percent", 0)
+            session_pct = data.get("session_percent", 0)
+            await self.change_presence(
+                activity=discord.Activity(
+                    type=discord.ActivityType.watching,
+                    name=f"{week_pct}% weekly | {session_pct}% session",
+                )
+            )
+            self._presence_updated_at = time.monotonic()
+        except Exception as e:
+            _LOG.error("Failed to update presence: %s", e)
+
     async def _generate_response(
         self,
         channel: discord.TextChannel | discord.Thread,
@@ -464,6 +490,8 @@ class WendyBot(commands.Bot):
     ) -> None:
         """Generate a response using Claude CLI."""
         channel_config = self.channel_configs.get(channel.id, {})
+
+        await self._maybe_update_presence()
 
         try:
             system_prompt = self._build_system_prompt(channel.id, channel_config)

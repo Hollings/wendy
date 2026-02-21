@@ -110,6 +110,7 @@ class StateManager:
                 thread_id INTEGER PRIMARY KEY,
                 parent_channel_id INTEGER NOT NULL,
                 folder_name TEXT NOT NULL,
+                thread_name TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -150,6 +151,12 @@ class StateManager:
                 ON session_history(channel_id, started_at);
         """)
         conn.commit()
+        # Migrations for columns added after initial deploy
+        try:
+            conn.execute("ALTER TABLE thread_registry ADD COLUMN thread_name TEXT")
+            conn.commit()
+        except Exception:
+            pass  # column already exists
         _LOG.info("Schema initialized at %s", self.db_path)
 
     # =========================================================================
@@ -435,14 +442,15 @@ class StateManager:
     # Thread Registry
     # =========================================================================
 
-    def register_thread(self, thread_id: int, parent_channel_id: int, folder_name: str) -> None:
+    def register_thread(self, thread_id: int, parent_channel_id: int, folder_name: str, thread_name: str | None = None) -> None:
         conn = self._get_conn()
         conn.execute(
             """
-            INSERT OR IGNORE INTO thread_registry (thread_id, parent_channel_id, folder_name)
-            VALUES (?, ?, ?)
+            INSERT INTO thread_registry (thread_id, parent_channel_id, folder_name, thread_name)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(thread_id) DO UPDATE SET thread_name = excluded.thread_name
             """,
-            (thread_id, parent_channel_id, folder_name)
+            (thread_id, parent_channel_id, folder_name, thread_name)
         )
         conn.commit()
 

@@ -27,6 +27,20 @@ ruff check .
 ruff check --fix .
 ```
 
+### Dev Container (`./dev-rebuild.sh`)
+
+The source directory is live-mounted into the container — code changes take effect on restart without rebuilding the image.
+
+```bash
+./dev-rebuild.sh              # Restart wendy (picks up code changes instantly)
+./dev-rebuild.sh web          # Restart web service
+./dev-rebuild.sh all          # Restart both
+
+./dev-rebuild.sh --build      # Full image rebuild + recreate (after Dockerfile/dep changes)
+./dev-rebuild.sh --build web
+./dev-rebuild.sh --build all
+```
+
 ---
 
 ## Architecture: Core Request Flow
@@ -110,6 +124,49 @@ Wendy calls this herself from inside the CLI subprocess. Key endpoints:
 | `GET` | `/api/emojis` | Search custom server emojis |
 
 The `wendy-web` service (port 8910) hosts static sites, game containers, and the brain feed. It shares the `wendy_data` Docker volume (same SQLite DB and stream log).
+
+---
+
+## Bot Commands (in Discord)
+
+| Command | Description |
+|---------|-------------|
+| `!clear` | Reset the current Claude session (archives old, starts fresh UUID) |
+| `!resume <id>` | Resume a previous session by ID prefix |
+| `!session` | Show current session ID, start time, turn count, and token usage |
+| `!version` | Show the running git commit |
+| `!system` | Upload the assembled system prompt as a text file (useful for debugging) |
+
+---
+
+## Module Import Hierarchy
+
+```
+paths.py, models.py, config.py    (leaf — no internal imports)
+         |
+         v
+state.py                          (imports: paths, models)
+         |
+         v
+fragments.py                      (imports: paths, state)
+fragment_setup.py                 (imports: paths)
+sessions.py                       (imports: paths, state, config)
+         |
+         v
+prompt.py                         (imports: paths, fragments, config)
+cli.py                            (imports: paths, sessions, prompt, state, config)
+tasks.py                          (imports: paths, sessions, cli, state, config)
+         |
+         v
+api_server.py                     (imports: state, paths, config)
+discord_client.py                 (imports: cli, api_server, tasks, state,
+                                            fragment_setup, config)
+         |
+         v
+__main__.py                       (imports: discord_client)
+```
+
+No circular imports. `paths.py`, `models.py`, and `config.py` are leaf modules — import them freely.
 
 ---
 
@@ -246,6 +303,22 @@ Modes: `"chat"` (limited file access) or `"full"` (full coding tools). Models: `
 
 ---
 
+## Personal Pack
+
+Instance-specific files (person profiles, channel-specific fragments, deployment docs) are managed separately from the repo via a tarball.
+
+```bash
+# Download personal pack from server
+./scripts/pack-export.sh [user@server] [output.tar.gz]
+
+# Upload personal pack to a (fresh) server
+./scripts/pack-import.sh [pack.tar.gz] [user@server]
+```
+
+Contains: `claude_fragments/people/*.md`, `claude_fragments/<channel_id>_*.md`, `docs/deployment.md`. These are gitignored and live on the data volume.
+
+---
+
 ## Troubleshooting
 
 ### OAuth token expired
@@ -298,17 +371,24 @@ docker exec wendy ls -lt /root/.claude/projects/-data-wendy-channels-coding/ | h
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `DISCORD_TOKEN` | Discord bot token | required |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Claude CLI auth token (`claude setup-token`) | required |
 | `WENDY_CHANNEL_CONFIG` | JSON array of channel configs | required |
 | `WENDY_DB_PATH` | SQLite path | `/data/wendy/shared/wendy.db` |
 | `SYSTEM_PROMPT_FILE` | System prompt path | `/app/config/system_prompt.txt` |
 | `WENDY_PROXY_PORT` | Internal API port | `8945` |
 | `CLAUDE_CLI_TIMEOUT` | Max CLI runtime (seconds) | `300` |
 | `ORCHESTRATOR_CONCURRENCY` | Max concurrent beads agents | `3` |
+| `ORCHESTRATOR_POLL_INTERVAL` | Seconds between beads task polls | `30` |
+| `ORCHESTRATOR_AGENT_TIMEOUT` | Max beads agent runtime (seconds) | `1800` |
+| `JOURNAL_NUDGE_INTERVAL` | Invocations between journal nudges | `10` |
 | `WENDY_WEB_URL` | URL of wendy-web service | `https://wendy.monster` |
+| `WENDY_BOT_NAME` | Bot display name (used in prompts) | `Wendy` |
+| `WENDY_BOT_USER_ID` | Bot's Discord user ID (for filtering own messages) | `0` |
 | `WENDY_DEPLOY_TOKEN` | Token for site deploys | — |
 | `WENDY_GAMES_TOKEN` | Token for game deploys | falls back to `WENDY_DEPLOY_TOKEN` |
 | `GEMINI_API_KEY` | Gemini API for file analysis | — |
 | `MESSAGE_LOGGER_GUILDS` | Guild IDs for full message archival | — |
+| `WENDY_DEV_MODE` | Set to `1` to enable dev mode | — |
 
 ### wendy-web (sites + games + brain)
 
