@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import IO
 
-from .config import parse_channel_configs, resolve_model
+from .config import USAGE_BUDGET_FACTOR, parse_channel_configs, resolve_model
 from .paths import WENDY_BASE, beads_dir, channel_dir, current_session_file, session_dir
 from .state import state as state_manager
 
@@ -419,6 +419,10 @@ class TaskRunner:
                 return
 
             usage = json.loads(stdout.decode())
+            if USAGE_BUDGET_FACTOR < 1.0:
+                for key in ("week_all_percent", "week_sonnet_percent", "session_percent"):
+                    if key in usage:
+                        usage[key] = min(100, int(usage[key] / USAGE_BUDGET_FACTOR))
             usage["updated_at"] = datetime.now().isoformat()
             usage_data_file.write_text(json.dumps(usage, indent=2))
             _LOG.info("Usage: week_all=%s%%, week_sonnet=%s%%",

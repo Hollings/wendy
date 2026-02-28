@@ -29,6 +29,10 @@ MAX_STREAM_LOG_LINES: int = 5000
 PROXY_PORT: str = os.getenv("WENDY_PROXY_PORT", "8945")
 CLAUDE_CLI_TIMEOUT: int = int(os.getenv("CLAUDE_CLI_TIMEOUT", "300"))
 JOURNAL_NUDGE_INTERVAL: int = int(os.getenv("JOURNAL_NUDGE_INTERVAL", "10"))
+USAGE_BUDGET_FACTOR: float = float(os.getenv("USAGE_BUDGET_FACTOR", "0.8"))
+ENRICHMENT_HOUR_UTC: int = int(os.getenv("ENRICHMENT_HOUR_UTC", "21"))   # 1pm PST default
+ENRICHMENT_MINUTE_UTC: int = int(os.getenv("ENRICHMENT_MINUTE_UTC", "0"))
+ENRICHMENT_DURATION: int = int(os.getenv("ENRICHMENT_DURATION", "900"))  # 15 min
 DISCORD_MAX_MESSAGE_LENGTH: int = 2000
 WENDY_BOT_ID: int = int(os.getenv("WENDY_BOT_USER_ID", "0"))
 WENDY_BOT_NAME: str = os.getenv("WENDY_BOT_NAME", "Wendy")
@@ -111,7 +115,9 @@ def parse_channel_configs() -> dict[int, dict]:
             "mode": cfg.get("mode", "chat"),
             "model": cfg.get("model"),
             "beads_enabled": cfg.get("beads_enabled", False),
+            "enrichment_enabled": cfg.get("enrichment_enabled", False),
             "_folder": folder,
+            "ignore_user_ids": set(int(uid) for uid in cfg.get("ignore_user_ids", [])),
         }
 
     _LOG.info("Loaded %d channel configs", len(configs))
