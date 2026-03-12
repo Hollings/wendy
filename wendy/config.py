@@ -12,6 +12,20 @@ import re
 _LOG = logging.getLogger(__name__)
 
 # =============================================================================
+# CLI Subprocess User (non-root isolation)
+# =============================================================================
+
+CLI_SUBPROCESS_UID: int | None = None
+"""UID to drop privileges to when spawning CLI subprocesses.
+
+Set to 1000 (wendy user) when running as root on Linux.  On other
+platforms (local dev on Windows/macOS) or when already non-root, this
+is ``None`` and subprocesses inherit the parent's user.
+"""
+if os.name == "posix" and os.getuid() == 0:
+    CLI_SUBPROCESS_UID = 1000
+
+# =============================================================================
 # Model Map (single definition, used everywhere)
 # =============================================================================
 
@@ -27,12 +41,16 @@ MODEL_MAP: dict[str, str] = {
 
 MAX_STREAM_LOG_LINES: int = 5000
 PROXY_PORT: str = os.getenv("WENDY_PROXY_PORT", "8945")
-CLAUDE_CLI_TIMEOUT: int = int(os.getenv("CLAUDE_CLI_TIMEOUT", "300"))
+CLAUDE_CLI_TIMEOUT: int = int(os.getenv("CLAUDE_CLI_TIMEOUT", "300"))  # legacy, used as max_runtime fallback
+CLAUDE_CLI_IDLE_TIMEOUT: int = int(os.getenv("CLAUDE_CLI_IDLE_TIMEOUT", "300"))
+CLAUDE_CLI_MAX_RUNTIME: int = int(os.getenv("CLAUDE_CLI_MAX_RUNTIME", "1800"))
 JOURNAL_NUDGE_INTERVAL: int = int(os.getenv("JOURNAL_NUDGE_INTERVAL", "10"))
 USAGE_BUDGET_FACTOR: float = float(os.getenv("USAGE_BUDGET_FACTOR", "0.8"))
 ENRICHMENT_HOUR_UTC: int = int(os.getenv("ENRICHMENT_HOUR_UTC", "21"))   # 1pm PST default
 ENRICHMENT_MINUTE_UTC: int = int(os.getenv("ENRICHMENT_MINUTE_UTC", "0"))
 ENRICHMENT_DURATION: int = int(os.getenv("ENRICHMENT_DURATION", "900"))  # 15 min
+FEATURE_DIGEST_HOUR_UTC: int = int(os.getenv("FEATURE_DIGEST_HOUR_UTC", "16"))  # 8am PST
+FEATURE_DIGEST_CHANNEL: int = int(os.getenv("FEATURE_DIGEST_CHANNEL", "0"))
 DISCORD_MAX_MESSAGE_LENGTH: int = 2000
 WENDY_BOT_ID: int = int(os.getenv("WENDY_BOT_USER_ID", "0"))
 WENDY_BOT_NAME: str = os.getenv("WENDY_BOT_NAME", "Wendy")

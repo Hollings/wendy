@@ -22,7 +22,13 @@ if [ -z "$CWD" ]; then
 fi
 
 JOURNAL_DIR="$CWD/journal"
-NUDGE_STATE="$JOURNAL_DIR/.nudge_state"
+
+# State file lives outside the channel workspace so Claude Code's file watcher
+# doesn't report it as "modified by a linter" on every turn.
+CHANNEL_NAME=$(basename "$CWD")
+HOOKS_STATE_DIR="/data/wendy/shared/hooks"
+mkdir -p "$HOOKS_STATE_DIR"
+NUDGE_STATE="$HOOKS_STATE_DIR/journal_nudge_${CHANNEL_NAME}.json"
 
 # Only applies to channels that have a journal dir
 if [ ! -d "$JOURNAL_DIR" ]; then

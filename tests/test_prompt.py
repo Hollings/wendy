@@ -5,10 +5,11 @@ import json
 from unittest import mock
 
 from wendy.prompt import (
-    _get_active_beads_warning,
     _get_base_system_prompt,
     _get_journal_section,
     build_system_prompt,
+    get_beads_warning_for_nudge,
+    get_journal_listing_for_nudge,
 )
 
 
@@ -50,56 +51,49 @@ def test_get_journal_section(tmp_path):
     j_dir = tmp_path / "journal"
     j_dir.mkdir()
 
+    with mock.patch("wendy.prompt.journal_dir", return_value=j_dir):
+        result = _get_journal_section("general")
+
+    # Static section always contains journal header and path
+    assert "JOURNAL" in result
+    assert str(j_dir) in result
+
+
+def test_get_journal_listing_for_nudge(tmp_path):
+    j_dir = tmp_path / "journal"
+    j_dir.mkdir()
+
     (j_dir / "2026-01-01_test.md").write_text("entry 1")
     (j_dir / "2026-01-02_test2.md").write_text("entry 2")
 
     with mock.patch("wendy.prompt.journal_dir", return_value=j_dir):
-        result = _get_journal_section("general")
+        result = get_journal_listing_for_nudge("general")
 
-    assert "JOURNAL" in result
     assert "2026-01-01_test.md" in result
     assert "2026-01-02_test2.md" in result
+    assert "2 files" in result
 
 
-def test_get_journal_section_empty(tmp_path):
+def test_get_journal_listing_for_nudge_empty(tmp_path):
     j_dir = tmp_path / "journal"
     j_dir.mkdir()
 
     with mock.patch("wendy.prompt.journal_dir", return_value=j_dir):
-        result = _get_journal_section("general")
+        result = get_journal_listing_for_nudge("general")
 
-    assert "No entries yet" in result
-
-
-def test_get_journal_section_nudge(tmp_path):
-    j_dir = tmp_path / "journal"
-    j_dir.mkdir()
-
-    # Pre-set nudge state with high invocation count
-    nudge_state = j_dir / ".nudge_state"
-    nudge_state.write_text(json.dumps({
-        "known_entry_count": 0,
-        "invocations_since_write": 100,
-        "last_mtime": 0.0,
-    }))
-
-    with mock.patch("wendy.prompt.journal_dir", return_value=j_dir):
-        with mock.patch("wendy.prompt.JOURNAL_NUDGE_INTERVAL", 10):
-            result = _get_journal_section("general")
-
-    assert "JOURNAL REMINDER" in result
+    assert result == ""
 
 
-def test_get_active_beads_warning_no_beads(tmp_path):
+def test_get_beads_warning_for_nudge_no_beads(tmp_path):
     b_dir = tmp_path / ".beads"
     b_dir.mkdir()
 
     with mock.patch("wendy.prompt.beads_dir", return_value=b_dir):
-        result = _get_active_beads_warning("general")
+        result = get_beads_warning_for_nudge("general")
     assert result == ""
 
 
-def test_get_active_beads_warning_with_active_tasks(tmp_path):
+def test_get_beads_warning_for_nudge_with_active_tasks(tmp_path):
     b_dir = tmp_path / ".beads"
     b_dir.mkdir()
 
@@ -112,9 +106,9 @@ def test_get_active_beads_warning_with_active_tasks(tmp_path):
     issues_file.write_text("\n".join(json.dumps(i) for i in issues))
 
     with mock.patch("wendy.prompt.beads_dir", return_value=b_dir):
-        result = _get_active_beads_warning("general")
+        result = get_beads_warning_for_nudge("general")
 
-    assert "2 task(s)" in result
+    assert "2 active bead(s)" in result
     assert "task-1" in result
     assert "task-3" in result
     assert "task-2" not in result  # closed task should not appear
@@ -136,7 +130,7 @@ def test_build_system_prompt_integration(tmp_path):
     with mock.patch.dict("os.environ", {"SYSTEM_PROMPT_FILE": str(prompt_file)}):
         with mock.patch("wendy.prompt.journal_dir", return_value=j_dir):
             with mock.patch("wendy.prompt.load_fragments", return_value={
-                "persons": "\n--- PERSONS ---\nPerson info\n",
+                "persons": "",  # persons now injected via synthetic messages
                 "channel": "\n--- CHANNEL ---\nChannel info\n",
                 "topics": "\n--- TOPICS ---\nTopic info\n",
                 "anchors": "\n--- ANCHORS ---\nAnchor info\n",
@@ -145,7 +139,7 @@ def test_build_system_prompt_integration(tmp_path):
                     result = build_system_prompt(123, channel_config)
 
     assert "Base prompt for coding." in result
-    assert "Person info" in result
+    assert "Person info" not in result  # persons no longer in system prompt
     assert "Channel info" in result
     assert "Topic info" in result
     assert "Anchor info" in result

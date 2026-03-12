@@ -16,8 +16,12 @@ if [ "$STOP_HOOK_ACTIVE" = "true" ]; then
   exit 0
 fi
 
+# State file lives outside the fragments dir so Claude Code's file watcher
+# doesn't report it as "modified by a linter" on every turn.
+HOOKS_STATE_DIR="/data/wendy/shared/hooks"
+mkdir -p "$HOOKS_STATE_DIR"
 PROMPTS_DIR="/data/wendy/claude_fragments"
-STATE_FILE="$PROMPTS_DIR/.bookkeeping_state"
+STATE_FILE="$HOOKS_STATE_DIR/bookkeeping_state.json"
 
 # Only applies if prompts dir exists
 if [ ! -d "$PROMPTS_DIR" ]; then

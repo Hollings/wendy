@@ -19,11 +19,13 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
     container_name: wendy-dev
+    init: true
     restart: "no"
     command: ["python", "-m", "wendy"]
     network_mode: host
     volumes:
       - ..:/app                              # live source -- no rebuild needed for code changes
+      - ../config:/app/config:ro            # mirror prod: config is read-only
       - wendy_data_dev:/data/wendy
       - wendy_claude_dev:/root/.claude
       - /var/run/docker.sock:/var/run/docker.sock
@@ -33,7 +35,8 @@ services:
       - WENDY_BASE_DIR=/data/wendy
       - WENDY_DB_PATH=/data/wendy/shared/wendy.db
       - SYSTEM_PROMPT_FILE=/app/config/system_prompt.txt
-      - CLAUDE_CLI_TIMEOUT=300
+      - CLAUDE_CLI_IDLE_TIMEOUT=300
+      - CLAUDE_CLI_MAX_RUNTIME=1800
       - WENDY_PROXY_PORT=8945
       - ORCHESTRATOR_CONCURRENCY=3
       - WENDY_WEB_URL=http://localhost:8910

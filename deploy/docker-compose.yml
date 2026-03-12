@@ -6,6 +6,7 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
     container_name: wendy
+    init: true
     restart: unless-stopped
     command: ["python", "-m", "wendy"]
     network_mode: host
@@ -13,17 +14,17 @@ services:
       - wendy_data:/data/wendy
       - claude_config:/root/.claude
       - /srv/secrets/wendy:/secrets:ro
-      - /srv/wendy-bot/config:/app/config:ro
+      - /srv/wendy-v2/config:/app/config:ro
       - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - /srv/secrets/wendy/bot.env
     environment:
       - WENDY_DB_PATH=/data/wendy/shared/wendy.db
       - SYSTEM_PROMPT_FILE=/app/config/system_prompt.txt
-      - CLAUDE_CLI_TIMEOUT=300
+      - CLAUDE_CLI_IDLE_TIMEOUT=300
+      - CLAUDE_CLI_MAX_RUNTIME=1800
       - WENDY_PROXY_PORT=8945
       - ORCHESTRATOR_CONCURRENCY=3
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - WENDY_WEB_URL=http://localhost:8910
 
   web:

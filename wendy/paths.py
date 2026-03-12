@@ -89,11 +89,34 @@ def journal_dir(channel_name: str) -> Path:
 
 
 def ensure_channel_dirs(channel_name: str, beads_enabled: bool = False) -> None:
-    channel_dir(channel_name).mkdir(parents=True, exist_ok=True)
-    attachments_dir(channel_name).mkdir(exist_ok=True)
-    journal_dir(channel_name).mkdir(exist_ok=True)
+    dirs = [channel_dir(channel_name), attachments_dir(channel_name), journal_dir(channel_name)]
     if beads_enabled:
-        beads_dir(channel_name).mkdir(exist_ok=True)
+        dirs.append(beads_dir(channel_name))
+    for d in dirs:
+        d.mkdir(parents=True, exist_ok=True)
+    # When running as root, ensure the wendy user (UID 1000) can write to channel dirs.
+    # The bot process stays root; CLI subprocesses run as wendy for isolation.
+    if os.name == "posix" and os.getuid() == 0:
+        for d in dirs:
+            try:
+                os.chown(d, 1000, 1000)
+            except OSError:
+                pass
+
+
+def find_attachments_for_message(message_id: int, channel_name: str | None = None) -> list[str]:
+    """Return sorted list of attachment file paths for a given message.
+
+    Scans the channel's attachments directory for files matching the
+    ``msg_{message_id}_*`` pattern.  Returns an empty list when no
+    *channel_name* is given or the directory does not exist.
+    """
+    if not channel_name:
+        return []
+    att_dir = attachments_dir(channel_name)
+    if not att_dir.exists():
+        return []
+    return sorted(str(f) for f in att_dir.glob(f"msg_{message_id}_*"))
 
 
 def ensure_shared_dirs() -> None:

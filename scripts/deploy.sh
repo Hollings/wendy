@@ -109,7 +109,7 @@ info "Detected: ${DEPLOY_TYPE} (found $(if $HAS_SERVER_TS; then echo 'server.ts'
 # Create tarball
 TMP_TAR="/tmp/deploy_${TARGET_URL}_$$.tar.gz"
 echo "Creating tarball of $PROJECT_DIR..."
-tar -czf "$TMP_TAR" -C "$PROJECT_DIR" .
+tar -czf "$TMP_TAR" -C "$PROJECT_DIR" --exclude='node_modules' --exclude='.git' .
 
 # Get size
 SIZE=$(stat -f%z "$TMP_TAR" 2>/dev/null || stat -c%s "$TMP_TAR" 2>/dev/null)

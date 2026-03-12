@@ -1,28 +1,41 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import EventCard from './EventCard'
 
 export default function Feed({ events, wsStatus, focusedBead, onBack }) {
-  const sentinelRef = useRef(null)
+  const scrollRef = useRef(null)
+  const isLiveRef = useRef(true)
   const [isLive, setIsLive] = useState(true)
 
-  // IntersectionObserver: sentinel visible = autoscroll active
+  // Scroll to bottom on new events if we're in live mode.
+  // Reads isLiveRef (not state) to avoid stale-closure / re-render race.
   useEffect(() => {
-    const sentinel = sentinelRef.current
-    if (!sentinel) return
-    const obs = new IntersectionObserver(
-      ([entry]) => setIsLive(entry.isIntersecting),
-      { threshold: 0 },
-    )
-    obs.observe(sentinel)
-    return () => obs.disconnect()
+    if (isLiveRef.current && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
+  }, [events.length])
+
+  // Initial scroll to bottom on mount.
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
   }, [])
 
-  // Scroll to bottom when new events arrive and we're in live mode
-  useEffect(() => {
-    if (isLive && sentinelRef.current) {
-      sentinelRef.current.scrollIntoView({ behavior: 'instant' })
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    isLiveRef.current = atBottom
+    setIsLive(atBottom)
+  }, [])
+
+  const jumpToLive = useCallback(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [events.length, isLive])
+    isLiveRef.current = true
+    setIsLive(true)
+  }, [])
 
   const statusLabel = {
     connecting: 'Connecting...',
@@ -49,19 +62,15 @@ export default function Feed({ events, wsStatus, focusedBead, onBack }) {
         </div>
       )}
 
-      <div className="feed-scroll">
+      <div className="feed-scroll" ref={scrollRef} onScroll={handleScroll}>
         {events.length === 0 && (
           <div className="feed-empty">Waiting for activity...</div>
         )}
         {events.map(ev => <EventCard key={ev.id} event={ev} />)}
-        <div ref={sentinelRef} className="feed-sentinel" />
       </div>
 
       {!isLive && (
-        <button
-          className="jump-live"
-          onClick={() => sentinelRef.current?.scrollIntoView({ behavior: 'smooth' })}
-        >
+        <button className="jump-live" onClick={jumpToLive}>
           &darr; live
         </button>
       )}

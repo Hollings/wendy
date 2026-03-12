@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { parseStreamEvent, getEventSnippet, CONTEXT_WINDOW } from '../eventUtils'
-import { authHeaders } from '../auth'
+import { authHeaders, clearToken, clearPassphrase } from '../auth'
 import Feed from './Feed'
 import Sidebar from './Sidebar'
 
@@ -84,8 +84,8 @@ export default function BrainApp() {
   const onStatus = useCallback(async (status) => {
     setWsStatus(status)
     if (status === 'auth_error') {
-      // Token expired and can't re-auth - send back to login
-      // (handled by App.jsx via page reload or state reset)
+      clearToken()
+      clearPassphrase()
       window.location.reload()
     }
     // On connect, load initial beads list

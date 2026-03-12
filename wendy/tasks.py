@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import IO
 
-from .config import USAGE_BUDGET_FACTOR, parse_channel_configs, resolve_model
+from .config import CLI_SUBPROCESS_UID, SENSITIVE_ENV_VARS, USAGE_BUDGET_FACTOR, parse_channel_configs, resolve_model
 from .paths import WENDY_BASE, beads_dir, channel_dir, current_session_file, session_dir
 from .state import state as state_manager
 
@@ -24,7 +24,7 @@ _LOG = logging.getLogger(__name__)
 # Configuration
 CONCURRENCY: int = int(os.getenv("ORCHESTRATOR_CONCURRENCY", "3"))
 POLL_INTERVAL: int = int(os.getenv("ORCHESTRATOR_POLL_INTERVAL", "30"))
-AGENT_TIMEOUT: int = int(os.getenv("ORCHESTRATOR_AGENT_TIMEOUT", "1800"))
+AGENT_TIMEOUT: int = int(os.getenv("ORCHESTRATOR_AGENT_TIMEOUT", "14400"))
 NOTIFY_CHANNEL: str = os.getenv("ORCHESTRATOR_NOTIFY_CHANNEL", "")
 AGENT_SYSTEM_PROMPT_FILE: Path = Path(os.getenv("AGENT_SYSTEM_PROMPT_FILE", "/app/config/agent_claude_md.txt"))
 LOG_DIR: Path = WENDY_BASE / "orchestrator_logs"
@@ -83,6 +83,40 @@ class RunningAgent:
     closed_detected_at: datetime | None = field(default=None)
 
 
+async def _kill_and_reap(proc: asyncio.subprocess.Process) -> None:
+    """Kill a subprocess and wait for it to be reaped, preventing zombies.
+
+    Handles the case where the process has already exited (ProcessLookupError)
+    and uses a timeout on wait() as a safety net.
+    """
+    if proc.returncode is not None:
+        return
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        # Already dead, just reap it
+        pass
+    except Exception:
+        _LOG.warning("Failed to kill process %s", proc.pid, exc_info=True)
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=10)
+    except TimeoutError:
+        _LOG.error("Process %s did not exit within 10s after kill", proc.pid)
+    except Exception:
+        _LOG.warning("Error waiting for process %s", proc.pid, exc_info=True)
+
+
+def _close_log_file(agent: RunningAgent) -> None:
+    """Safely close an agent's log file."""
+    if agent.log_file is not None:
+        try:
+            agent.log_file.close()
+        except Exception:
+            _LOG.warning("Failed to close log file for agent %s", agent.task_id)
+        finally:
+            agent.log_file = None
+
+
 class TaskRunner:
     """Polls beads for tasks, spawns agents, monitors completion."""
 
@@ -124,43 +158,65 @@ class TaskRunner:
             if not channel.beads_path.exists():
                 await self._run_bd(["bd", "init"], channel.name)
 
-        while True:
-            try:
-                await self._check_agents()
-                await self._check_closed_tasks()
+        try:
+            while True:
+                try:
+                    await self._check_agents()
+                    await self._check_closed_tasks()
 
-                available = CONCURRENCY - len(self.agents)
-                if available > 0:
-                    for channel in self.beads_channels:
-                        if available <= 0:
-                            break
-                        tasks = await self._get_ready_tasks(channel)
-                        for task in tasks:
-                            task_id = task.get("id")
-                            if task_id in self.agents:
-                                continue
-                            if await self._claim_task(task_id, channel.name):
-                                agent = await self._spawn_agent(task, channel)
-                                if agent:
-                                    self.agents[task_id] = agent
-                                    available -= 1
-                                else:
-                                    await self._run_bd(["bd", "reopen", task_id], channel.name)
+                    available = CONCURRENCY - len(self.agents)
+                    if available > 0:
+                        for channel in self.beads_channels:
                             if available <= 0:
                                 break
+                            tasks = await self._get_ready_tasks(channel)
+                            for task in tasks:
+                                task_id = task.get("id")
+                                if task_id in self.agents:
+                                    continue
+                                if await self._claim_task(task_id, channel.name):
+                                    agent = await self._spawn_agent(task, channel)
+                                    if agent:
+                                        self.agents[task_id] = agent
+                                        available -= 1
+                                    else:
+                                        # Spawn failed -- reopen so task can be retried later.
+                                        # If reopen also fails, the task is stuck in in_progress;
+                                        # the stuck-task sweep below will catch it.
+                                        await self._run_bd(["bd", "reopen", task_id], channel.name)
+                                if available <= 0:
+                                    break
 
-                self._cleanup_logs()
-                await self._check_usage()
+                    self._cleanup_logs()
+                    await self._check_usage()
+                except Exception:
+                    _LOG.exception("Task runner loop error")
+
+                await asyncio.sleep(POLL_INTERVAL)
+        except asyncio.CancelledError:
+            _LOG.info("Task runner cancelled, cleaning up %d agents", len(self.agents))
+            await self._shutdown_all_agents()
+            raise
+
+    async def _shutdown_all_agents(self) -> None:
+        """Kill and clean up all running agents. Called on shutdown."""
+        for task_id, agent in list(self.agents.items()):
+            _LOG.info("Shutting down agent %s", task_id)
+            await _kill_and_reap(agent.process)
+            _close_log_file(agent)
+            # Reopen so the task can be picked up on next startup
+            try:
+                await self._run_bd(["bd", "reopen", task_id], agent.channel_name)
             except Exception:
-                _LOG.exception("Task runner loop error")
-
-            await asyncio.sleep(POLL_INTERVAL)
+                _LOG.warning("Failed to reopen task %s during shutdown", task_id)
+        self.agents.clear()
 
     async def _run_bd(self, cmd: list[str], channel_name: str, timeout: int = 30) -> tuple[int, str, str]:
         """Run a bd command in a channel directory."""
         # Skip daemon startup (takes 5+ seconds in container); use direct SQLite mode
         if cmd and cmd[0] == "bd":
             cmd = [cmd[0], "--no-daemon"] + cmd[1:]
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -172,6 +228,8 @@ class TaskRunner:
             return proc.returncode, stdout.decode(), stderr.decode()
         except TimeoutError:
             _LOG.warning("bd command timed out: %s", cmd)
+            if proc is not None:
+                await _kill_and_reap(proc)
             return -1, "", "timeout"
         except FileNotFoundError:
             _LOG.error("bd command not found")
@@ -271,6 +329,18 @@ class TaskRunner:
                 except Exception:
                     pass
 
+            # Build env for CLI subprocess isolation
+            agent_env = {k: v for k, v in os.environ.items() if k not in SENSITIVE_ENV_VARS}
+            # Pass auth and sync tokens explicitly so the CLI can authenticate even though
+            # they're stripped from the general env (to keep them out of `env` output).
+            if oauth_token := os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+                agent_env["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
+            if sync_key := os.environ.get("CLAUDE_SYNC_KEY"):
+                agent_env["CLAUDE_SYNC_KEY"] = sync_key
+            if CLI_SUBPROCESS_UID is not None:
+                agent_env["HOME"] = "/home/wendy"
+            user_kwargs = {"user": CLI_SUBPROCESS_UID} if CLI_SUBPROCESS_UID else {}
+
             log_file = open(log_path, "w")
             try:
                 log_file.write(f"Task: {task_id} - {title}\n")
@@ -285,6 +355,8 @@ class TaskRunner:
                     stdout=log_file,
                     stderr=asyncio.subprocess.STDOUT,
                     cwd=channel_dir(channel_name),
+                    env=agent_env,
+                    **user_kwargs,
                 )
             except Exception:
                 log_file.close()
@@ -305,6 +377,23 @@ class TaskRunner:
             _LOG.exception("Failed to spawn agent for task %s", task_id)
             return None
 
+    async def _cleanup_agent(self, agent: RunningAgent, *, kill: bool = False) -> None:
+        """Kill (if requested) and clean up a single agent's resources.
+
+        Always closes the log file and reaps the process to prevent zombies.
+        """
+        if kill:
+            await _kill_and_reap(agent.process)
+        elif agent.process.returncode is None:
+            # Process should already be done, but reap it just in case
+            try:
+                await asyncio.wait_for(agent.process.wait(), timeout=5)
+            except TimeoutError:
+                _LOG.warning("Agent %s process still alive after completion detected, killing",
+                             agent.task_id)
+                await _kill_and_reap(agent.process)
+        _close_log_file(agent)
+
     async def _check_agents(self) -> None:
         """Check running agents for completion or timeout."""
         finished = []
@@ -312,28 +401,44 @@ class TaskRunner:
             duration = datetime.now() - agent.started_at
             secs = duration.total_seconds()
 
-            # Check timeout
+            # Check timeout -- process is still alive but exceeded the time limit
             if agent.process.returncode is None and secs > AGENT_TIMEOUT:
                 _LOG.warning("Agent %s timed out after %s", task_id, duration)
-                try:
-                    agent.process.kill()
-                except Exception:
-                    pass
-                if agent.log_file:
-                    agent.log_file.close()
-                await self._run_bd(["bd", "reopen", task_id], agent.channel_name)
+                await self._cleanup_agent(agent, kill=True)
+                # Comment on the task with timeout info before closing as failed
+                await self._run_bd(
+                    ["bd", "comment", task_id, f"Agent timed out after {duration}"],
+                    agent.channel_name,
+                )
+                await self._run_bd(["bd", "close", task_id], agent.channel_name)
                 self._notify_completion(task_id, agent.title, False, f"{duration} (TIMEOUT)")
                 finished.append(task_id)
                 continue
 
-            # Check completion
+            # Check completion -- process has exited
             if agent.process.returncode is not None:
-                _LOG.info("Agent %s completed (exit=%d) after %s",
-                          task_id, agent.process.returncode, duration)
-                if agent.log_file:
-                    agent.log_file.close()
-                await self._run_bd(["bd", "close", task_id], agent.channel_name)
-                self._notify_completion(task_id, agent.title, True, str(duration))
+                exit_code = agent.process.returncode
+                success = exit_code == 0
+                _LOG.info("Agent %s %s (exit=%d) after %s",
+                          task_id,
+                          "completed" if success else "failed",
+                          exit_code,
+                          duration)
+                await self._cleanup_agent(agent)
+
+                if success:
+                    # Agent exited cleanly -- it should have already called `bd close`
+                    # itself, but close it here as a safety net.
+                    await self._run_bd(["bd", "close", task_id], agent.channel_name)
+                    self._notify_completion(task_id, agent.title, True, str(duration))
+                else:
+                    # Agent crashed or errored -- mark as failed, not completed
+                    await self._run_bd(
+                        ["bd", "comment", task_id, f"Agent process exited with code {exit_code}"],
+                        agent.channel_name,
+                    )
+                    await self._run_bd(["bd", "close", task_id], agent.channel_name)
+                    self._notify_completion(task_id, agent.title, False, f"{duration} (exit code {exit_code})")
                 finished.append(task_id)
 
         for tid in finished:
@@ -344,6 +449,7 @@ class TaskRunner:
         to_kill = []
         for task_id, agent in self.agents.items():
             if agent.process.returncode is not None:
+                # Will be cleaned up by _check_agents on next poll
                 agent.closed_detected_at = None
                 continue
 
@@ -359,12 +465,7 @@ class TaskRunner:
         for task_id in to_kill:
             agent = self.agents[task_id]
             _LOG.info("Killing agent for externally-closed task %s", task_id)
-            try:
-                agent.process.kill()
-            except Exception:
-                pass
-            if agent.log_file:
-                agent.log_file.close()
+            await self._cleanup_agent(agent, kill=True)
             duration = datetime.now() - agent.started_at
             self._notify_completion(task_id, agent.title, False, f"{duration} (CANCELLED)")
             del self.agents[task_id]
@@ -407,6 +508,7 @@ class TaskRunner:
         if not usage_script.exists():
             return
 
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 "bash", str(usage_script),
@@ -427,6 +529,10 @@ class TaskRunner:
             usage_data_file.write_text(json.dumps(usage, indent=2))
             _LOG.info("Usage: week_all=%s%%, week_sonnet=%s%%",
                       usage.get("week_all_percent", 0), usage.get("week_sonnet_percent", 0))
+        except TimeoutError:
+            _LOG.warning("Usage check timed out")
+            if proc is not None:
+                await _kill_and_reap(proc)
         except Exception:
             _LOG.warning("Usage check failed", exc_info=True)
 

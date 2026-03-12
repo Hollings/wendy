@@ -323,18 +323,27 @@ class StateManager:
         )
         conn.commit()
 
-    def get_recent_messages(self, channel_id: int, limit: int = 50) -> list[dict]:
-        """Get recent messages for a channel (for fragment keyword matching)."""
+    def get_recent_messages(
+        self,
+        channel_id: int,
+        limit: int = 50,
+        synthetic_id_threshold: int = 9_000_000_000_000_000_000,
+    ) -> list[dict]:
+        """Get recent real messages for a channel (for fragment keyword matching).
+
+        Excludes synthetic messages (IDs >= *synthetic_id_threshold*) so that
+        injected context never influences keyword matching or fragment selection.
+        """
         conn = self._get_conn()
         rows = conn.execute(
             """
             SELECT message_id, author_id, author_nickname as author, content, timestamp
             FROM message_history
-            WHERE channel_id = ?
+            WHERE channel_id = ? AND message_id < ?
             ORDER BY message_id DESC
             LIMIT ?
             """,
-            (channel_id, limit)
+            (channel_id, synthetic_id_threshold, limit)
         ).fetchall()
         return [dict(row) for row in reversed(rows)]
 
@@ -348,6 +357,165 @@ class StateManager:
             message_ids
         )
         conn.commit()
+
+    # -------------------------------------------------------------------------
+    # Message fetching (used by the internal API)
+    # -------------------------------------------------------------------------
+
+    _MESSAGE_QUERY_COLUMNS = """
+        m.message_id, m.author_id, m.is_bot, m.author_nickname, m.content, m.timestamp,
+        m.reply_to_id,
+        r.author_nickname as reply_author,
+        r.content as reply_content
+    """
+
+    _MESSAGE_QUERY_BASE = f"""
+        SELECT {_MESSAGE_QUERY_COLUMNS}
+        FROM message_history m
+        LEFT JOIN message_history r ON m.reply_to_id = r.message_id
+        WHERE m.channel_id = ?
+        AND m.content NOT LIKE '!%' AND m.content NOT LIKE '-%'
+    """
+
+    @staticmethod
+    def _row_to_message_dict(
+        row: sqlite3.Row,
+        *,
+        attachment_paths: list[str] | None = None,
+    ) -> dict:
+        """Convert a SQLite row from the message query into a JSON-safe dict.
+
+        When *attachment_paths* is provided (non-empty), the paths are included
+        under the ``attachments`` key.
+        """
+        msg: dict = {
+            "message_id": row["message_id"],
+            "author": row["author_nickname"],
+            "is_bot": bool(row["is_bot"]),
+            "content": row["content"],
+            "timestamp": row["timestamp"],
+        }
+        if attachment_paths:
+            msg["attachments"] = attachment_paths
+        if row["reply_to_id"] and row["reply_author"]:
+            msg["reply_to"] = {
+                "message_id": row["reply_to_id"],
+                "author": row["reply_author"],
+                "content": row["reply_content"] or "",
+            }
+        return msg
+
+    def fetch_messages(
+        self,
+        channel_id: int,
+        *,
+        since_id: int | None = None,
+        limit: int = 10,
+        synthetic_threshold: int = 9_000_000_000_000_000_000,
+    ) -> list[sqlite3.Row]:
+        """Fetch message rows from SQLite, optionally filtered by *since_id*.
+
+        Real messages and synthetic messages (context injections, notifications)
+        are fetched separately so that synthetics never crowd out real messages.
+        Returns combined results in ``message_id DESC`` order (caller should
+        reverse for chronological display).
+        """
+        conn = self._get_conn()
+
+        # Fetch real messages (below synthetic threshold) with the limit.
+        if since_id is not None:
+            real_query = self._MESSAGE_QUERY_BASE + " AND m.message_id > ? AND m.message_id < ? ORDER BY m.message_id DESC LIMIT ?"
+            real_params = (channel_id, since_id, synthetic_threshold, limit)
+        else:
+            real_query = self._MESSAGE_QUERY_BASE + " AND m.message_id < ? ORDER BY m.message_id DESC LIMIT ?"
+            real_params = (channel_id, synthetic_threshold, limit)
+        real_rows = conn.execute(real_query, real_params).fetchall()
+
+        # Fetch all pending synthetic messages (they get deleted after consumption).
+        synth_query = self._MESSAGE_QUERY_BASE + " AND m.message_id >= ? ORDER BY m.message_id ASC"
+        synth_params = (channel_id, synthetic_threshold)
+        synth_rows = conn.execute(synth_query, synth_params).fetchall()
+
+        # Combine: all results in message_id DESC order.
+        combined = list(synth_rows)[::-1] + list(real_rows)
+        return combined
+
+    def check_for_new_messages(
+        self,
+        channel_id: int,
+        bot_user_id: int,
+        synthetic_id_threshold: int,
+        max_limit: int,
+    ) -> list[dict]:
+        """Return new *real* messages since the last ``check_messages`` call.
+
+        This powers the interrupt system: if the caller detects unseen messages
+        it forces Claude to re-read before sending.
+
+        Only non-bot messages are returned.  The ``last_seen`` watermark is
+        **not** advanced here -- only ``handle_check_messages`` should advance
+        it.  This prevents a race where the interrupt consumes the watermark
+        before ``check_messages`` can return the same messages.
+        """
+        last_seen = self.get_last_seen(channel_id)
+        if last_seen is None:
+            return []
+
+        query = (
+            self._MESSAGE_QUERY_BASE
+            + " AND m.message_id > ?"
+            + " AND m.author_id != ?"
+            + " ORDER BY m.message_id DESC LIMIT ?"
+        )
+        rows = self._get_conn().execute(
+            query, (channel_id, last_seen, bot_user_id, max_limit)
+        ).fetchall()
+        if not rows:
+            return []
+
+        return [self._row_to_message_dict(r) for r in reversed(rows)]
+
+    def has_pending_messages(
+        self,
+        channel_id: int,
+        bot_user_id: int,
+    ) -> bool:
+        """Return True if the channel has messages newer than last_seen.
+
+        Counts both real and synthetic messages (webhooks, notifications)
+        from non-bot authors.  Fails open (returns True) on any error so
+        messages are never silently dropped.
+        """
+        try:
+            conn = self._get_conn()
+            last_seen = self.get_last_seen(channel_id)
+
+            if last_seen:
+                query = """
+                    SELECT EXISTS(
+                        SELECT 1 FROM message_history
+                        WHERE channel_id = ? AND message_id > ?
+                          AND author_id != ?
+                          AND content NOT LIKE '!%' AND content NOT LIKE '-%'
+                        LIMIT 1
+                    )
+                """
+                params: tuple = (channel_id, last_seen, bot_user_id)
+            else:
+                query = """
+                    SELECT EXISTS(
+                        SELECT 1 FROM message_history
+                        WHERE channel_id = ?
+                          AND author_id != ?
+                          AND content NOT LIKE '!%' AND content NOT LIKE '-%'
+                        LIMIT 1
+                    )
+                """
+                params = (channel_id, bot_user_id)
+            return bool(conn.execute(query, params).fetchone()[0])
+        except Exception as e:
+            _LOG.error("Error checking pending messages: %s", e)
+            return True
 
     # =========================================================================
     # Notifications

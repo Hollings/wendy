@@ -19,7 +19,10 @@ function Bar({ label, pct, resetIso }) {
   return (
     <div className="usage-row">
       <div className="usage-row-label">
-        <span>{label}</span>
+        <span>
+          {label}
+          <span className="week-info" title={`${Math.round(progress)}% through the week`}>ⓘ</span>
+        </span>
         <span className="usage-pct">{pct}%</span>
       </div>
       <div className="usage-bar">

@@ -8,14 +8,12 @@ import dataclasses
 import json
 import logging
 import re
-import sqlite3
 import textwrap
 from pathlib import Path
 
 import yaml
 
-from .config import WENDY_BOT_ID
-from .paths import DB_PATH, FRAGMENTS_DIR, channel_dir
+from .paths import FRAGMENTS_DIR, channel_dir
 
 _LOG = logging.getLogger(__name__)
 
@@ -44,6 +42,8 @@ class Fragment:
     content: str
     sticky: int | None = None
     user_ids: list[int] = dataclasses.field(default_factory=list)
+    description: str = ""
+    behavioral: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +109,9 @@ def parse_fragment(path: Path) -> Fragment | None:
                      path.name, len(select_code))
         select_code = ""
 
+    description = str(meta.get("description", ""))
+    behavioral = bool(meta.get("behavioral", False))
+
     return Fragment(
         path=path,
         type=ftype,
@@ -120,6 +123,8 @@ def parse_fragment(path: Path) -> Fragment | None:
         content=body.strip(),
         sticky=sticky,
         user_ids=user_ids,
+        description=description,
+        behavioral=behavioral,
     )
 
 
@@ -290,22 +295,24 @@ def load_fragments(
 
     Returns dict with keys: "persons", "channel", "topics", "anchors".
 
-    Topics use sticky loading: once a topic fragment matches, it stays loaded
-    for TOPIC_STICKY_TURNS turns after its keywords stop matching. This keeps
-    the system prompt prefix stable across turns, preserving Claude's cache.
+    "persons" is always empty string -- person context is injected via
+    synthetic messages using get_new_context_introductions().
+
+    Topics only include behavioral: true fragments -- non-behavioral topics
+    are also injected via synthetic messages on first match per session.
+    Behavioral topics use sticky loading to keep the system prompt stable.
     """
     msgs = messages or []
     auths = authors or [m.get("author", "").lower() for m in msgs]
 
     all_frags = scan_fragments(frag_dir)
 
-    # Load per-channel topic state (turns since last keyword match)
+    # Load per-channel topic state (only used for behavioral topics now)
     chan_dir = state_dir or channel_dir(channel_name)
     state_path = chan_dir / ".topic_state.json"
     topic_state = _load_topic_state(state_path)
     new_state: dict[str, int] = {}
 
-    persons: list[Fragment] = []
     channel_frags: list[Fragment] = []
     common_frags: list[Fragment] = []
     topics: list[Fragment] = []
@@ -316,6 +323,9 @@ def load_fragments(
             continue
 
         if frag.type == "topic":
+            # Only behavioral topics go into the system prompt inline
+            if not frag.behavioral:
+                continue
             key = frag.path.name
             matched_now = matches_context(frag, msgs, auths, channel_id)
             if matched_now:
@@ -332,8 +342,9 @@ def load_fragments(
         if not matches_context(frag, msgs, auths, channel_id):
             continue
 
+        # Person fragments are injected as synthetic messages, not system prompt
         if frag.type == "person":
-            persons.append(frag)
+            continue
         elif frag.type == "channel":
             channel_frags.append(frag)
         elif frag.type == "common":
@@ -341,7 +352,6 @@ def load_fragments(
         elif frag.type == "anchor":
             anchors.append(frag)
 
-    persons.sort(key=lambda f: f.order)
     common_frags.sort(key=lambda f: f.order)
     channel_frags.sort(key=lambda f: f.order)
     topics.sort(key=lambda f: f.order)
@@ -350,16 +360,15 @@ def load_fragments(
     _save_topic_state(state_path, new_state)
 
     result = {
-        "persons": _format_persons(persons),
+        "persons": "",  # Persons now injected via synthetic messages
         "channel": _format_channel(common_frags, channel_frags, channel_name),
         "topics": _format_topics(topics),
         "anchors": _format_anchors(anchors),
     }
 
     _LOG.info(
-        "Fragments: persons=%d, channel=%d, topics=%d, anchors=%d chars",
-        len(result["persons"]), len(result["channel"]),
-        len(result["topics"]), len(result["anchors"]),
+        "Fragments: channel=%d, topics=%d, anchors=%d chars",
+        len(result["channel"]), len(result["topics"]), len(result["anchors"]),
     )
 
     return result
@@ -374,20 +383,18 @@ def _join_contents(frags: list[Fragment]) -> str:
     return "\n\n---\n".join(f.content for f in frags)
 
 
-def _format_persons(frags: list[Fragment]) -> str:
-    if not frags:
-        return ""
-    content = _join_contents(frags)
-    return f"\n\n---\nPEOPLE YOU KNOW:\n{content}\n---"
-
-
 def _format_channel(common: list[Fragment], channel: list[Fragment],
                     channel_name: str) -> str:
     merged = sorted(common + channel, key=lambda f: f.order)
 
     sections = []
     for frag in merged:
-        sections.append(f"--- {frag.path.name} ---\n{frag.content}")
+        first, _, rest = frag.content.partition("\n")
+        if first.startswith("#"):
+            labeled = f"{first} ({frag.path.name})\n{rest}" if rest else f"{first} ({frag.path.name})"
+        else:
+            labeled = f"### {frag.path.name}\n{frag.content}"
+        sections.append(labeled)
 
     result = ""
     if sections:
@@ -413,7 +420,128 @@ def _format_anchors(frags: list[Fragment]) -> str:
     if not frags:
         return ""
     content = _join_contents(frags)
-    return f"\n\n---\nBEHAVIORAL REMINDERS:\n{content}\n---"
+    return f"\n\n---\n{content}\n---"
+
+
+# ---------------------------------------------------------------------------
+# Context introduction injection (cache-stable dynamic context)
+# ---------------------------------------------------------------------------
+
+_INTRODUCED_FILE = ".introduced.json"
+
+
+def _load_introduced(chan_dir: Path) -> tuple[str, list[str]]:
+    """Load .introduced.json, returning (session_id, introduced_keys)."""
+    path = chan_dir / _INTRODUCED_FILE
+    try:
+        data = json.loads(path.read_text())
+        return str(data.get("session_id", "")), list(data.get("introduced", []))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return "", []
+
+
+def _save_introduced(chan_dir: Path, session_id: str, introduced: list[str]) -> None:
+    path = chan_dir / _INTRODUCED_FILE
+    try:
+        path.write_text(json.dumps({"session_id": session_id, "introduced": introduced}))
+    except OSError as e:
+        _LOG.warning("Failed to save introduced state: %s", e)
+
+
+def _fragment_key(frag: Fragment) -> str:
+    """Return a stable string key for a fragment (used in .introduced.json)."""
+    if frag.path.parent.name == "people":
+        return f"people/{frag.path.name}"
+    return frag.path.name
+
+
+def _make_intro_string(frag: Fragment) -> str:
+    """Build the synthetic intro message text for a newly-relevant fragment."""
+    frag_path = str(frag.path)
+    if frag.type == "person":
+        name = frag.path.stem
+        if frag.description:
+            return (
+                f"[Context] {name} is in this conversation -- {frag.description}. "
+                f"Full profile: {frag_path}"
+            )
+        return f"[Context] {name} is in this conversation. Full profile: {frag_path}"
+    if frag.type == "topic":
+        kw = frag.keywords[0] if frag.keywords else frag.path.stem
+        if frag.description:
+            return (
+                f'[Context] "{kw}" was just mentioned -- {frag.description}. '
+                f"Reference: {frag_path}"
+            )
+        return f'[Context] "{kw}" was just mentioned. Reference: {frag_path}'
+    return ""
+
+
+def get_new_context_introductions(
+    channel_name: str,
+    session_id: str,
+    messages: list[dict],
+    channel_id: str = "",
+    frag_dir: Path | None = None,
+    state_dir: Path | None = None,
+) -> list[str]:
+    """Return intro strings for person/topic fragments newly relevant this session.
+
+    Runs fragment matching logic and cross-references .introduced.json to find
+    non-behavioral person/topic fragments that match the current messages but
+    haven't been introduced yet in this session. Updates .introduced.json as a
+    side effect.
+
+    Returns a list of synthetic intro message strings ready for insertion.
+    """
+    chan_dir = state_dir or channel_dir(channel_name)
+    stored_session_id, introduced_keys = _load_introduced(chan_dir)
+
+    # If session changed, reset introduced list
+    if stored_session_id != session_id:
+        introduced_keys = []
+
+    authors = [m.get("author", "").lower() for m in messages]
+    all_frags = scan_fragments(frag_dir)
+
+    new_intros: list[str] = []
+    newly_introduced = list(introduced_keys)
+
+    for frag in all_frags:
+        if frag.type not in ("person", "topic"):
+            continue
+        # behavioral: true fragments stay in the system prompt -- skip here
+        if frag.behavioral:
+            continue
+        if not frag.content:
+            continue
+        if not matches_context(frag, messages, authors, channel_id):
+            continue
+
+        key = _fragment_key(frag)
+        if key in introduced_keys:
+            continue
+
+        intro = _make_intro_string(frag)
+        if intro:
+            new_intros.append(intro)
+            newly_introduced.append(key)
+
+    if new_intros or stored_session_id != session_id:
+        _save_introduced(chan_dir, session_id, newly_introduced)
+
+    return new_intros
+
+
+def reset_introductions(channel_name: str, state_dir: Path | None = None) -> None:
+    """Clear the introduced list for a channel (called after session compaction).
+
+    Keeps the session_id but resets the introduced keys to [] so context
+    gets re-introduced via synthetic messages on the next turn.
+    """
+    chan_dir = state_dir or channel_dir(channel_name)
+    stored_session_id, _ = _load_introduced(chan_dir)
+    _save_introduced(chan_dir, stored_session_id, [])
 
 
 # ---------------------------------------------------------------------------
@@ -421,36 +549,13 @@ def _format_anchors(frags: list[Fragment]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def get_recent_messages(channel_id: int, count: int = 8,
-                       db_path: Path | None = None) -> list[dict]:
-    """Read recent messages from SQLite for keyword matching."""
-    conn = None
-    try:
-        conn = sqlite3.connect(str(db_path or DB_PATH))
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            """
-            SELECT author_id, author_nickname, content
-            FROM message_history
-            WHERE channel_id = ?
-              AND author_id != ?
-              AND content IS NOT NULL
-              AND content != ''
-              AND content NOT LIKE '!%'
-              AND content NOT LIKE '-%'
-            ORDER BY message_id DESC
-            LIMIT ?
-            """,
-            (channel_id, WENDY_BOT_ID, count),
-        ).fetchall()
+def get_recent_messages(channel_id: int, count: int = 8) -> list[dict]:
+    """Read recent real messages from SQLite for keyword matching.
 
-        return [
-            {"author_id": row["author_id"], "author": row["author_nickname"], "content": row["content"]}
-            for row in reversed(rows)
-        ]
-    except Exception as e:
-        _LOG.warning("Failed to read recent messages: %s", e)
-        return []
-    finally:
-        if conn:
-            conn.close()
+    Delegates to ``state_manager.get_recent_messages()`` which excludes
+    synthetic messages so that injected context never triggers keyword
+    matches or fragment selection.
+    """
+    from .state import state as state_manager
+
+    return state_manager.get_recent_messages(channel_id, limit=count)

@@ -513,6 +513,14 @@ body {
 
 .usage-pct { color: var(--text); font-weight: 500; }
 
+.week-info {
+  margin-left: 4px;
+  font-size: 9px;
+  color: var(--text-dim);
+  cursor: default;
+  vertical-align: middle;
+}
+
 .usage-bar {
   position: relative;
   height: 6px;

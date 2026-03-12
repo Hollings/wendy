@@ -31,10 +31,11 @@ RUN npx playwright install chromium
 
 # Python dependencies
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt \
+    pytest ruff numpy imageio matplotlib Pillow requests
 
-# Common tools
-RUN pip install --no-cache-dir pytest ruff numpy imageio matplotlib Pillow requests
+# Non-root user for CLI subprocess isolation
+RUN useradd -m -s /bin/bash -u 1000 wendy
 
 # Copy application code
 COPY . .

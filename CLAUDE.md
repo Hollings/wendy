@@ -212,10 +212,20 @@ Active hooks:
 
 ## Server Access
 
-Orange Pi home server:
+See `config/docs/infrastructure.md` for full details (Lightsail VPS, Caddy, SSH keys).
+
+Orange Pi (Docker services):
 
 ```bash
 ssh ubuntu@100.120.250.100
+```
+
+Lightsail VPS (Caddy/SSL — wendy.monster routing):
+
+```bash
+ssh -i ~/.ssh/lightsail-west-2.pem ec2-user@44.255.209.109
+sudo vi /etc/caddy/Caddyfile
+sudo systemctl reload caddy
 ```
 
 Secrets live at `/srv/secrets/wendy/` (never overwritten by deploys):

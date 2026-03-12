@@ -5,6 +5,9 @@ WORKDIR /app/game
 # Copy helper library to /app so it's importable as /app/lib.ts
 COPY services/runtime/lib.ts /app/lib.ts
 
+# Pre-cache lib.ts dependencies so game containers start instantly
+RUN deno cache /app/lib.ts
+
 # Create data directory for persistence
 RUN mkdir -p /data && chown deno:deno /data
 

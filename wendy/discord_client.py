@@ -25,12 +25,14 @@ from .config import (
     ENRICHMENT_DURATION,
     ENRICHMENT_HOUR_UTC,
     ENRICHMENT_MINUTE_UTC,
+    FEATURE_DIGEST_CHANNEL,
+    FEATURE_DIGEST_HOUR_UTC,
     MESSAGE_LOGGER_GUILDS,
     PROXY_PORT,
     USAGE_BUDGET_FACTOR,
     parse_channel_configs,
 )
-from .enrichment import build_enrichment_continue_nudge, build_enrichment_nudge
+from .enrichment import build_enrichment_continue_nudge, build_enrichment_end_nudge, build_enrichment_nudge
 from .paths import (
     attachments_dir,
     claude_md_path,
@@ -72,6 +74,13 @@ def _get_current_effort(model: str) -> list[str]:
     return []
 
 
+_MAX_TIMEOUT_CONTINUATIONS = 2
+"""Max times a timed-out generation will auto-continue before giving up."""
+
+_MAX_ENRICHMENT_CONTINUATIONS = 10
+"""Max times an enrichment session will re-invoke before giving up."""
+
+
 class GenerationJob:
     """Tracks an active Claude CLI generation for a channel."""
 
@@ -82,6 +91,9 @@ class GenerationJob:
         self.enrichment_end_time: str = ""
         self.enrichment_end_timestamp: float = 0.0
         self.enrichment_continuation: bool = False
+        self.enrichment_continuation_count: int = 0
+        self.timed_out: bool = False
+        self.continuation_count: int = 0
 
 
 class WendyBot(commands.Bot):
@@ -106,6 +118,7 @@ class WendyBot(commands.Bot):
         self._presence_updated_at: float = 0.0
         self._enrichment_last_run_date: dict[int, datetime.date] = {}
         self._enrichment_notified: set[int] = set()
+        self._feature_digest_last_date: datetime.date | None = None
 
         ensure_shared_dirs()
         self._register_commands()
@@ -258,13 +271,20 @@ class WendyBot(commands.Bot):
         if self.whitelist_channels:
             self.watch_notifications.start()
             self.check_enrichment_schedule.start()
+            self.send_feature_digest.start()
 
         self._cache_emojis_task = self.loop.create_task(self._cache_emojis())
         self._task_runner = TaskRunner()
-        self.loop.create_task(self._task_runner.run())
+        self._task_runner_task = self.loop.create_task(self._task_runner.run())
 
     async def close(self) -> None:
-        """Cleanup on shutdown."""
+        """Cleanup on shutdown: cancel the task runner so agents are killed cleanly."""
+        if hasattr(self, "_task_runner_task") and not self._task_runner_task.done():
+            self._task_runner_task.cancel()
+            try:
+                await self._task_runner_task
+            except asyncio.CancelledError:
+                pass
         if self._api_runner:
             await self._api_runner.cleanup()
         await super().close()
@@ -563,23 +583,26 @@ class WendyBot(commands.Bot):
         if time.monotonic() - self._presence_updated_at < _PRESENCE_INTERVAL:
             return
         try:
-            week_pct_str, surplus_str = await self._fetch_usage_stats()
+            week_pct_str, pace_str, resets_str = await self._fetch_usage_stats()
+            status = f"{week_pct_str} wk | {pace_str}"
+            if resets_str:
+                status += f" | {resets_str}"
             await self.change_presence(
                 activity=discord.Activity(
                     type=discord.ActivityType.watching,
-                    name=f"{week_pct_str} weekly | {surplus_str}",
+                    name=status,
                 )
             )
             self._presence_updated_at = time.monotonic()
         except Exception as e:
             _LOG.error("Failed to update presence: %s", e)
 
-    async def _fetch_usage_stats(self) -> tuple[str, str]:
-        """Run get_usage.sh and return (week_pct_str, surplus_str).
+    async def _fetch_usage_stats(self) -> tuple[str, str, str]:
+        """Run get_usage.sh and return (week_pct_str, pace_str, resets_str).
 
-        surplus = floor(elapsed_week_pct) - week_all_percent: positive means budget
+        pace = floor(elapsed_week_pct) - week_all_percent: positive means budget
         ahead of pace, negative means deficit. Updates ``_cached_usage`` on success.
-        Returns ``("N/A", "N/A")`` on any failure.
+        Returns ``("N/A", "N/A", "")`` on any failure.
         """
         global _cached_usage
 
@@ -593,13 +616,13 @@ class WendyBot(commands.Bot):
         if proc.returncode != 0:
             _LOG.error("get_usage.sh failed with code %d: %s",
                        proc.returncode, stderr.decode("utf-8", errors="replace").strip())
-            return "N/A", "N/A"
+            return "N/A", "N/A", ""
 
         try:
             data = json.loads(stdout.decode())
         except json.JSONDecodeError:
             _LOG.error("Failed to decode JSON from get_usage.sh: %s", stdout.decode())
-            return "N/A", "N/A"
+            return "N/A", "N/A", ""
 
         if USAGE_BUDGET_FACTOR < 1.0:
             for key in ("week_all_percent", "week_sonnet_percent", "session_percent"):
@@ -610,7 +633,8 @@ class WendyBot(commands.Bot):
         week_resets_str = data.get("week_all_resets", "")
 
         week_pct_str = f"{week_pct}%" if week_pct is not None else "N/A"
-        surplus_str = "N/A"
+        pace_str = "N/A"
+        resets_str = ""
 
         if week_pct is not None and week_resets_str:
             try:
@@ -624,13 +648,14 @@ class WendyBot(commands.Bot):
                 elapsed_pct = max(0, min(100, elapsed_pct))
                 surplus = elapsed_pct - week_pct
                 if surplus >= 0:
-                    surplus_str = f"+{surplus}% surplus"
+                    pace_str = f"+{surplus}% surplus"
                 else:
-                    surplus_str = f"{surplus}% deficit"
+                    pace_str = f"{abs(surplus)}% deficit"
+                resets_str = resets_at.strftime("%b %-d")
             except Exception as e:
                 _LOG.warning("Failed to compute surplus: %s", e)
 
-        return week_pct_str, surplus_str
+        return week_pct_str, pace_str, resets_str
 
     async def _generate_response(
         self,
@@ -697,6 +722,8 @@ class WendyBot(commands.Bot):
             _LOG.info("CLI completed for channel %s", channel.id)
 
         except ClaudeCliError as e:
+            if "timed out" in str(e).lower():
+                job.timed_out = True
             self._handle_cli_error(channel, e)
 
         except Exception:
@@ -739,26 +766,55 @@ class WendyBot(commands.Bot):
         if job.is_enrichment:
             remaining = job.enrichment_end_timestamp - time.time()
             if remaining > 30:
-                # Time still left -- re-invoke with a continuation nudge.
-                _LOG.info("Enrichment continuing for channel %s (%.0fs remaining)", channel.id, remaining)
-                new_job = GenerationJob()
-                new_job.is_enrichment = True
-                new_job.enrichment_end_time = job.enrichment_end_time
-                new_job.enrichment_end_timestamp = job.enrichment_end_timestamp
-                new_job.enrichment_continuation = True
-                new_task = self.loop.create_task(self._generate_response(channel, new_job))
-                new_job.task = new_task
-                self._active_generations[channel.id] = new_job
-                return
-            # Enrichment over -- respond to any messages that arrived during the break.
+                if job.enrichment_continuation_count >= _MAX_ENRICHMENT_CONTINUATIONS:
+                    _LOG.warning(
+                        "Enrichment hit max continuations (%d) for channel %s, stopping",
+                        _MAX_ENRICHMENT_CONTINUATIONS, channel.id,
+                    )
+                else:
+                    # Time still left -- re-invoke with a continuation nudge.
+                    _LOG.info("Enrichment continuing for channel %s (%.0fs remaining, continuation %d)",
+                              channel.id, remaining, job.enrichment_continuation_count + 1)
+                    new_job = GenerationJob()
+                    new_job.is_enrichment = True
+                    new_job.enrichment_end_time = job.enrichment_end_time
+                    new_job.enrichment_end_timestamp = job.enrichment_end_timestamp
+                    new_job.enrichment_continuation = True
+                    new_job.enrichment_continuation_count = job.enrichment_continuation_count + 1
+                    new_task = self.loop.create_task(self._generate_response(channel, new_job))
+                    new_job.task = new_task
+                    self._active_generations[channel.id] = new_job
+                    return
+            # Enrichment over -- inject show-off nudge and start a generation.
             _LOG.info("Enrichment ended for channel %s", channel.id)
-            if self._has_pending_messages(channel.id):
-                new_job = GenerationJob()
-                new_task = self.loop.create_task(self._generate_response(channel, new_job))
-                new_job.task = new_task
-                self._active_generations[channel.id] = new_job
-            else:
-                self._active_generations.pop(channel.id, None)
+            self._insert_synthetic_message(channel.id, "System", build_enrichment_end_nudge(channel.id))
+            new_job = GenerationJob()
+            new_task = self.loop.create_task(self._generate_response(channel, new_job))
+            new_job.task = new_task
+            self._active_generations[channel.id] = new_job
+            return
+
+        # Auto-continue if the CLI timed out (up to _MAX_TIMEOUT_CONTINUATIONS).
+        if job.timed_out and job.continuation_count < _MAX_TIMEOUT_CONTINUATIONS:
+            _LOG.info(
+                "CLI timed out for channel %s (continuation %d/%d), auto-continuing",
+                channel.id, job.continuation_count + 1, _MAX_TIMEOUT_CONTINUATIONS,
+            )
+            self._insert_synthetic_message(
+                channel.id, "System",
+                "[Your CLI session was interrupted because it hit the time limit. "
+                "Pick up where you left off -- check messages first.]",
+            )
+            channel_config = self.channel_configs.get(channel.id, {})
+            new_job = GenerationJob()
+            new_job.continuation_count = job.continuation_count + 1
+            # Carry over pending flag so messages aren't lost.
+            new_job.new_message_pending = job.new_message_pending
+            new_task = self.loop.create_task(
+                self._generate_response(channel, new_job, model_override=channel_config.get("model"))
+            )
+            new_job.task = new_task
+            self._active_generations[channel.id] = new_job
             return
 
         if job.new_message_pending and self._has_pending_messages(channel.id):
@@ -839,6 +895,48 @@ class WendyBot(commands.Bot):
             if config.get("enrichment_enabled"):
                 yield channel_id, config
 
+    @tasks.loop(minutes=1)
+    async def send_feature_digest(self) -> None:
+        """Send daily feature request digest to the admin channel each morning."""
+        now = datetime.datetime.now(datetime.UTC)
+        if now.hour != FEATURE_DIGEST_HOUR_UTC or now.minute != 0:
+            return
+        today = now.date()
+        if self._feature_digest_last_date == today:
+            return
+        self._feature_digest_last_date = today
+
+        from .api_server import _load_feature_requests
+        pending = [r for r in _load_feature_requests() if r.get("status") == "pending"]
+        if not pending:
+            return
+
+        channel_id = FEATURE_DIGEST_CHANNEL
+        if not channel_id:
+            for cid, cfg in self.channel_configs.items():
+                if cfg.get("mode") == "full":
+                    channel_id = cid
+                    break
+        if not channel_id:
+            return
+
+        channel = self.get_channel(channel_id)
+        if not channel:
+            return
+
+        lines = [f"**Feature Requests** ({len(pending)} pending):"]
+        for r in pending:
+            lines.append(f"- **#{r['id']}** ({r['user']}): {r['request']}")
+
+        try:
+            await channel.send("\n".join(lines))
+        except Exception as e:
+            _LOG.error("Failed to send feature digest: %s", e)
+
+    @send_feature_digest.before_loop
+    async def before_send_feature_digest(self) -> None:
+        await self.wait_until_ready()
+
     def is_enrichment_active(self, channel_id: int) -> bool:
         """Return True if an enrichment session is currently running for channel_id."""
         job = self._active_generations.get(channel_id)
@@ -865,7 +963,12 @@ class WendyBot(commands.Bot):
             datetime.datetime.now(datetime.UTC).replace(microsecond=0)
             + datetime.timedelta(seconds=ENRICHMENT_DURATION)
         )
-        end_time_str = end_dt.strftime("%H:%M")
+        # Tell her she has 8 hours so she scopes ambitious projects
+        fake_end_dt = (
+            datetime.datetime.now(datetime.UTC).replace(microsecond=0)
+            + datetime.timedelta(hours=8)
+        )
+        end_time_str = fake_end_dt.strftime("%H:%M")
 
         model_override = channel_config.get("model")
         job = GenerationJob()

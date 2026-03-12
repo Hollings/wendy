@@ -32,6 +32,16 @@
         ]
       }
     ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/app/config/hooks/pre_compact.sh"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

@@ -506,7 +506,7 @@ async def _require_brain_auth(
 async def serve_brain_page() -> HTMLResponse:
     brain_html = STATIC_DIR / "brain" / "index.html"
     if brain_html.exists():
-        return HTMLResponse(brain_html.read_text())
+        return HTMLResponse(brain_html.read_text(), headers={"Cache-Control": "no-store"})
     return HTMLResponse("<h1>Brain feed not configured</h1>", status_code=503)
 
 
@@ -522,6 +522,7 @@ async def brain_authenticate(request: BrainAuthRequest) -> BrainAuthResponse:
 @app.websocket("/ws/brain")
 async def brain_websocket(websocket: WebSocket, token: str = Query("")) -> None:
     if not auth.verify_token(token):
+        await websocket.accept()
         await websocket.close(code=4001, reason="Invalid or expired token")
         return
     if not await brain.add_client(websocket):

@@ -1,7 +1,8 @@
 """Claude CLI subprocess manager.
 
-Spawns and streams the `claude` CLI subprocess. Nothing else.
-~300 lines, subprocess management only.
+Spawns and streams the ``claude`` CLI subprocess, manages session
+resolution and forking, and writes stream/debug logs.  Wendy's
+responses flow through the internal HTTP API, not stdout.
 """
 from __future__ import annotations
 
@@ -16,7 +17,9 @@ from typing import Any
 
 from . import sessions
 from .config import (
-    CLAUDE_CLI_TIMEOUT,
+    CLAUDE_CLI_IDLE_TIMEOUT,
+    CLAUDE_CLI_MAX_RUNTIME,
+    CLI_SUBPROCESS_UID,
     DEV_MODE,
     MAX_STREAM_LOG_LINES,
     PROXY_PORT,
@@ -36,23 +39,11 @@ from .paths import (
 
 _LOG = logging.getLogger(__name__)
 
-# Tool instructions template - {channel_id}, {channel_name}, and {proxy_port} are substituted
-# Lives here in Phase 1, moves to prompt.py in Phase 2
 TOOL_INSTRUCTIONS_TEMPLATE = """
 ---
 REAL-TIME CHANNEL TOOLS (Channel ID: {channel_id})
 
-CRITICAL: You are running in HEADLESS MODE. Your final output is NOT sent to Discord.
-You MUST use the send_message API to respond - this is the ONLY way users will see your messages!
-
-RESPONSE EXPECTATIONS:
-- You should ALMOST ALWAYS respond. Users expect you to participate in conversation.
-- If you don't call send_message, users see NOTHING - it looks like you ignored them.
-- Only skip responding if users EXPLICITLY say they don't want your input (e.g., "wendy stop", "shut up", "go away").
-- In ambiguous situations, neutral chats, or when unsure: RESPOND. Err on the side of engaging.
-- Even a brief acknowledgment ("gotcha!", "nice", "haha") is better than silence.
-
-1. SEND A MESSAGE (REQUIRED to respond):
+1. SEND A MESSAGE:
    curl -X POST http://localhost:{proxy_port}/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "your message here"}}'
 
    With attachment (file can be anywhere under /data/wendy/ or /tmp/):
@@ -66,39 +57,18 @@ RESPONSE EXPECTATIONS:
    If the API returns an error about new messages, check them and incorporate into your reply. If you've already checked and want to send anyway:
    curl -X POST http://localhost:{proxy_port}/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "your message", "force": true}}'
 
-   This is the ONLY way to send messages to users. Your final output goes nowhere.
-
-2. CHECK FOR NEW MESSAGES (optional, use before responding):
-   curl -s http://localhost:{proxy_port}/api/check_messages/{channel_id}
-
-   Shows the last 10 messages to see if anyone sent new messages while you were thinking.
-   Note: Always use -s flag with curl for cleaner output.
-
-3. ADD EMOJI REACTION (use sparingly for effect):
+2. ADD EMOJI REACTION (use sparingly for effect):
    curl -X POST http://localhost:{proxy_port}/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "actions": [{{"type": "add_reaction", "message_id": MESSAGE_ID, "emoji": "thumbsup"}}]}}'
 
    Batch actions (send message + react in one call):
    curl -X POST http://localhost:{proxy_port}/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "actions": [{{"type": "send_message", "content": "nice!", "reply_to": MSG_ID}}, {{"type": "add_reaction", "message_id": MSG_ID, "emoji": "fire"}}]}}'
-
-4. SEARCH CUSTOM EMOJIS (for custom server emojis):
-   curl -s "http://localhost:{proxy_port}/api/emojis?search=keyword"
-
-WORKFLOW:
-1. Read/process the user's request
-2. Do any work needed (read files, search, etc.)
-3. ALWAYS call the send_message API to reply (unless explicitly told not to)
-4. You can send multiple messages if needed
 
 REPLIES AND REACTIONS:
 - Replies aren't necessary for responding to the most recent message - only use when pointing at a specific post for context
 - Reactions should be used sparingly for effect, not on every message
 - You MUST use raw Unicode emoji characters, NOT text names. Examples: "emoji": "\\U0001f44d" (not "thumbsup"), "emoji": "\\U0001f525" (not "fire"), "emoji": "\\u2764\\ufe0f" (not "heart")
 - Common emojis: \\U0001f44d \\U0001f525 \\u2764\\ufe0f \\U0001f602 \\U0001f440 \\U0001f914 \\U0001f4af \\U0001f389 \\U0001f60e \\U0001f680
-- Custom server emojis need lookup via /api/emojis, use the "usage" field value (format: <:name:id>)
 - message_id values come from check_messages responses
-
-LONG TASKS:
-Before doing something that might take a while (writing code, researching, reading multiple files, etc.), send a quick message to let users know. Otherwise they might think you froze or crashed. Send a quick "gimme a sec..." then do the work, then send your actual response.
 
 ATTACHMENTS:
 When users upload files (images, documents, code, etc.), the check_messages response includes an "attachments" array with file paths:
@@ -112,40 +82,6 @@ PERSONAL FOLDER:
 Your workspace for this channel is /data/wendy/channels/{channel_name}/
 - Save notes, files, and project work here
 - This persists between conversations
-
-SELF-CUSTOMIZATION:
-Your instructions are assembled from fragment files in /data/wendy/claude_fragments/.
-Fragment types:
-- common_*.md       -- loaded every turn, all channels
-- {channel_id}_*.md -- loaded for this channel only
-- topic_*.md        -- keyword-triggered (frontmatter: keywords, sticky)
-- people/*.md       -- loaded when that person is in the conversation (match by author name/ID)
-- anchor_*.md       -- always loaded, appended at the end (behavioral reinforcement)
-You can edit any fragment file or create new ones. Changes take effect on the next message.
-Person files in people/ need no frontmatter -- the filename becomes the keyword.
-To see available fragments: ls /data/wendy/claude_fragments/
-
-DEPLOYMENT:
-Deploy static sites and Deno game servers live.
-
-Deploy a static site (must contain index.html):
-  # Create a tarball of your site files (files at root, not in a subfolder)
-  tar czf /tmp/mysite.tar.gz -C /path/to/site/dir .
-  curl -X POST http://localhost:{proxy_port}/api/deploy_site \
-    -F "name=mysite" \
-    -F "files=@/tmp/mysite.tar.gz"
-
-Deploy a Deno game server (must contain server.ts at root):
-  tar czf /tmp/mygame.tar.gz -C /path/to/game/dir .
-  curl -X POST http://localhost:{proxy_port}/api/deploy_game \
-    -F "name=mygame" \
-    -F "files=@/tmp/mygame.tar.gz"
-
-Both return JSON with {{success, url, message}}. Games also return {{ws, port}}.
-Game servers run Deno with: --allow-net --allow-read=/data,/app --allow-write=/data --allow-env=PORT,STATE_FILE
-Import helper lib as: import {{ ... }} from "/app/lib.ts" (WebSocket, state persistence utils)
-
-Deployed URLs: {{web_url}}/sitename/ and {{web_url}}/game/gamename/
 
 MESSAGE HISTORY DATABASE:
 You have full read access to the message history at /data/wendy/shared/wendy.db. Use sqlite3 directly to search messages, check past conversations, or find old content.
@@ -184,26 +120,21 @@ def find_cli_path() -> str:
 
 
 def get_permissions_for_channel(channel_config: dict) -> tuple[str, str]:
-    """Get allowedTools and disallowedTools based on channel mode."""
-    mode = channel_config.get("mode", "full")
+    """Return (allowedTools, disallowedTools) strings for the CLI invocation.
+
+    Permissions are channel-scoped: the bot can only write inside its own
+    channel directory and the shared fragments directory.  In dev mode the
+    write restrictions are relaxed.
+    """
     channel_name = channel_config.get("_folder", channel_config.get("name", "default"))
 
-    if mode == "chat":
-        allowed = (
-            f"Read,WebSearch,WebFetch,Bash,"
-            f"Edit(//data/wendy/channels/{channel_name}/**),Write(//data/wendy/channels/{channel_name}/**),"
-            f"Edit(//data/wendy/claude_fragments/**),Write(//data/wendy/claude_fragments/**),"
-            f"Write(//data/wendy/tmp/**),Write(//tmp/**)"
-        )
-    else:
-        allowed = (
-            f"Read,WebSearch,WebFetch,Bash,"
-            f"Edit(//data/wendy/channels/{channel_name}/**),Write(//data/wendy/channels/{channel_name}/**),"
-            f"Edit(//data/wendy/claude_fragments/**),Write(//data/wendy/claude_fragments/**),"
-            f"Write(//data/wendy/tmp/**),Write(//tmp/**)"
-        )
-
-    disallowed = "Edit(//app/**),Write(//app/**)"
+    allowed = (
+        f"Read,WebSearch,WebFetch,Bash,"
+        f"Edit(//data/wendy/channels/{channel_name}/**),Write(//data/wendy/channels/{channel_name}/**),"
+        f"Edit(//data/wendy/claude_fragments/people/**),Write(//data/wendy/claude_fragments/people/**),"
+        f"Write(//data/wendy/tmp/**),Write(//tmp/**)"
+    )
+    disallowed = "Edit(//app/**),Write(//app/**),Skill,TodoWrite,TodoRead"
 
     if DEV_MODE:
         allowed += ",Edit(//data/wendy/dev-repo/**),Write(//data/wendy/dev-repo/**)"
@@ -220,16 +151,24 @@ def build_cli_command(
     channel_config: dict,
     model: str,
     fork_mode: bool = False,
+    effort_args: list[str] | None = None,
+    max_turns: int | None = None,
 ) -> list[str]:
-    """Build the Claude CLI command with all flags."""
+    """Build the full ``claude`` CLI argv list.
+
+    Handles session-id vs resume vs fork flags, model selection,
+    system prompt injection, and tool permission flags.
+    """
     cmd = [
         cli_path,
         "-p",
         "--output-format", "stream-json",
         "--verbose",
         "--model", model,
-        "--effort", "low",
+        "--strict-mcp-config",
     ]
+    if effort_args:
+        cmd.extend(effort_args)
 
     if fork_mode:
         cmd.extend(["--resume", session_id, "--fork-session"])
@@ -237,6 +176,9 @@ def build_cli_command(
         cmd.extend(["--session-id", session_id])
     else:
         cmd.extend(["--resume", session_id])
+
+    if max_turns is not None:
+        cmd.extend(["--max-turns", str(max_turns)])
 
     if system_prompt:
         cmd.extend(["--append-system-prompt", system_prompt])
@@ -247,23 +189,38 @@ def build_cli_command(
     return cmd
 
 
-def build_nudge_prompt(channel_id: int, is_thread: bool = False, thread_name: str | None = None) -> str:
+def build_nudge_prompt(
+    channel_id: int,
+    is_thread: bool = False,
+    thread_name: str | None = None,
+    journal_note: str = "",
+    beads_note: str = "",
+    was_compacted: bool = False,
+) -> str:
     """Build the nudge prompt sent to Claude CLI via stdin."""
     if is_thread:
-        return (
+        base = (
             f'<you\'ve been forked into a Discord thread: "{thread_name}". '
             f"Your conversation history from the parent channel has been preserved. "
             f"You MUST call curl -s http://localhost:{PROXY_PORT}/api/check_messages/{channel_id} "
             f"before any other action. Do not assume what the messages contain.>"
         )
-    return (
-        f"<new messages - you MUST call curl -s http://localhost:{PROXY_PORT}/api/check_messages/{channel_id} "
-        f"before any other action. Do not assume what the messages contain.>"
-    )
+    else:
+        base = (
+            f"<new messages - you MUST call curl -s http://localhost:{PROXY_PORT}/api/check_messages/{channel_id} "
+            f"before any other action. Do not assume what the messages contain.>"
+        )
+    compacted_note = (
+        f"<your session was auto-compacted since your last turn. "
+        f"Use count=20 to restore context: "
+        f"curl -s 'http://localhost:{PROXY_PORT}/api/check_messages/{channel_id}?count=20'>"
+    ) if was_compacted else ""
+    extras = "\n".join(x for x in [journal_note, beads_note, compacted_note] if x)
+    return base + ("\n" + extras if extras else "")
 
 
 def setup_channel_folder(channel_name: str, beads_enabled: bool = False) -> None:
-    """Create channel-specific folder and copy Claude Code settings."""
+    """Create channel workspace and sync Claude Code settings from the app config."""
     ensure_channel_dirs(channel_name, beads_enabled=beads_enabled)
     chan_dir = channel_dir(channel_name)
 
@@ -276,19 +233,22 @@ def setup_channel_folder(channel_name: str, beads_enabled: bool = False) -> None
             shutil.copy2(claude_settings_src, settings_dest)
 
 
+def _sync_scripts(src_dir: Path, dest_dir: Path, pattern: str, *, make_executable: bool = False) -> None:
+    """Copy scripts from *src_dir* to *dest_dir* when the source is newer."""
+    for script in src_dir.glob(pattern):
+        dest = dest_dir / script.name
+        if not dest.exists() or dest.stat().st_mtime < script.stat().st_mtime:
+            shutil.copy2(script, dest)
+            if make_executable:
+                dest.chmod(0o755)
+
+
 def setup_wendy_scripts() -> None:
-    """Ensure shell scripts are available and shared dirs exist."""
+    """Sync helper scripts to the data volume and ensure shared dirs exist."""
     scripts_src = Path("/app/scripts")
     if scripts_src.exists():
-        for script in scripts_src.glob("*.sh"):
-            dest = WENDY_BASE / script.name
-            if not dest.exists() or dest.stat().st_mtime < script.stat().st_mtime:
-                shutil.copy2(script, dest)
-                dest.chmod(0o755)
-        for script in scripts_src.glob("*.py"):
-            dest = WENDY_BASE / script.name
-            if not dest.exists() or dest.stat().st_mtime < script.stat().st_mtime:
-                shutil.copy2(script, dest)
+        _sync_scripts(scripts_src, WENDY_BASE, "*.sh", make_executable=True)
+        _sync_scripts(scripts_src, WENDY_BASE, "*.py")
 
     ensure_shared_dirs()
 
@@ -349,7 +309,12 @@ def save_debug_log(events: list[dict], channel_id: int | None) -> None:
 
 
 def get_recent_cli_error() -> str | None:
-    """Read the most recent Claude CLI debug file for error messages."""
+    """Parse the most recent Claude CLI debug log for a human-readable error.
+
+    Checks for known patterns (OAuth expiry, authentication errors) first,
+    then falls back to the last ``[ERROR]`` line in the file.  Returns
+    ``None`` if no debug files exist or no error is found.
+    """
     debug_dir = Path.home() / ".claude" / "debug"
     if not debug_dir.exists():
         return None
@@ -367,8 +332,7 @@ def get_recent_cli_error() -> str | None:
             match = re.search(r'"message":\s*"([^"]+)"', content)
             return match.group(1) if match else "authentication error"
 
-        lines = content.strip().split("\n")
-        for line in reversed(lines[-20:]):
+        for line in reversed(content.strip().split("\n")[-20:]):
             if "[ERROR]" in line:
                 if "Error:" in line:
                     return line.split("Error:", 1)[-1].strip()[:200]
@@ -380,7 +344,11 @@ def get_recent_cli_error() -> str | None:
 
 
 def extract_forked_session_id(events: list[dict], session_cwd_folder: str) -> str | None:
-    """Extract the forked session ID from stream-json events."""
+    """Extract the forked session ID from stream-json events.
+
+    Checks (in priority order): ``result`` events, ``system`` events,
+    then falls back to the ``sessions-index.json`` file on disk.
+    """
     for event in reversed(events):
         if event.get("type") == "result" and event.get("session_id"):
             return event["session_id"]
@@ -402,49 +370,58 @@ def extract_forked_session_id(events: list[dict], session_cwd_folder: str) -> st
     return None
 
 
-async def run_cli(
+def _write_current_session_file(channel_name: str, session_id: str) -> None:
+    """Atomically write *session_id* to the channel's current-session file.
+
+    Used by the beads orchestrator to know which session to fork from.
+    Writes to a temp file first, then renames for atomicity.
+    """
+    cs_file = current_session_file(channel_name)
+    try:
+        temp_file = cs_file.with_suffix(".tmp")
+        temp_file.write_text(session_id)
+        temp_file.replace(cs_file)
+    except Exception as e:
+        _LOG.warning("Failed to write current session file: %s", e)
+
+
+def _resolve_session(
     channel_id: int,
     channel_config: dict,
-    system_prompt: str,
-    model_override: str | None = None,
-    force_new_session: bool = False,
-) -> None:
-    """Spawn Claude CLI, stream output, and track session state.
+    session_cwd_folder: str,
+    force_new_session: bool,
+) -> tuple[str, bool, bool]:
+    """Determine the session ID and whether to create/resume/fork.
 
-    This is the main entry point for running Claude CLI.
-    Wendy's responses go through the send_message API, not stdout.
+    Returns:
+        (session_id, is_new_session, fork_mode)
     """
-    cli_path = find_cli_path()
-    channel_name = channel_config.get("_folder", channel_config.get("name", "default"))
-    beads_enabled = channel_config.get("beads_enabled", False)
-
     is_thread = channel_config.get("_is_thread", False)
     parent_folder = channel_config.get("_parent_folder")
-    thread_name = channel_config.get("_thread_name")
 
-    # For threads, sessions live in the parent's project directory
-    session_cwd_folder = parent_folder if (is_thread and parent_folder) else channel_name
-
-    # Get or create session
     session_info = sessions.get_session(channel_id)
+
     channel_changed = (
         session_info is not None
         and session_info.folder != session_cwd_folder
     )
     if channel_changed:
-        _LOG.warning("Channel folder changed for %d: %s -> %s", channel_id, session_info.folder, session_cwd_folder)
+        _LOG.warning(
+            "Channel folder changed for %d: %s -> %s",
+            channel_id, session_info.folder, session_cwd_folder,
+        )
 
     is_new_session = session_info is None or force_new_session or channel_changed
 
-    # If session exists in DB but JSONL doesn't exist on disk (e.g. after !clear),
-    # treat as new so we use --session-id instead of --resume
+    # If session exists in DB but JSONL is missing on disk (e.g. after !clear),
+    # treat as new so we use --session-id instead of --resume.
     if not is_new_session and session_info:
         sess_file = session_dir(session_cwd_folder) / f"{session_info.session_id}.jsonl"
         if not sess_file.exists():
             _LOG.info("Session %s has no JSONL on disk, treating as new", session_info.session_id[:8])
             is_new_session = True
 
-    # For new thread sessions, try to fork from parent
+    # For new thread sessions, try to fork from parent.
     fork_mode = False
     session_id = ""
     if is_new_session and is_thread and parent_folder:
@@ -455,29 +432,177 @@ async def run_cli(
             if parent_sess_file.exists():
                 session_id = parent_session.session_id
                 fork_mode = True
-                _LOG.info("Thread fork: --resume %s --fork-session from parent %s",
-                          session_id[:8], parent_folder)
+                _LOG.info(
+                    "Thread fork: --resume %s --fork-session from parent %s",
+                    session_id[:8], parent_folder,
+                )
 
     if is_new_session and not fork_mode:
         session_id = sessions.create_session(channel_id, session_cwd_folder)
     elif not is_new_session:
         session_id = session_info.session_id
 
-    # Resolve model
-    effective_model = resolve_model(model_override) if model_override else resolve_model(
-        channel_config.get("model")
+    return session_id, is_new_session, fork_mode
+
+
+def _build_cli_env(channel_name: str, beads_enabled: bool) -> dict[str, str]:
+    """Build the environment dict for the CLI subprocess.
+
+    Strips sensitive variables, optionally sets BEADS_DIR, and points
+    HOME at the wendy user when running with privilege separation.
+    """
+    cli_env = {k: v for k, v in os.environ.items() if k not in SENSITIVE_ENV_VARS}
+    if beads_enabled:
+        cli_env["BEADS_DIR"] = str(beads_dir(channel_name))
+    # Pass auth and sync tokens explicitly so the CLI can authenticate even though
+    # they're stripped from the general env (to keep them out of `env` output).
+    if oauth_token := os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        cli_env["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
+    if sync_key := os.environ.get("CLAUDE_SYNC_KEY"):
+        cli_env["CLAUDE_SYNC_KEY"] = sync_key
+    # Point HOME at the wendy user's home directory for CLI isolation
+    if CLI_SUBPROCESS_UID is not None:
+        cli_env["HOME"] = "/home/wendy"
+    return cli_env
+
+
+def _is_session_resume_error(cmd: list[str], stderr_text: str) -> bool:
+    """Return True if the CLI failure looks like a stale/missing session."""
+    if "--resume" not in cmd:
+        return False
+    lower = stderr_text.lower()
+    return "session" in lower or "no conversation found" in lower or not stderr_text.strip()
+
+
+async def _stream_cli_output(
+    proc: asyncio.subprocess.Process,
+    channel_id: int,
+    idle_timeout: int,
+    max_runtime: int,
+) -> tuple[list[dict], dict[str, Any]]:
+    """Read stream-json events from the CLI subprocess stdout.
+
+    Uses an **idle timeout** rather than a wall-clock cap: the timer resets
+    every time a line of output arrives.  A separate *max_runtime* acts as
+    an absolute safety net for runaway sessions.
+
+    Returns:
+        (events, usage) where *usage* comes from the ``result`` event.
+    """
+    events: list[dict] = []
+    usage: dict[str, Any] = {}
+    start = time.monotonic()
+
+    while True:
+        elapsed = time.monotonic() - start
+        remaining = max_runtime - elapsed
+        if remaining <= 0:
+            _LOG.error("CLI hit max runtime of %ds", max_runtime)
+            raise TimeoutError(f"hit max runtime ({max_runtime}s)")
+
+        try:
+            raw = await asyncio.wait_for(
+                proc.stdout.readline(),
+                timeout=min(idle_timeout, remaining),
+            )
+        except TimeoutError:
+            elapsed = time.monotonic() - start
+            if elapsed >= max_runtime - 1:
+                msg = f"hit max runtime ({max_runtime}s)"
+            else:
+                msg = f"idle for {idle_timeout}s (total runtime {elapsed:.0f}s)"
+            _LOG.error("CLI %s", msg)
+            raise TimeoutError(msg)
+
+        if not raw:  # EOF -- process closed stdout
+            break
+
+        decoded = raw.decode("utf-8").strip()
+        if not decoded:
+            continue
+        try:
+            event = json.loads(decoded)
+            events.append(event)
+            append_to_stream_log(event, channel_id)
+            if event.get("type") == "result":
+                usage = event.get("usage", {})
+        except json.JSONDecodeError:
+            continue
+
+    return events, usage
+
+
+def _kill_process(proc: asyncio.subprocess.Process | None) -> None:
+    """Kill *proc* if it is still running, swallowing errors."""
+    if proc is None:
+        return
+    if proc.returncode is None:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+async def run_cli(
+    channel_id: int,
+    channel_config: dict,
+    system_prompt: str,
+    model_override: str | None = None,
+    force_new_session: bool = False,
+    effort_args: list[str] | None = None,
+    nudge_override: str | None = None,
+    timeout_override: int | None = None,
+    max_turns: int | None = None,
+) -> None:
+    """Spawn the Claude CLI subprocess and stream its output.
+
+    This is the main entry point for running the Claude CLI.  Wendy's
+    user-visible responses are sent through the internal HTTP API; stdout
+    is consumed only for session tracking and debug logging.
+
+    On a session-resume failure the call retries once with a fresh session.
+    """
+    cli_path = find_cli_path()
+    channel_name = channel_config.get("_folder", channel_config.get("name", "default"))
+    beads_enabled = channel_config.get("beads_enabled", False)
+
+    is_thread = channel_config.get("_is_thread", False)
+    parent_folder = channel_config.get("_parent_folder")
+    thread_name = channel_config.get("_thread_name")
+
+    # For threads, sessions live in the parent's project directory.
+    session_cwd_folder = parent_folder if (is_thread and parent_folder) else channel_name
+
+    session_id, is_new_session, fork_mode = _resolve_session(
+        channel_id, channel_config, session_cwd_folder, force_new_session,
     )
+
+    effective_model = resolve_model(model_override or channel_config.get("model"))
 
     cmd = build_cli_command(
         cli_path, session_id, is_new_session, system_prompt,
         channel_config, effective_model, fork_mode=fork_mode,
+        effort_args=effort_args, max_turns=max_turns,
     )
 
-    nudge_prompt = build_nudge_prompt(
+    from .prompt import get_beads_warning_for_nudge, get_journal_listing_for_nudge
+    journal_note = get_journal_listing_for_nudge(channel_name)
+    beads_note = get_beads_warning_for_nudge(channel_name) if beads_enabled else ""
+
+    compacted_flag = channel_dir(channel_name) / ".compacted"
+    was_compacted = compacted_flag.exists()
+    if was_compacted:
+        compacted_flag.unlink(missing_ok=True)
+        from .fragments import reset_introductions
+        reset_introductions(channel_name)
+
+    nudge_prompt = nudge_override or build_nudge_prompt(
         channel_id, is_thread=is_thread, thread_name=thread_name,
+        journal_note=journal_note, beads_note=beads_note,
+        was_compacted=was_compacted,
     )
 
-    # Setup
+    # Ensure filesystem prerequisites.
     WENDY_BASE.mkdir(parents=True, exist_ok=True)
     setup_wendy_scripts()
     setup_channel_folder(channel_name, beads_enabled=beads_enabled)
@@ -485,33 +610,23 @@ async def run_cli(
     session_action = "starting new" if is_new_session else "resuming"
     _LOG.info("CLI: %s session %s for channel %d (model=%s)", session_action, session_id[:8], channel_id, effective_model)
 
+    if beads_enabled:
+        _write_current_session_file(channel_name, session_id)
+
     proc = None
-    timeout = CLAUDE_CLI_TIMEOUT
+    idle_timeout = CLAUDE_CLI_IDLE_TIMEOUT
+    max_runtime = timeout_override if timeout_override is not None else CLAUDE_CLI_MAX_RUNTIME
     try:
-        cli_env = {k: v for k, v in os.environ.items() if k not in SENSITIVE_ENV_VARS}
-        if beads_enabled:
-            cli_env["BEADS_DIR"] = str(beads_dir(channel_name))
-
-        channel_cwd = channel_dir(session_cwd_folder)
-
-        # Write session ID for orchestrator forking
-        if beads_enabled:
-            cs_file = current_session_file(channel_name)
-            try:
-                temp_file = cs_file.with_suffix(".tmp")
-                temp_file.write_text(session_id)
-                temp_file.replace(cs_file)
-            except Exception as e:
-                _LOG.warning("Failed to write current session file: %s", e)
-
+        user_kwargs = {"user": CLI_SUBPROCESS_UID} if CLI_SUBPROCESS_UID else {}
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
             limit=10 * 1024 * 1024,
-            cwd=channel_cwd,
-            env=cli_env,
+            cwd=channel_dir(session_cwd_folder),
+            env=_build_cli_env(channel_name, beads_enabled),
+            **user_kwargs,
         )
 
         proc.stdin.write(nudge_prompt.encode("utf-8"))
@@ -519,81 +634,53 @@ async def run_cli(
         proc.stdin.close()
         await proc.stdin.wait_closed()
 
-        events: list[dict] = []
-        usage: dict[str, Any] = {}
-
-        async def read_stream():
-            nonlocal usage
-            async for line in proc.stdout:
-                decoded = line.decode("utf-8").strip()
-                if not decoded:
-                    continue
-                try:
-                    event = json.loads(decoded)
-                    events.append(event)
-                    append_to_stream_log(event, channel_id)
-                    if event.get("type") == "result":
-                        usage = event.get("usage", {})
-                except json.JSONDecodeError:
-                    continue
-
-        try:
-            await asyncio.wait_for(read_stream(), timeout=timeout)
-        except TimeoutError:
-            _LOG.error("CLI stdout read timed out after %ds", timeout)
-            raise
+        events, usage = await _stream_cli_output(proc, channel_id, idle_timeout, max_runtime)
 
         await proc.wait()
 
-        stderr_data = await proc.stderr.read()
-        stderr_text = stderr_data.decode("utf-8", errors="replace") if stderr_data else ""
+        # stderr is merged into stdout via STDOUT redirect, so no separate read.
+        stderr_text = ""
 
+        # Log stderr and return code for debugging.
+        if stderr_text:
+            _LOG.warning("CLI stderr (code %d): %s", proc.returncode, stderr_text[:500])
+        if proc.returncode == 0 and not events:
+            _LOG.warning("CLI exited 0 but produced no events")
+
+        # Handle CLI failure.
         if proc.returncode != 0:
-            _LOG.error("CLI failed: %s", stderr_text)
-            session_error = (
-                "--resume" in cmd and (
-                    "session" in stderr_text.lower()
-                    or "no conversation found" in stderr_text.lower()
-                    or not stderr_text.strip()
-                )
-            )
-            if session_error and not force_new_session:
+            _LOG.error("CLI failed (code %d): %s", proc.returncode, stderr_text)
+            if _is_session_resume_error(cmd, stderr_text) and not force_new_session:
                 _LOG.warning("Session resume failed, retrying with fresh session for channel %d", channel_id)
                 return await run_cli(
                     channel_id, channel_config, system_prompt,
                     model_override=model_override, force_new_session=True,
+                    effort_args=effort_args,
                 )
-
             error_detail = stderr_text or get_recent_cli_error() or "unknown error"
             raise ClaudeCliError(f"CLI failed (code {proc.returncode}): {error_detail}")
 
         save_debug_log(events, channel_id)
         trim_stream_log()
 
-        # Capture forked session ID for threads
+        # Register the forked session for thread channels.
         if fork_mode:
             forked_id = extract_forked_session_id(events, session_cwd_folder)
             if forked_id:
                 sessions.create_session(channel_id, session_cwd_folder, session_id=forked_id)
                 _LOG.info("Thread fork complete: parent=%s -> forked=%s", session_id[:8], forked_id[:8])
+                if beads_enabled:
+                    _write_current_session_file(channel_name, forked_id)
 
         if usage:
             sessions.update_stats(channel_id, usage)
 
         _LOG.info("CLI: completed, events_streamed=%d", len(events))
 
-    except TimeoutError:
-        if proc:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-        raise ClaudeCliError(f"Timed out after {timeout}s") from None
+    except TimeoutError as exc:
+        _kill_process(proc)
+        raise ClaudeCliError(f"Timed out: {exc}") from None
 
     except asyncio.CancelledError:
-        if proc and proc.returncode is None:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+        _kill_process(proc)
         raise

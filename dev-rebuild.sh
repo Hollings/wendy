@@ -32,10 +32,10 @@ hotreload() {
 
 rebuild() {
     local svc=$1
-    echo "==> Building $svc (no-cache)..."
+    echo "==> Building $svc..."
     case $svc in
-        wendy) docker build --no-cache -f deploy/Dockerfile -t deploy-wendy:latest . ;;
-        web)   docker build --no-cache -f services/web/Dockerfile -t deploy-web:latest . ;;
+        wendy) docker build -f deploy/Dockerfile -t deploy-wendy:latest . ;;
+        web)   docker build -f services/web/Dockerfile -t deploy-web:latest . ;;
     esac
     echo "==> Force-recreating $svc container..."
     $COMPOSE up -d --force-recreate $svc

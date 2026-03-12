@@ -32,27 +32,20 @@ if echo "$RESPONSE" | grep -q '"error"'; then
     exit 1
 fi
 
-# Parse the response - extract utilization percentages and reset times
-# API returns: five_hour (session), seven_day (week all), seven_day_opus (opus)
-session_pct=$(echo "$RESPONSE" | grep -o '"five_hour":{[^}]*}' | grep -o '"utilization":[0-9.]*' | cut -d':' -f2 | cut -d'.' -f1)
-session_resets=$(echo "$RESPONSE" | grep -o '"five_hour":{[^}]*}' | grep -o '"resets_at":"[^"]*"' | cut -d'"' -f4)
+# Parse the response - single-pass jq with null handling
+OUTPUT=$(echo "$RESPONSE" | jq -e '{
+  session_percent: (.five_hour.utilization // 0 | floor),
+  session_resets: (.five_hour.resets_at // ""),
+  week_all_percent: (.seven_day.utilization // 0 | floor),
+  week_all_resets: (.seven_day.resets_at // ""),
+  week_sonnet_percent: (.seven_day_sonnet.utilization // 0 | floor),
+  week_sonnet_resets: (.seven_day_sonnet.resets_at // ""),
+  timestamp: now | todate
+}')
 
-week_all_pct=$(echo "$RESPONSE" | grep -o '"seven_day":{[^}]*}' | grep -o '"utilization":[0-9.]*' | cut -d':' -f2 | cut -d'.' -f1)
-week_all_resets=$(echo "$RESPONSE" | grep -o '"seven_day":{[^}]*}' | grep -o '"resets_at":"[^"]*"' | cut -d'"' -f4)
+if [ $? -ne 0 ]; then
+    echo '{"error": "Failed to parse usage response"}'
+    exit 1
+fi
 
-# seven_day_sonnet is the Sonnet-specific limit
-week_sonnet_pct=$(echo "$RESPONSE" | grep -o '"seven_day_sonnet":{[^}]*}' | grep -o '"utilization":[0-9.]*' | cut -d':' -f2 | cut -d'.' -f1)
-week_sonnet_resets=$(echo "$RESPONSE" | grep -o '"seven_day_sonnet":{[^}]*}' | grep -o '"resets_at":"[^"]*"' | cut -d'"' -f4)
-
-# Output JSON
-cat << EOF
-{
-  "session_percent": ${session_pct:-0},
-  "session_resets": "${session_resets:-}",
-  "week_all_percent": ${week_all_pct:-0},
-  "week_all_resets": "${week_all_resets:-}",
-  "week_sonnet_percent": ${week_sonnet_pct:-0},
-  "week_sonnet_resets": "${week_sonnet_resets:-}",
-  "timestamp": "$(date -Iseconds)"
-}
-EOF
+echo "$OUTPUT"
