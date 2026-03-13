@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 
-def build_enrichment_nudge(channel_id: int, end_time_str: str) -> str:
+def build_enrichment_nudge(end_time_str: str) -> str:
     """Build the opening nudge for Wendy's personal free time."""
     return (
         f"<It's your personal free time! You have 8 hours of free time until {end_time_str} UTC.\n"
@@ -25,7 +25,7 @@ def build_enrichment_nudge(channel_id: int, end_time_str: str) -> str:
     )
 
 
-def build_enrichment_continue_nudge(channel_id: int, end_time_str: str, minutes_left: int) -> str:
+def build_enrichment_continue_nudge(end_time_str: str) -> str:
     """Build the continuation nudge when enrichment re-invokes after an early exit."""
     return (
         f"<You still have plenty of free time left until {end_time_str} UTC.\n"
@@ -36,7 +36,7 @@ def build_enrichment_continue_nudge(channel_id: int, end_time_str: str, minutes_
     )
 
 
-def build_enrichment_end_nudge(channel_id: int) -> str:
+def build_enrichment_end_nudge() -> str:
     """Build the nudge injected when enrichment time is up, prompting Wendy to show her work."""
     return (
         "<Your lunch break is over! Discord access is restored.\n"

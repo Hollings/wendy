@@ -466,12 +466,12 @@ def _build_cli_env(channel_name: str, beads_enabled: bool) -> dict[str, str]:
     return cli_env
 
 
-def _is_session_resume_error(cmd: list[str], stderr_text: str) -> bool:
+def _is_session_resume_error(cmd: list[str], error_text: str) -> bool:
     """Return True if the CLI failure looks like a stale/missing session."""
     if "--resume" not in cmd:
         return False
-    lower = stderr_text.lower()
-    return "session" in lower or "no conversation found" in lower or not stderr_text.strip()
+    lower = error_text.lower()
+    return "session" in lower or "no conversation found" in lower
 
 
 async def _stream_cli_output(
@@ -638,26 +638,23 @@ async def run_cli(
 
         await proc.wait()
 
-        # stderr is merged into stdout via STDOUT redirect, so no separate read.
-        stderr_text = ""
-
-        # Log stderr and return code for debugging.
-        if stderr_text:
-            _LOG.warning("CLI stderr (code %d): %s", proc.returncode, stderr_text[:500])
         if proc.returncode == 0 and not events:
             _LOG.warning("CLI exited 0 but produced no events")
 
         # Handle CLI failure.
         if proc.returncode != 0:
-            _LOG.error("CLI failed (code %d): %s", proc.returncode, stderr_text)
-            if _is_session_resume_error(cmd, stderr_text) and not force_new_session:
+            error_detail = get_recent_cli_error() or "unknown error"
+            _LOG.error("CLI failed (code %d): %s", proc.returncode, error_detail)
+            if _is_session_resume_error(cmd, error_detail) and not force_new_session:
                 _LOG.warning("Session resume failed, retrying with fresh session for channel %d", channel_id)
                 return await run_cli(
                     channel_id, channel_config, system_prompt,
                     model_override=model_override, force_new_session=True,
                     effort_args=effort_args,
+                    nudge_override=nudge_override,
+                    timeout_override=timeout_override,
+                    max_turns=max_turns,
                 )
-            error_detail = stderr_text or get_recent_cli_error() or "unknown error"
             raise ClaudeCliError(f"CLI failed (code {proc.returncode}): {error_detail}")
 
         save_debug_log(events, channel_id)

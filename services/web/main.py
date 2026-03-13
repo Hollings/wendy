@@ -302,8 +302,7 @@ async def deploy_game(
             shutil.rmtree(game_dir)
         game_dir.mkdir(parents=True)
 
-        with tarfile.open(tmp_tar, "r:gz") as tar:
-            tar.extractall(game_dir, filter="data")
+        _safe_extract(tmp_tar, game_dir)
 
         if state_backup:
             state_file.write_text(state_backup)

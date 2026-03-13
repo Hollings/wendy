@@ -126,7 +126,11 @@ def parse_channel_configs() -> dict[int, dict]:
         if not _validate_name(folder):
             folder = name
 
-        channel_id = int(cfg["id"])
+        try:
+            channel_id = int(cfg["id"])
+        except (ValueError, TypeError):
+            _LOG.error("Invalid channel ID '%s' in config", cfg["id"])
+            continue
         configs[channel_id] = {
             "id": str(cfg["id"]),
             "name": name,

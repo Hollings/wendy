@@ -374,7 +374,7 @@ class StateManager:
         FROM message_history m
         LEFT JOIN message_history r ON m.reply_to_id = r.message_id
         WHERE m.channel_id = ?
-        AND m.content NOT LIKE '!%' AND m.content NOT LIKE '-%'
+        AND (m.content IS NULL OR (m.content NOT LIKE '!%' AND m.content NOT LIKE '-%'))
     """
 
     @staticmethod
@@ -496,7 +496,7 @@ class StateManager:
                         SELECT 1 FROM message_history
                         WHERE channel_id = ? AND message_id > ?
                           AND author_id != ?
-                          AND content NOT LIKE '!%' AND content NOT LIKE '-%'
+                          AND (content IS NULL OR (content NOT LIKE '!%' AND content NOT LIKE '-%'))
                         LIMIT 1
                     )
                 """
@@ -507,7 +507,7 @@ class StateManager:
                         SELECT 1 FROM message_history
                         WHERE channel_id = ?
                           AND author_id != ?
-                          AND content NOT LIKE '!%' AND content NOT LIKE '-%'
+                          AND (content IS NULL OR (content NOT LIKE '!%' AND content NOT LIKE '-%'))
                         LIMIT 1
                     )
                 """

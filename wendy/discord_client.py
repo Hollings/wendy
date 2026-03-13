@@ -698,13 +698,10 @@ class WendyBot(commands.Bot):
 
             if job.is_enrichment:
                 remaining = max(60.0, job.enrichment_end_timestamp - time.time())
-                minutes_left = max(1, int(remaining / 60))
                 if job.enrichment_continuation:
-                    enrichment_nudge = build_enrichment_continue_nudge(
-                        channel.id, job.enrichment_end_time, minutes_left,
-                    )
+                    enrichment_nudge = build_enrichment_continue_nudge(job.enrichment_end_time)
                 else:
-                    enrichment_nudge = build_enrichment_nudge(channel.id, job.enrichment_end_time)
+                    enrichment_nudge = build_enrichment_nudge(job.enrichment_end_time)
             else:
                 enrichment_nudge = None
                 remaining = None
@@ -787,7 +784,7 @@ class WendyBot(commands.Bot):
                     return
             # Enrichment over -- inject show-off nudge and start a generation.
             _LOG.info("Enrichment ended for channel %s", channel.id)
-            self._insert_synthetic_message(channel.id, "System", build_enrichment_end_nudge(channel.id))
+            self._insert_synthetic_message(channel.id, "System", build_enrichment_end_nudge())
             new_job = GenerationJob()
             new_task = self.loop.create_task(self._generate_response(channel, new_job))
             new_job.task = new_task
