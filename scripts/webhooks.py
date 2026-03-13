@@ -12,12 +12,13 @@ Webhooks are stored in /data/wendy/secrets/webhooks.json
 """
 
 import json
+import os
 import sys
 import uuid
 from pathlib import Path
 
 WEBHOOKS_FILE = Path("/data/wendy/secrets/webhooks.json")
-BASE_URL = "https://wendy.monster/webhook"
+BASE_URL = os.environ.get("WENDY_WEB_URL", "https://wendy.monster") + "/webhook"
 
 
 def load_webhooks() -> dict:

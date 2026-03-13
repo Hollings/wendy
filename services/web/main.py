@@ -339,7 +339,7 @@ async def deploy_game(
         return JSONResponse({
             "success": True,
             "url": f"{BASE_URL}/game/{name}/",
-            "ws": f"wss://wendy.monster/game/{name}/ws",
+            "ws": f"wss://{BASE_URL.split('://', 1)[-1]}/game/{name}/ws",
             "port": port,
             "message": f"Game '{name}' deployed",
         })
