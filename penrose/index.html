@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Penrose Tiling</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0a0a12; overflow: hidden; font-family: 'Courier New', monospace; }
+  canvas { display: block; }
+  #ui {
+    position: fixed; top: 16px; left: 16px; 
+    color: #aab; user-select: none; pointer-events: none;
+  }
+  #controls {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 10px; align-items: center;
+  }
+  button {
+    background: rgba(20,20,40,0.85); border: 1px solid #334;
+    color: #aac; padding: 8px 18px; cursor: pointer;
+    border-radius: 6px; font-family: inherit; font-size: 14px;
+    transition: background 0.15s, border-color 0.15s;
+    pointer-events: all;
+  }
+  button:hover { background: rgba(40,40,70,0.9); border-color: #667; }
+  select {
+    background: rgba(20,20,40,0.85); border: 1px solid #334;
+    color: #aac; padding: 8px 12px; border-radius: 6px;
+    font-family: inherit; font-size: 14px; cursor: pointer;
+    pointer-events: all;
+  }
+  #info { font-size: 12px; color: #556; margin-top: 4px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <div style="font-size:14px; color:#889; letter-spacing:0.1em">PENROSE TILING (P2)</div>
+  <div id="info">level: <span id="lvl">4</span> &nbsp; tiles: <span id="count">0</span></div>
+</div>
+<div id="controls">
+  <button id="btnLess">&#8722; Level</button>
+  <select id="colorMode">
+    <option value="type">Kite / Dart</option>
+    <option value="hue">Color Wheel</option>
+    <option value="mono">Monochrome</option>
+    <option value="gold">Gold</option>
+    <option value="wire">Wireframe</option>
+  </select>
+  <button id="btnMore">&#43; Level</button>
+</div>
+
+<script>
+const PHI = (1 + Math.sqrt(5)) / 2;
+
+// Robinson triangle:
+// type 'A' (acute / half-kite):  36° apex at a, |ab|=|ac|=1, |bc|=1/phi
+// type 'B' (obtuse / half-dart): 108° apex at a, |ab|=|ac|=1/phi, |bc|=1
+//
+// Deflation rules (each step shrinks tiles by 1/phi):
+// A(a,b,c): p = a+(b-a)/phi → [B(p,a,c), A(c,p,b)]
+// B(a,b,c): p = b+(c-b)/phi → [A(b,a,p), B(p,a,c)]
+
+function deflate(tris) {
+  const out = [];
+  for (const t of tris) {
+    const {type, a, b, c} = t;
+    if (type === 'A') {
+      // p on ab, |ap| = |ab|/phi = 1/phi
+      const p = [a[0]+(b[0]-a[0])/PHI, a[1]+(b[1]-a[1])/PHI];
+      out.push({type:'B', a:p, b:a, c:c});
+      out.push({type:'A', a:c, b:p, c:b});
+    } else {
+      // p on bc, |bp| = |bc|/phi = 1/phi
+      const p = [b[0]+(c[0]-b[0])/PHI, b[1]+(c[1]-b[1])/PHI];
+      out.push({type:'A', a:b, b:a, c:p});
+      out.push({type:'B', a:p, b:a, c:c});
+    }
+  }
+  return out;
+}
+
+// Initial "sun": 10 acute triangles, apex at origin, base on unit circle
+function makeSun(radius) {
+  const tris = [];
+  for (let k = 0; k < 10; k++) {
+    const a = [0, 0];
+    const ang1 = k * Math.PI / 5;
+    const ang2 = (k + 1) * Math.PI / 5;
+    const b = [radius * Math.cos(ang1), radius * Math.sin(ang1)];
+    const c = [radius * Math.cos(ang2), radius * Math.sin(ang2)];
+    // Alternate winding to ensure consistent orientation
+    if (k % 2 === 0) {
+      tris.push({type:'A', a, b, c});
+    } else {
+      tris.push({type:'A', a, b:c, c:b});
+    }
+  }
+  return tris;
+}
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+let W, H;
+let triangles = [];
+let level = 4;
+let maxLevel = 8;
+
+// Pan / zoom state
+let offsetX = 0, offsetY = 0;
+let scale = 1;
+let isDragging = false, lastX = 0, lastY = 0;
+
+function buildTiles(lvl) {
+  // Start radius: large enough to fill screen
+  const r = Math.max(W, H) * 0.65;
+  let tris = makeSun(r);
+  // Deflate: each level multiplies count ~2x
+  for (let i = 0; i < lvl; i++) tris = deflate(tris);
+  return tris;
+}
+
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  offsetX = W / 2;
+  offsetY = H / 2;
+  triangles = buildTiles(level);
+  draw();
+}
+
+// Color schemes
+const SCHEMES = {
+  type: (t, i) => t.type === 'A'
+    ? ['rgba(80,160,220,0.72)', 'rgba(40,90,140,0.85)']
+    : ['rgba(240,160,60,0.72)', 'rgba(160,80,20,0.85)'],
+  hue: (t, i) => {
+    const hue = (i * 137.508) % 360;
+    return [`hsla(${hue},65%,55%,0.7)`, `hsla(${hue},65%,35%,0.9)`];
+  },
+  mono: (t, i) => t.type === 'A'
+    ? ['rgba(200,200,220,0.6)', 'rgba(120,120,150,0.8)']
+    : ['rgba(100,100,130,0.5)', 'rgba(60,60,90,0.8)'],
+  gold: (t, i) => t.type === 'A'
+    ? ['rgba(255,215,0,0.65)', 'rgba(180,140,0,0.85)']
+    : ['rgba(200,100,20,0.5)', 'rgba(130,60,10,0.8)'],
+  wire: () => [null, 'rgba(80,180,120,0.7)'],
+};
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  // Background gradient
+  const bg = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.max(W,H)*0.7);
+  bg.addColorStop(0, '#12121e');
+  bg.addColorStop(1, '#070710');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  const scheme = SCHEMES[document.getElementById('colorMode').value];
+
+  ctx.save();
+  ctx.translate(offsetX, offsetY);
+  ctx.scale(scale, scale);
+
+  // Cull triangles outside viewport
+  const margin = 40;
+  const vx0 = (-offsetX - margin) / scale;
+  const vy0 = (-offsetY - margin) / scale;
+  const vx1 = (W - offsetX + margin) / scale;
+  const vy1 = (H - offsetY + margin) / scale;
+
+  ctx.lineWidth = Math.max(0.3, 0.8 / scale);
+  ctx.lineJoin = 'round';
+
+  for (let i = 0; i < triangles.length; i++) {
+    const t = triangles[i];
+    // Rough bounds check
+    const minX = Math.min(t.a[0], t.b[0], t.c[0]);
+    const maxX = Math.max(t.a[0], t.b[0], t.c[0]);
+    const minY = Math.min(t.a[1], t.b[1], t.c[1]);
+    const maxY = Math.max(t.a[1], t.b[1], t.c[1]);
+    if (maxX < vx0 || minX > vx1 || maxY < vy0 || minY > vy1) continue;
+
+    const [fill, stroke] = scheme(t, i);
+
+    ctx.beginPath();
+    ctx.moveTo(t.a[0], t.a[1]);
+    ctx.lineTo(t.b[0], t.b[1]);
+    ctx.lineTo(t.c[0], t.c[1]);
+    ctx.closePath();
+
+    if (fill) {
+      ctx.fillStyle = fill;
+      ctx.fill();
+    }
+    ctx.strokeStyle = stroke;
+    ctx.stroke();
+  }
+
+  ctx.restore();
+
+  document.getElementById('lvl').textContent = level;
+  document.getElementById('count').textContent = triangles.length.toLocaleString();
+}
+
+// Controls
+document.getElementById('btnMore').addEventListener('click', () => {
+  if (level >= maxLevel) return;
+  level++;
+  triangles = buildTiles(level);
+  draw();
+});
+
+document.getElementById('btnLess').addEventListener('click', () => {
+  if (level <= 0) return;
+  level--;
+  triangles = buildTiles(level);
+  draw();
+});
+
+document.getElementById('colorMode').addEventListener('change', draw);
+
+// Pan
+canvas.addEventListener('mousedown', e => {
+  isDragging = true; lastX = e.clientX; lastY = e.clientY;
+  canvas.style.cursor = 'grabbing';
+});
+canvas.addEventListener('mousemove', e => {
+  if (!isDragging) return;
+  offsetX += e.clientX - lastX;
+  offsetY += e.clientY - lastY;
+  lastX = e.clientX; lastY = e.clientY;
+  draw();
+});
+window.addEventListener('mouseup', () => { isDragging = false; canvas.style.cursor = 'default'; });
+
+// Zoom
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.12 : 1/1.12;
+  const mx = e.clientX, my = e.clientY;
+  offsetX = mx - (mx - offsetX) * factor;
+  offsetY = my - (my - offsetY) * factor;
+  scale *= factor;
+  draw();
+}, {passive: false});
+
+// Touch
+let lastTouchDist = 0;
+let lastTouchMid = [0, 0];
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (e.touches.length === 1) {
+    isDragging = true;
+    lastX = e.touches[0].clientX;
+    lastY = e.touches[0].clientY;
+  } else if (e.touches.length === 2) {
+    isDragging = false;
+    const dx = e.touches[1].clientX - e.touches[0].clientX;
+    const dy = e.touches[1].clientY - e.touches[0].clientY;
+    lastTouchDist = Math.sqrt(dx*dx+dy*dy);
+    lastTouchMid = [(e.touches[0].clientX+e.touches[1].clientX)/2,
+                    (e.touches[0].clientY+e.touches[1].clientY)/2];
+  }
+}, {passive:false});
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (e.touches.length === 1 && isDragging) {
+    offsetX += e.touches[0].clientX - lastX;
+    offsetY += e.touches[0].clientY - lastY;
+    lastX = e.touches[0].clientX;
+    lastY = e.touches[0].clientY;
+    draw();
+  } else if (e.touches.length === 2) {
+    const dx = e.touches[1].clientX - e.touches[0].clientX;
+    const dy = e.touches[1].clientY - e.touches[0].clientY;
+    const dist = Math.sqrt(dx*dx+dy*dy);
+    const mid = [(e.touches[0].clientX+e.touches[1].clientX)/2,
+                 (e.touches[0].clientY+e.touches[1].clientY)/2];
+    const factor = dist / lastTouchDist;
+    offsetX = mid[0] - (lastTouchMid[0] - offsetX) * factor;
+    offsetY = mid[1] - (lastTouchMid[1] - offsetY) * factor;
+    scale *= factor;
+    lastTouchDist = dist;
+    lastTouchMid = mid;
+    draw();
+  }
+}, {passive:false});
+
+canvas.addEventListener('touchend', () => { isDragging = false; }, {passive:false});
+
+window.addEventListener('resize', resize);
+resize();
+</script>
+</body>
+</html>
