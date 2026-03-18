@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Mandelbrot × Julia</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#05050c; overflow:hidden; font-family:monospace; color:#889; }
+#wrap { display:flex; width:100vw; height:100vh; }
+canvas { flex:1; cursor:crosshair; }
+#divider { width:1px; background:#222; flex-shrink:0; }
+#info {
+  position:fixed; bottom:16px; left:50%; transform:translateX(-50%);
+  font-size:12px; color:#446; letter-spacing:0.05em; white-space:nowrap;
+}
+#cval {
+  position:fixed; top:14px; left:50%; transform:translateX(-50%);
+  font-size:12px; color:#556; letter-spacing:0.05em;
+}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="mc"></canvas>
+  <div id="divider"></div>
+  <canvas id="jc"></canvas>
+</div>
+<div id="cval">c = 0.000 + 0.000i</div>
+<div id="info">click or hover mandelbrot (left) → julia set (right)</div>
+
+<script>
+const MAX_ITER = 96;
+const mc = document.getElementById('mc');
+const jc = document.getElementById('jc');
+const mctx = mc.getContext('2d');
+const jctx = jc.getContext('2d');
+
+// Mandelbrot view
+const mView = { x: -2.5, y: -1.25, w: 3.5 };
+// Julia view
+const jView = { x: -1.8, y: -1.4, w: 3.6 };
+
+let cx = -0.7, cy = 0.27; // Julia parameter
+let W, H;
+
+// Smooth coloring: returns [r,g,b]
+function color(n, z2) {
+  if (n === MAX_ITER) return [0, 0, 0];
+  // Smooth iteration count
+  const smooth = n + 1 - Math.log(Math.log(Math.sqrt(z2))) / Math.LN2;
+  const t = smooth / MAX_ITER;
+  // Ultra fractal-style palette
+  const r = Math.floor(255 * (0.5 + 0.5 * Math.cos(6.28 * (t * 3.0 + 0.0))));
+  const g = Math.floor(255 * (0.5 + 0.5 * Math.cos(6.28 * (t * 3.0 + 0.33))));
+  const b = Math.floor(255 * (0.5 + 0.5 * Math.cos(6.28 * (t * 3.0 + 0.67))));
+  return [r, g, b];
+}
+
+function mandelbrot(px, py) {
+  let zr = 0, zi = 0, zr2 = 0, zi2 = 0;
+  for (let n = 0; n < MAX_ITER; n++) {
+    zi = 2 * zr * zi + py;
+    zr = zr2 - zi2 + px;
+    zr2 = zr * zr; zi2 = zi * zi;
+    if (zr2 + zi2 > 4) return [n, zr2 + zi2];
+  }
+  return [MAX_ITER, zr2 + zi2];
+}
+
+function julia(px, py) {
+  let zr = px, zi = py, zr2 = px*px, zi2 = py*py;
+  for (let n = 0; n < MAX_ITER; n++) {
+    zi = 2 * zr * zi + cy;
+    zr = zr2 - zi2 + cx;
+    zr2 = zr * zr; zi2 = zi * zi;
+    if (zr2 + zi2 > 4) return [n, zr2 + zi2];
+  }
+  return [MAX_ITER, zr2 + zi2];
+}
+
+function render(ctx, view, fn) {
+  const w = ctx.canvas.width, h = ctx.canvas.height;
+  const img = ctx.createImageData(w, h);
+  const d = img.data;
+  const scaleX = view.w / w;
+  const scaleY = (view.w * h/w) / h;
+  for (let py = 0; py < h; py++) {
+    const iy = view.y + py * scaleY;
+    for (let px = 0; px < w; px++) {
+      const ir = view.x + px * scaleX;
+      const [n, z2] = fn(ir, iy);
+      const [r, g, b] = color(n, z2);
+      const i = (py * w + px) * 4;
+      d[i] = r; d[i+1] = g; d[i+2] = b; d[i+3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function renderAll() {
+  render(mctx, mView, mandelbrot);
+  render(jctx, jView, julia);
+}
+
+function resize() {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  mc.width = Math.floor((W - 1) / 2);
+  mc.height = H;
+  jc.width = mc.width;
+  jc.height = H;
+  // Adjust views to aspect ratio
+  const aspect = H / mc.width;
+  mView.y = mView.x + mView.w / 2 - mView.w * aspect / 2;
+  jView.y = jView.x + jView.w / 2 - jView.w * aspect / 2;
+  renderAll();
+}
+
+function updateC(e) {
+  const rect = mc.getBoundingClientRect();
+  const px = (e.clientX - rect.left) / mc.width;
+  const py = (e.clientY - rect.top) / mc.height;
+  const aspect = mc.height / mc.width;
+  cx = mView.x + px * mView.w;
+  cy = mView.y + py * mView.w * aspect;
+  document.getElementById('cval').textContent =
+    `c = ${cx.toFixed(4)} ${cy >= 0 ? '+' : '−'} ${Math.abs(cy).toFixed(4)}i`;
+  render(jctx, jView, julia);
+  // Draw crosshair on mandelbrot
+  render(mctx, mView, mandelbrot);
+  const mx = (cx - mView.x) / mView.w * mc.width;
+  const my = (cy - mView.y) / (mView.w * aspect) * mc.height;
+  mctx.strokeStyle = 'rgba(255,255,255,0.7)';
+  mctx.lineWidth = 1;
+  mctx.beginPath(); mctx.moveTo(mx - 8, my); mctx.lineTo(mx + 8, my); mctx.stroke();
+  mctx.beginPath(); mctx.moveTo(mx, my - 8); mctx.lineTo(mx, my + 8); mctx.stroke();
+}
+
+mc.addEventListener('mousemove', updateC);
+mc.addEventListener('click', updateC);
+// Touch
+mc.addEventListener('touchmove', e => { e.preventDefault(); updateC(e.touches[0]); }, {passive:false});
+mc.addEventListener('touchstart', e => { e.preventDefault(); updateC(e.touches[0]); }, {passive:false});
+
+window.addEventListener('resize', resize);
+resize();
+</script>
+</body>
+</html>

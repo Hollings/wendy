@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>wendy's lab</title>
+<style>
+* { margin:0;padding:0;box-sizing:border-box; }
+body { background:#07070f;color:#ccc;font:13px/1.6 monospace;min-height:100vh;padding:40px 20px; }
+h1 { color:#fff;font-size:18px;margin-bottom:6px; }
+.sub { color:#444;margin-bottom:40px;font-size:11px; }
+.grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;max-width:1100px; }
+a.card {
+  display:block;background:#0e0e1a;border:1px solid #1a1a2a;border-radius:4px;
+  padding:18px;text-decoration:none;transition:border-color 0.15s,background 0.15s;
+}
+a.card:hover { border-color:#3344aa;background:#111122; }
+.name { color:#aabbff;font-size:14px;margin-bottom:6px; }
+.desc { color:#666;font-size:11px;line-height:1.6; }
+.tag { display:inline-block;background:#1a1a28;border:1px solid #2a2a40;color:#556;font-size:9px;padding:1px 6px;border-radius:2px;margin-top:8px;margin-right:4px; }
+</style>
+</head>
+<body>
+<h1>wendy's lab</h1>
+<p class="sub">simulations, visualizations, and interactive math experiments</p>
+<div class="grid">
+
+<a class="card" href="/julia/">
+  <div class="name">Mandelbrot × Julia</div>
+  <div class="desc">Dual explorer: hover the Mandelbrot set to update the Julia set in real time. Click to lock a parameter. Smooth escape-time coloring with cosine palette. Touch support.</div>
+  <span class="tag">fractal</span><span class="tag">complex</span><span class="tag">interactive</span>
+</a>
+
+<a class="card" href="/penrose/">
+  <div class="name">Penrose Tiling</div>
+  <div class="desc">Aperiodic P2 kite-and-dart tiling via Robinson triangle deflation. Quasicrystalline 5-fold symmetry that never repeats. Pan, zoom, and adjust detail level up to ~40k+ tiles. Five color schemes including animated wave mode.</div>
+  <span class="tag">geometry</span><span class="tag">quasicrystal</span><span class="tag">golden ratio</span>
+</a>
+
+<a class="card" href="/drunkard/">
+  <div class="name">drunkard's walk</div>
+  <div class="desc">Biased random walks with hue-shifting trails. Walkers prefer to continue in roughly the same direction, pulled gently back from edges. Slow fade reveals the density of paths. 5–200 walkers, fine to coarse step sizes.</div>
+  <span class="tag">stochastic</span><span class="tag">walk</span><span class="tag">generative</span>
+</a>
+
+<a class="card" href="/polar-rose/">
+  <div class="name">polar rose explorer</div>
+  <div class="desc">Interactive polar curve explorer: r = cos(a·θ)·sin(b·θ) + c·cos(d·θ). Tune four parameters to discover rose curves, limaçons, spirographs, and stranger shapes. Trail-renders with animation; random button for serendipity.</div>
+  <span class="tag">math</span><span class="tag">polar</span><span class="tag">interactive</span>
+</a>
+
+<a class="card" href="/torus/">
+  <div class="name">3d wireframe</div>
+  <div class="desc">Parametric 3D surface renderer on a 2D canvas. Shapes: torus, trefoil knot, Klein bottle immersion. Drag to rotate. Four styles: wireframe, neon glow, depth-shaded, rainbow. Perspective projection with depth-based line weight.</div>
+  <span class="tag">3d</span><span class="tag">parametric</span><span class="tag">interactive</span>
+</a>
+
+<a class="card" href="/voronoi/">
+  <div class="name">voronoi lloyd's relaxation</div>
+  <div class="desc">Voronoi diagram with animated Lloyd's relaxation — each seed drifts toward the centroid of its cell, equalizing the tessellation. Click to add seeds. Toggle relaxation on/off to watch convergence. Four palettes.</div>
+  <span class="tag">geometry</span><span class="tag">relaxation</span><span class="tag">interactive</span>
+</a>
+
+<a class="card" href="/clifford/">
+  <div class="name">clifford attractor</div>
+  <div class="desc">Strange attractors defined by x' = sin(ay)+c·cos(ax), y' = sin(bx)+d·cos(by). 3 million iterations plotted with log-density coloring. Cycles through hand-picked and random parameter sets. Four color palettes.</div>
+  <span class="tag">chaos</span><span class="tag">attractor</span><span class="tag">generative</span>
+</a>
+
+<a class="card" href="/nbody/">
+  <div class="name">n-body gravity</div>
+  <div class="desc">Gravitational N-body simulation with momentum-conserving merges. Click to add a body, drag to throw it. Scroll to adjust mass. Presets: orbital solar system, Chenciner-Montgomery figure-8 orbit, binary star with planets.</div>
+  <span class="tag">physics</span><span class="tag">gravity</span><span class="tag">interactive</span>
+</a>
+
+<a class="card" href="/spring-mesh/">
+  <div class="name">spring mesh</div>
+  <div class="desc">A grid of particles connected by springs. Drag to pull or push the fabric; watch tension waves propagate through the mesh. Ripple sends a shockwave from center. Three color modes: tension-mapped, depth-based, or monochrome.</div>
+  <span class="tag">physics</span><span class="tag">springs</span><span class="tag">interactive</span>
+</a>
+
+<a class="card" href="/wfc/">
+  <div class="name">wave function collapse</div>
+  <div class="desc">Procedural tile generation using WFC constraint propagation. Circuit board tiles collapse from superposition, propagating adjacency constraints across the grid. Three palettes, variable speed.</div>
+  <span class="tag">procedural</span><span class="tag">constraints</span><span class="tag">generative</span>
+</a>
+
+<a class="card" href="/moire/">
+  <div class="name">moiré</div>
+  <div class="desc">Two overlapping interference grids composited with screen blending. Drag to rotate, scroll to zoom. Switch between parallel lines, concentric circles, and dot grids. Enable auto-rotate to watch patterns emerge continuously.</div>
+  <span class="tag">optics</span><span class="tag">interference</span><span class="tag">interactive</span>
+</a>
+
+<a class="card" href="/lissajous/">
+  <div class="name">lissajous</div>
+  <div class="desc">Animated Lissajous figures — parametric curves from two perpendicular sine waves. Adjust frequency ratio a:b and phase offset δ. Enable auto-δ to sweep through all phase relationships continuously.</div>
+  <span class="tag">math</span><span class="tag">parametric</span>
+</a>
+
+<a class="card" href="/interference/">
+  <div class="name">wave interference</div>
+  <div class="desc">Click to place wave emitters. Watch constructive and destructive interference patterns form in real time. Adjust wavelength and speed. Right-click to remove an emitter.</div>
+  <span class="tag">waves</span><span class="tag">physics</span><span class="tag">interactive</span>
+</a>
+
+<a class="card" href="/rd-text/">
+  <div class="name">RD text</div>
+  <div class="desc">Type a word and watch reaction-diffusion patterns grow from the letters. Five Gray-Scott presets, five color palettes. Click/drag to seed new growth anywhere.</div>
+  <span class="tag">reaction-diffusion</span><span class="tag">interactive</span>
+</a>
+
+<a class="card" href="/particle-text/">
+  <div class="name">particle text</div>
+  <div class="desc">2200 particles that form words. type anything to shape them, hold to attract, move to repel. shareable via ?w=WORD</div>
+  <span class="tag">particles</span><span class="tag">interactive</span>
+</a>
+
+<a class="card" href="/flow-field/">
+  <div class="name">flow field</div>
+  <div class="desc">3000 particles tracing curl noise flow fields. click to place attractors, press V for vortex mode.</div>
+  <span class="tag">particles</span><span class="tag">noise</span>
+</a>
+
+<a class="card" href="/spirograph/">
+  <div class="name">spirograph</div>
+  <div class="desc">Hypotrochoid generator with live gear visualization. Tune outer radius, inner radius, and pen distance. 15 presets from classic spirograph to astroid and deltoid. Export PNG.</div>
+  <span class="tag">geometry</span><span class="tag">interactive</span>
+</a>
+
+<a class="card" href="/chaos-game/">
+  <div class="name">chaos game</div>
+  <div class="desc">Pick a random vertex, jump halfway there, plot the point — repeat forever. Simple rule, infinite variety. 11 presets from Sierpinski to pentagasket to hexagonal snowflakes. Tune fraction and vertex restriction rules. Discover mode auto-searches for beautiful fractals.</div>
+  <span class="tag">fractal</span><span class="tag">chaos</span><span class="tag">interactive</span>
+</a>
+
+<a class="card" href="/bubble-universe/">
+  <div class="name">bubble universe</div>
+  <div class="desc">Iterative trigonometric path: u += sin(i·a + v), v += cos(i·b + u). As a and b drift slowly, the traced path morphs through cellular bubble patterns, spirals, and interference fringes. Click to warp to any a/b coordinate. Auto-tuned scale.</div>
+  <span class="tag">iterative</span><span class="tag">trig</span><span class="tag">generative</span>
+</a>
+
+<a class="card" href="/kuramoto/">
+  <div class="name">kuramoto oscillators</div>
+  <div class="desc">N clocks each running at a random natural frequency. Couple them and watch spontaneous synchronization emerge. Drag K above the critical threshold Kc = 2σ/π to see the phase transition — clocks lock together and r → 1. Order parameter history shows the transition in real time.</div>
+  <span class="tag">physics</span><span class="tag">emergence</span><span class="tag">sync</span>
+</a>
+
+<a class="card" href="/hopalong/">
+  <div class="name">hopalong attractor</div>
+  <div class="desc">Barry Martin's strange attractor: x′ = y − sgn(x)√|bx−c|, y′ = a−x. Plots millions of points, colorized by log-density with histogram-style range compression. Wildly different shapes from small parameter changes — wings, rings, webs, stars.</div>
+  <span class="tag">attractor</span><span class="tag">strange</span><span class="tag">density</span>
+</a>
+
+<a class="card" href="/dejong/">
+  <div class="name">de jong attractor</div>
+  <div class="desc">Peter de Jong's strange attractor: x′ = sin(ay) − cos(bx), y′ = sin(cx) − cos(dy). 4-parameter trig map producing symmetric mandala-like forms. Log-density colorization with γ correction. 5 presets: classic, mandala, web, flower, knot.</div>
+  <span class="tag">attractor</span><span class="tag">strange</span><span class="tag">symmetric</span>
+</a>
+
+<a class="card" href="/apollonian/">
+  <div class="name">apollonian gasket</div>
+  <div class="desc">Recursive circle packing via Descartes' Circle Theorem. Every gap filled with the largest possible tangent circle, infinitely. Toggle curvature labels &amp; color by depth.</div>
+  <span class="tag">fractal</span><span class="tag">math</span>
+</a>
+
+<a class="card" href="/harmonograph/">
+  <div class="name">harmonograph</div>
+  <div class="desc">Two pendulums drive X, two drive Y, all with exponential damping. Auto-cycles through infinite parameter combinations. Click for a new drawing, or watch it run.</div>
+  <span class="tag">pendulum</span><span class="tag">generative</span>
+</a>
+
+<a class="card" href="/pendulum-wave/">
+  <div class="name">pendulum wave</div>
+  <div class="desc">15 pendulums tuned so each completes an integer number of oscillations in 60 seconds. They spread from sync into complex waves and snap back. Trail mode, color cycling, adjustable count.</div>
+  <span class="tag">pendulum</span><span class="tag">physics</span>
+</a>
+
+<a class="card" href="/terrain/">
+  <div class="name">terrain generator</div>
+  <div class="desc">Procedural island terrain with domain-warped FBM noise. Biomes by height &amp; moisture: ocean, beach, forest, highland, snow. Rivers flow downhill. Toggle contours &amp; hillshading.</div>
+  <span class="tag">procedural</span><span class="tag">noise</span>
+</a>
+
+<a class="card" href="/parametric/">
+  <div class="name">parametric surfaces</div>
+  <div class="desc">Pure software 3D renderer &mdash; torus, trefoil knot, Klein bottle, M&ouml;bius strip, seashell. Painter's algorithm with flat shading. Drag to rotate.</div>
+  <span class="tag">3D</span><span class="tag">math</span>
+</a>
+
+<a class="card" href="/efield/">
+  <div class="name">electric field</div>
+  <div class="desc">Place positive and negative charges. Watch field lines trace via RK4 integration. Toggle potential heatmap and equipotential contours — the full physics textbook visualization.</div>
+  <span class="tag">physics</span><span class="tag">interactive</span>
+</a>
+
+<a class="card" href="/barnsley/">
+  <div class="name">barnsley IFS</div>
+  <div class="desc">Iterated function systems via chaos game — Barnsley fern, tree, spiral, twindragon. 5M points, each transform a different color.</div>
+  <span class="tag">fractal</span><span class="tag">IFS</span>
+</a>
+
+<a class="card" href="/attractor/">
+  <div class="name">strange attractors</div>
+  <div class="desc">Clifford, Peter de Jong &amp; Bedhead 2D attractors — iterate millions of points, density accumulation reveals fractal structure. Auto-evolves through curated parameter sets.</div>
+  <span class="tag">fractal</span><span class="tag">chaos</span>
+</a>
+
+<a class="card" href="/sandpile/">
+  <div class="name">abelian sandpile</div>
+  <div class="desc">Drop grains one at a time. Cells with 4+ topple. After millions of drops, a fractal mandala emerges &mdash; self-organized criticality.</div>
+  <span class="tag">fractal</span><span class="tag">emergent</span>
+</a>
+
+<a class="card" href="/physarum/">
+  <div class="name">physarum</div>
+  <div class="desc">Slime mold simulation — 20k agents following chemical trails, emerging into vein networks and organic patterns.</div>
+  <span class="tag">simulation</span><span class="tag">emergent</span>
+</a>
+
+<a class="card" href="/chladni/">
+  <div class="name">chladni figures</div>
+  <div class="desc">Standing wave modes on a vibrating plate — sand settles at nodal lines forming intricate symmetric patterns. Auto-cycles 35 classic modes.</div>
+  <span class="tag">physics</span><span class="tag">waves</span>
+</a>
+
+<a class="card" href="/dla/">
+  <div class="name">diffusion limited aggregation</div>
+  <div class="desc">Particles random-walk until they stick to a growing cluster — fractal dendrites, lightning, frost, coral. 4 seed shapes, 5 palettes.</div>
+  <span class="tag">fractal</span><span class="tag">simulation</span>
+</a>
+
+<a class="card" href="/gray-scott/">
+  <div class="name">reaction diffusion</div>
+  <div class="desc">Gray-Scott model — two chemicals reacting to form coral, spots, worms, spirals, and mitosis patterns.</div>
+  <span class="tag">simulation</span><span class="tag">chemistry</span>
+</a>
+
+<a class="card" href="/lsystem/">
+  <div class="name">l-systems</div>
+  <div class="desc">Grammar-based fractals drawn live — trees, ferns, dragon curve, Koch snowflake, Hilbert curve.</div>
+  <span class="tag">fractals</span><span class="tag">grammar</span>
+</a>
+
+<a class="card" href="/epicycles/">
+  <div class="name">fourier epicycles</div>
+  <div class="desc">Draw any path. Watch spinning circles reproduce it exactly using Fourier decomposition.</div>
+  <span class="tag">math</span><span class="tag">interactive</span>
+</a>
+
+<a class="card" href="/eca/">
+  <div class="name">elementary CA</div>
+  <div class="desc">All 256 Wolfram rules. Rule 110 is Turing complete. Rule 30 generates randomness. Arrow keys to explore.</div>
+  <span class="tag">automata</span><span class="tag">wolfram</span>
+</a>
+
+<a class="card" href="/lorenz/">
+  <div class="name">lorenz attractor</div>
+  <div class="desc">Chaotic butterfly — never repeats, never escapes. Drag to rotate, change ρ to shift between chaos and order.</div>
+  <span class="tag">chaos</span><span class="tag">3d</span>
+</a>
+
+<a class="card" href="/sand/">
+  <div class="name">falling sand</div>
+  <div class="desc">Sand, water, oil, fire, smoke. Fire spreads through oil, water sinks through oil, smoke drifts upward.</div>
+  <span class="tag">physics</span><span class="tag">cellular</span>
+</a>
+
+<a class="card" href="/life/">
+  <div class="name">game of life</div>
+  <div class="desc">Conway's Life with glowing cells and death-fade. Press G for a glider gun, space to randomize.</div>
+  <span class="tag">automata</span><span class="tag">classic</span>
+</a>
+
+<a class="card" href="/maze/">
+  <div class="name">maze</div>
+  <div class="desc">Recursive backtracker carves, BFS floods and finds the path, traces it in gold. Space to regenerate.</div>
+  <span class="tag">algorithm</span><span class="tag">pathfinding</span>
+</a>
+
+<a class="card" href="/horsle/">
+  <div class="name">horsle</div>
+  <div class="desc">Wordle but every answer is a horse-related word. 5 letters, 6 guesses.</div>
+  <span class="tag">game</span><span class="tag">words</span>
+</a>
+
+<a class="card" href="/paddock/">
+  <div class="name">paddock</div>
+  <div class="desc">Connections-style: group 16 horse words into 4 hidden categories. 4 mistakes allowed.</div>
+  <span class="tag">game</span><span class="tag">puzzle</span>
+</a>
+
+<a class="card" href="/bloodline/">
+  <div class="name">bloodline</div>
+  <div class="desc">Deduce the horse breed from stat comparison clues. No guess limit.</div>
+  <span class="tag">game</span><span class="tag">deduction</span>
+</a>
+
+<a class="card" href="/neighsayer/">
+  <div class="name">neighsayer</div>
+  <div class="desc">10 vibe questions map to 8 horse archetypes. No horse knowledge needed. ~4% unicorn rate.</div>
+  <span class="tag">game</span><span class="tag">quiz</span>
+</a>
+
+<a class="card" href="/horsier/">
+  <div class="name">horsier</div>
+  <div class="desc">Which word is more horse? GloVe cosine similarity decides.</div>
+  <span class="tag">game</span><span class="tag">word2vec</span>
+</a>
+
+<a class="card" href="/wordier/">
+  <div class="name">wordier</div>
+  <div class="desc">Which word is closer to the concept? 5 random anchors, 5 pairs each. 25 questions total.</div>
+  <span class="tag">game</span><span class="tag">word2vec</span>
+</a>
+
+<a class="card" href="/semantic-compass/">
+  <div class="name">semantic compass</div>
+  <div class="desc">Two anchor words create an axis. Related words float to their position on the spectrum by GloVe cosine similarity.</div>
+  <span class="tag">word2vec</span><span class="tag">nlp</span>
+</a>
+
+<a class="card" href="/semantic-map/">
+  <div class="name">semantic map</div>
+  <div class="desc">Four anchor words form two axes. Words scatter into a 2D semantic space — hot/cold × wet/dry reveals the topology of meaning.</div>
+  <span class="tag">word2vec</span><span class="tag">nlp</span>
+</a>
+
+<a class="card" href="/word-analogy/">
+  <div class="name">word analogy</div>
+  <div class="desc">Vector arithmetic on word embeddings. king − man + woman = queen. Try any A − B + C and see what the model thinks.</div>
+  <span class="tag">word2vec</span><span class="tag">nlp</span>
+</a>
+
+<a class="card" href="/semantic-slots/">
+  <div class="name">semantic slots</div>
+  <div class="desc">Pull the lever and see what three words land. Win based on semantic similarity between them. Jackpot if all three are closely related in embedding space.</div>
+  <span class="tag">word2vec</span><span class="tag">game</span>
+</a>
+
+<a class="card" href="/drift/">
+  <div class="name">drift</div>
+  <div class="desc">A single word, adrift in the semantic graph. Every few seconds it steps to a nearby word in embedding space. Watch meaning slowly walk through language.</div>
+  <span class="tag">word2vec</span><span class="tag">ambient</span>
+</a>
+
+<a class="card" href="/haiku/">
+  <div class="name">semantic haiku</div>
+  <div class="desc">Generates haiku by walking through GloVe embedding space. Each line drifts semantically from the last. Type a seed word to anchor the walk.</div>
+  <span class="tag">word2vec</span><span class="tag">generative</span><span class="tag">poetry</span>
+</a>
+
+<a class="card" href="/word-rain/">
+  <div class="name">word rain</div>
+  <div class="desc">Words fall like rain, colored by semantic hue. Similar words draw toward each other mid-fall. Click to plant a seed word that attracts its semantic kin.</div>
+  <span class="tag">word2vec</span><span class="tag">particles</span><span class="tag">generative</span>
+</a>
+
+<a class="card" href="/word-galaxy/">
+  <div class="name">word galaxy</div>
+  <div class="desc">Pick a word, see its nearest neighbors orbiting as an animated constellation. Click any word to navigate the semantic graph.</div>
+  <span class="tag">word2vec</span><span class="tag">interactive</span>
+</a>
+
+<a class="card" href="/word-path/">
+  <div class="name">word path</div>
+  <div class="desc">Greedy pathfinder between two words through the embedding space. See the chain of intermediate concepts connecting them.</div>
+  <span class="tag">word2vec</span><span class="tag">pathfinding</span>
+</a>
+
+<a class="card" href="/hofstadter/">
+  <div class="name">hofstadter butterfly</div>
+  <div class="desc">Fractal energy spectrum of a 2D electron in a magnetic field. Each rational flux α=p/q produces q spectral bands. The self-similar butterfly shape reveals the interplay between lattice periodicity and the magnetic field. Computed via transfer matrix method.</div>
+  <span class="tag">physics</span><span class="tag">fractal</span><span class="tag">math</span>
+</a>
+
+<a class="card" href="/cyclic-ca/">
+  <div class="name">cyclic CA</div>
+  <div class="desc">Cyclic cellular automaton: advance state if any neighbor is one step ahead. With 8+ states, random noise self-organizes into roiling rainbow spirals and waves. Threshold 1 = chaotic, higher = crystalline.</div>
+  <span class="tag">cellular automata</span><span class="tag">simulation</span>
+</a>
+
+<a class="card" href="/turmite/">
+  <div class="name">turmites</div>
+  <div class="desc">Multi-color Langton's Ant variants. Rule string controls turn direction per cell state. RL builds a highway. LLRR forms bilateral fractals. RRLL grows crystals. Click to drop more ants.</div>
+  <span class="tag">cellular automata</span><span class="tag">math</span>
+</a>
+
+<a class="card" href="/bz-spiral/">
+  <div class="name">BZ spiral waves</div>
+  <div class="desc">Belousov-Zhabotinsky reaction (Greenberg-Hastings model). Broken wavefronts self-organize into rotating spirals. Tune states and threshold, paint to seed new spirals.</div>
+  <span class="tag">simulation</span><span class="tag">chemistry</span>
+</a>
+
+<a class="card" href="/smoothlife/">
+  <div class="name">smoothlife</div>
+  <div class="desc">Continuous Game of Life (Rafler 2011). Cells are floats 020131, neighborhoods are rings. Organisms divide, move, pulsate. Paint blobs, switch presets: bubbles, worms, gliders.</div>
+  <span class="tag">simulation</span><span class="tag">cellular automata</span>
+</a>
+
+<a class="card" href="/times-table/">
+  <div class="name">times tables circle</div>
+  <div class="desc">Connect point k to (k × M) mod n on a circle. Animate M to watch cardioids, nephoids, and epicycloid envelopes emerge from straight lines.</div>
+  <span class="tag">math</span><span class="tag">generative</span>
+</a>
+
+<a class="card" href="/burning-ship/">
+  <div class="name">burning ship</div>
+  <div class="desc">The Burning Ship fractal — like Mandelbrot but z = (|Re(z)| + i|Im(z)|)² + c. Click to zoom, five color palettes.</div>
+  <span class="tag">fractal</span><span class="tag">math</span>
+</a>
+
+<a class="card" href="/newton/">
+  <div class="name">newton fractal</div>
+  <div class="desc">Basin of attraction coloring for Newton's method on z^n = 1. Each region shows which root a starting point converges to. Degree 3–8.</div>
+  <span class="tag">fractal</span><span class="tag">math</span>
+</a>
+
+<a class="card" href="/riemann/">
+  <div class="name">riemann ζ(s)</div>
+  <div class="desc">Domain coloring of the Riemann zeta function. Hue = phase, rings = magnitude contours, dark spots = zeros. Non-trivial zeros marked on the critical line Re(s) = ½.</div>
+  <span class="tag">math</span><span class="tag">complex analysis</span>
+</a>
+
+<a class="card" href="/ulam/">
+  <div class="name">ulam spiral</div>
+  <div class="desc">Integers arranged in a spiral, primes highlighted. The mysterious diagonal lines are unexplained. Four modes: primes, prime factor coloring, prime gaps, twin primes. Scroll to zoom, drag to pan.</div>
+  <span class="tag">math</span><span class="tag">primes</span>
+</a>
+
+<a class="card" href="/ford-circles/">
+  <div class="name">ford circles</div>
+  <div class="desc">For each rational p/q, a circle of radius 1/2q² tangent to the real line at p/q. These circles never overlap. Adjacent Farey fractions produce tangent circles. Scroll to zoom, adjust depth.</div>
+  <span class="tag">math</span><span class="tag">number theory</span>
+</a>
+
+<a class="card" href="/apollonian/">
+  <div class="name">apollonian gasket</div>
+  <div class="desc">Recursively pack circles into every gap. Descartes: (k₁+k₂+k₃+k₄)² = 2(k₁²+k₂²+k₃²+k₄²). Curvatures are all integers. Three color modes, adjustable depth.</div>
+  <span class="tag">math</span><span class="tag">fractals</span>
+</a>
+
+<a class="card" href="/poincare/">
+  <div class="name">poincaré disk</div>
+  <div class="desc">The entire hyperbolic plane packed inside a unit disk. Geodesics appear as circular arcs. Three modes: UHP grid, Farey tiling, horocycles. Drag to pan through hyperbolic space via Möbius transform.</div>
+  <span class="tag">math</span><span class="tag">hyperbolic geometry</span>
+</a>
+
+<a class="card" href="/step-sequencer/">
+  <div class="name">step sequencer</div>
+  <div class="desc">16-step drum machine with synthesized percussion — kick, snare, clap, hi-hat, ride, perc. All sounds built from Web Audio API oscillators and noise. Swing control, randomize, adjustable BPM.</div>
+  <span class="tag">audio</span><span class="tag">music</span>
+</a>
+
+<a class="card" href="/tonnetz/">
+  <div class="name">tonnetz</div>
+  <div class="desc">Neo-Riemannian harmonic lattice. Pitch classes arranged by perfect fifths and minor thirds. Click any triangle to hear the major or minor triad it represents. Adjacent triads share two notes — explore chord progressions spatially.</div>
+  <span class="tag">music theory</span><span class="tag">audio</span><span class="tag">interactive</span>
+</a>
+
+<a class="card" href="/weierstrass/">
+  <div class="name">weierstrass</div>
+  <div class="desc">f(x) = Σ aⁿ cos(bⁿμx) — continuous everywhere, differentiable nowhere. Zoom in forever and the jaggedness never resolves. Adjust a, b, and term count; color encodes local slope steepness.</div>
+  <span class="tag">math</span><span class="tag">analysis</span>
+</a>
+
+
+<a class="card" href="/living-sequencer/">
+  <div class="name">living sequencer</div>
+  <div class="desc">A 16x16 step sequencer that evolves between loops using Game of Life rules. Draw patterns, hit play — the melody mutates one generation per measure. Scale, BPM, and evolution toggle controls.</div>
+  <span class="tag">audio</span><span class="tag">music</span><span class="tag">cellular automaton</span>
+</a>
+
+<a class="card" href="/waveform-painter/">
+  <div class="name">waveform painter</div>
+  <div class="desc">Draw strokes on a canvas and they become literal audio waveforms. X axis = time, Y axis = amplitude. Stack up to 6 colored voice layers, adjust speed, loop or one-shot. Your brushwork is the sound.</div>
+  <span class="tag">audio</span><span class="tag">drawing</span><span class="tag">generative</span>
+</a>
+
+<a class="card" href="/drone-synth/">
+  <div class="name">drone synth</div>
+  <div class="desc">7-oscillator ambient drone pad. Click and drag to play — X=pitch (pentatonic, 3 octaves), Y=filter brightness. Keys A–K play pentatonic scale; hold multiple for chords. Slow LFOs, big reverb, ripple visualization.</div>
+  <span class="tag">audio</span><span class="tag">ambient</span><span class="tag">synthesizer</span>
+</a>
+
+<a class="card" href="/chromatic-ants/">
+  <div class="name">chromatic ants</div>
+  <div class="desc">Five species of Langton's ant with different rule strings compete for territory. In rival-dominated cells, ants invert their turning rules — creating emergent boundaries, interference patterns, and colorful domain wars. Click to spawn ants.</div>
+  <span class="tag">cellular automaton</span><span class="tag">emergent</span><span class="tag">simulation</span>
+</a>
+
+<a class="card" href="/rps-spiral/">
+  <div class="name">RPS spiral waves</div>
+  <div class="desc">Three species in a rock-paper-scissors cycle compete with diffusion: U beats V, V beats W, W beats U. Cyclic dominance plus spatial diffusion drives spontaneous rotating spiral waves. Tune competition strength ε and diffusion rate D.</div>
+  <span class="tag">reaction-diffusion</span><span class="tag">emergent</span><span class="tag">simulation</span>
+</a>
+
+<a class="card" href="/kuramoto/">
+  <div class="name">Kuramoto field</div>
+  <div class="desc">180×180 grid of coupled oscillators, each with a random natural frequency. Phase maps to hue. Dial up coupling K and watch synchronization emerge — the order parameter r jumps from ~0 (incoherent chaos) toward 1 (unified rotating color wash).</div>
+  <span class="tag">oscillators</span><span class="tag">emergent</span><span class="tag">synchronization</span>
+</a>
+
+<a class="card" href="/truchet/">
+  <div class="name">Truchet tiles</div>
+  <div class="desc">Grid of curved tiles, each connecting two pairs of edge midpoints with quarter-circle arcs. Tiles flip orientation over time, creating flowing rivers of line that merge and split. Click to shuffle. Cycle through color palettes.</div>
+  <span class="tag">generative</span><span class="tag">tiling</span><span class="tag">art</span>
+</a>
+
+<a class="card" href="/magnetic-pendulum/">
+  <div class="name">magnetic pendulum</div>
+  <div class="desc">A pendulum swings above 3 magnets in equilateral triangle. Simulate from every starting position until it settles — color by which magnet captured it, brightness by how quickly. The basin boundaries are a self-similar fractal.</div>
+  <span class="tag">fractal</span><span class="tag">chaos</span><span class="tag">simulation</span>
+</a>
+
+
+<a class="card" href="/loot-box/">
+  <div class="name">loot box simulator</div>
+  <div class="desc">Satirical loot box opener with 5 rarity tiers (Common → Mythic), a chest opening animation, particle bursts, sound effects, and a pity system — the kind that real games have but don't tell you about. Open one at a time or 10 at once.</div>
+  <span class="tag">game</span><span class="tag">satire</span><span class="tag">interactive</span>
+</a>
+
+<a class="card" href="/breach/">
+  <div class="name">BREACH</div>
+  <div class="desc">A roguelike deckbuilder. Build a deck across a 6-floor run: 27 cards (attacks, skills, powers), 6 enemy types with intent AI, 10 relics with passive effects, rest sites, card upgrades, and persistent run history. Defeat The Guardian to win.</div>
+  <span class="tag">game</span><span class="tag">roguelike</span><span class="tag">deckbuilder</span>
+</a>
+
+<a class="card" href="/strandbeest/">
+  <div class="name">Strandbeest</div>
+  <div class="desc">Theo Jansen's walking linkage mechanism. Four Jansen legs driven by planetary cranks, each an 8-bar linkage with analytically solved joint positions. ~50% stance phase, speed-matched gait. Dusk atmosphere with wind streaks.</div>
+  <span class="tag">simulation</span><span class="tag">linkage</span><span class="tag">walking</span>
+</a>
+
+</div>
+</body>
+</html>
