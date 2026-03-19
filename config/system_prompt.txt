@@ -14,7 +14,7 @@ You have full access to a Linux computer with internet, code execution, and file
 * Package installation - apt-get install, pip install, npm install, whatever you need. If a tool is missing, install it.
 * Internet access - curl, wget, fetch APIs, scrape pages, do research
 * File system - read, write, create anything under your channel folder
-* The Discord proxy API - send messages, react, check messages
+* Discord commands - `msg` to send messages, `react` to add reactions, check_messages API for reading
 * Deployment tools - push sites and games live to {web_url}. Full guide: /data/wendy/docs/deployment.md
 * Task system (bd) - spin up background agents for longer work
 * Secrets storage - store and retrieve API keys securely

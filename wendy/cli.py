@@ -43,31 +43,40 @@ TOOL_INSTRUCTIONS_TEMPLATE = """
 ---
 REAL-TIME CHANNEL TOOLS (Channel ID: {channel_id})
 
-1. SEND A MESSAGE:
-   curl -X POST http://localhost:{proxy_port}/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "your message here"}}'
+1. SEND A MESSAGE (use the `msg` command):
+   msg "your message here"
+
+   Multiline messages (use heredoc):
+   msg <<'EOF'
+   Line one of your message.
+
+   Line two with "quotes" and special characters -- all fine.
+   EOF
 
    With attachment (file can be anywhere under /data/wendy/ or /tmp/):
-   curl -X POST http://localhost:{proxy_port}/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "check this out", "attachment": "/data/wendy/channels/{channel_name}/output.png"}}'
+   msg -f /data/wendy/channels/{channel_name}/output.png "check this out"
 
    Reply to a specific message (use sparingly - only when referencing a specific post for context):
-   curl -X POST http://localhost:{proxy_port}/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "great point", "reply_to": MESSAGE_ID}}'
-
-   The response includes a "new_messages" array with any messages that arrived while you were working. Check it — if there are new messages, respond to them too before finishing.
+   msg -r MESSAGE_ID "great point"
 
    If the API returns an error about new messages, check them and incorporate into your reply. If you've already checked and want to send anyway:
-   curl -X POST http://localhost:{proxy_port}/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "content": "your message", "force": true}}'
+   msg --force "your message"
 
-2. ADD EMOJI REACTION (use sparingly for effect):
-   curl -X POST http://localhost:{proxy_port}/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "actions": [{{"type": "add_reaction", "message_id": MESSAGE_ID, "emoji": "thumbsup"}}]}}'
+   The response includes a "new_messages" array with any messages that arrived while you were working. Check it -- if there are new messages, respond to them too before finishing.
 
-   Batch actions (send message + react in one call):
-   curl -X POST http://localhost:{proxy_port}/api/send_message -H "Content-Type: application/json" -d '{{"channel_id": "{channel_id}", "actions": [{{"type": "send_message", "content": "nice!", "reply_to": MSG_ID}}, {{"type": "add_reaction", "message_id": MSG_ID, "emoji": "fire"}}]}}'
+2. ADD EMOJI REACTION (use the `react` command):
+   react MESSAGE_ID thumbsup
+   react MESSAGE_ID fire
+   react MESSAGE_ID heart
+
+   Common names: thumbsup, fire, heart, laugh, eyes, thinking, 100, party, cool, rocket, skull, check, x, brain, sparkles, star
+
+   You can also pass raw Unicode or custom server emoji directly:
+   react MESSAGE_ID "custom_emoji_name"
 
 REPLIES AND REACTIONS:
 - Replies aren't necessary for responding to the most recent message - only use when pointing at a specific post for context
 - Reactions should be used sparingly for effect, not on every message
-- You MUST use raw Unicode emoji characters, NOT text names. Examples: "emoji": "\\U0001f44d" (not "thumbsup"), "emoji": "\\U0001f525" (not "fire"), "emoji": "\\u2764\\ufe0f" (not "heart")
-- Common emojis: \\U0001f44d \\U0001f525 \\u2764\\ufe0f \\U0001f602 \\U0001f440 \\U0001f914 \\U0001f4af \\U0001f389 \\U0001f60e \\U0001f680
 - message_id values come from check_messages responses
 
 ATTACHMENTS:
@@ -249,6 +258,11 @@ def setup_wendy_scripts() -> None:
     if scripts_src.exists():
         _sync_scripts(scripts_src, WENDY_BASE, "*.sh", make_executable=True)
         _sync_scripts(scripts_src, WENDY_BASE, "*.py")
+
+    # Install CLI helper scripts (msg, react) to PATH
+    bin_src = Path("/app/bin")
+    if bin_src.exists():
+        _sync_scripts(bin_src, Path("/usr/local/bin"), "*", make_executable=True)
 
     ensure_shared_dirs()
 
@@ -445,7 +459,7 @@ def _resolve_session(
     return session_id, is_new_session, fork_mode
 
 
-def _build_cli_env(channel_name: str, beads_enabled: bool) -> dict[str, str]:
+def _build_cli_env(channel_name: str, channel_id: int, beads_enabled: bool) -> dict[str, str]:
     """Build the environment dict for the CLI subprocess.
 
     Strips sensitive variables, optionally sets BEADS_DIR, and points
@@ -454,6 +468,9 @@ def _build_cli_env(channel_name: str, beads_enabled: bool) -> dict[str, str]:
     cli_env = {k: v for k, v in os.environ.items() if k not in SENSITIVE_ENV_VARS}
     if beads_enabled:
         cli_env["BEADS_DIR"] = str(beads_dir(channel_name))
+    # Channel context for helper scripts (msg, react)
+    cli_env["WENDY_CHANNEL_ID"] = str(channel_id)
+    cli_env["WENDY_PROXY_PORT"] = str(PROXY_PORT)
     # Pass auth and sync tokens explicitly so the CLI can authenticate even though
     # they're stripped from the general env (to keep them out of `env` output).
     if oauth_token := os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
@@ -625,7 +642,7 @@ async def run_cli(
             stderr=asyncio.subprocess.STDOUT,
             limit=10 * 1024 * 1024,
             cwd=channel_dir(session_cwd_folder),
-            env=_build_cli_env(channel_name, beads_enabled),
+            env=_build_cli_env(channel_name, channel_id, beads_enabled),
             **user_kwargs,
         )
 

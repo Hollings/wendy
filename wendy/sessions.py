@@ -29,6 +29,7 @@ def reset_session(channel_id: int, folder: str) -> tuple[str | None, str]:
     old = get_session(channel_id)
     old_id = old.session_id if old else None
     new_id = create_session(channel_id, folder)
+    state_manager.reset_last_seen(channel_id)
     return old_id, new_id
 
 

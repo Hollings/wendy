@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""Send a Discord message via Wendy's internal API.
+
+Usage:
+    msg "hello world"
+    msg -f /path/to/file.png "caption text"
+    msg -r MESSAGE_ID "reply text"
+    msg --force "send even if new messages arrived"
+    msg <<'EOF'
+    multiline message here
+    EOF
+    echo "piped content" | msg
+"""
+import argparse
+import json
+import os
+import sys
+import urllib.request
+
+
+def main():
+    p = argparse.ArgumentParser(description="Send a Discord message")
+    p.add_argument("content", nargs="*", help="Message content (reads stdin if omitted)")
+    p.add_argument("-f", "--file", help="Attachment file path")
+    p.add_argument("-r", "--reply", help="Reply to message ID")
+    p.add_argument("--force", action="store_true", help="Skip new-message interrupt check")
+    args = p.parse_args()
+
+    if args.content:
+        content = " ".join(args.content)
+    elif not sys.stdin.isatty():
+        content = sys.stdin.read()
+    else:
+        print("Usage: msg 'content' or echo 'content' | msg", file=sys.stderr)
+        sys.exit(1)
+
+    if not content.strip() and not args.file:
+        print("Error: empty message (provide content or --file)", file=sys.stderr)
+        sys.exit(1)
+
+    channel_id = os.environ.get("WENDY_CHANNEL_ID")
+    if not channel_id:
+        print("Error: WENDY_CHANNEL_ID not set", file=sys.stderr)
+        sys.exit(1)
+
+    port = os.environ.get("WENDY_PROXY_PORT", "8945")
+
+    body = {"channel_id": channel_id, "content": content}
+    if args.file:
+        body["attachment"] = args.file
+    if args.reply:
+        body["reply_to"] = args.reply
+    if args.force:
+        body["force"] = True
+
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(
+        f"http://localhost:{port}/api/send_message",
+        data=data,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        resp = urllib.request.urlopen(req)
+        result = json.loads(resp.read().decode())
+        if result.get("new_messages"):
+            print(json.dumps(result, indent=2))
+        elif result.get("error"):
+            print(f"Error: {result['error']}", file=sys.stderr)
+            sys.exit(1)
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode()
+        try:
+            error_json = json.loads(error_body)
+            # Print the full response so Claude can see new_messages guidance
+            print(json.dumps(error_json, indent=2))
+        except json.JSONDecodeError:
+            print(f"Error ({e.code}): {error_body}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

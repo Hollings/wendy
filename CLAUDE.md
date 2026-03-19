@@ -53,12 +53,13 @@ Discord message
   → claude CLI subprocess (-p, --resume SESSION_ID, --output-format stream-json)
       ↑ stdin: nudge prompt ("you have new messages, call check_messages first")
       ↓ stdout: stream-json events (parsed but mostly ignored -- Wendy responds via API)
-  → Claude calls the internal HTTP API on localhost:8945
-      POST /api/send_message        → bot sends Discord message
-      GET  /api/check_messages/:id  → bot returns recent messages from SQLite
+  → Claude uses shell helper commands that hit the internal HTTP API on localhost:8945
+      msg "hello"                   → POST /api/send_message → bot sends Discord message
+      react MSG_ID fire             → POST /api/send_message → bot adds reaction
+      curl .../check_messages/:id   → GET  → bot returns recent messages from SQLite
 ```
 
-Claude CLI runs **headless** (`-p`). Wendy's responses are never captured from stdout — she must `curl` the internal API. The nudge prompt injected via stdin is the only user input Claude CLI receives each turn.
+Claude CLI runs **headless** (`-p`). Wendy's responses are never captured from stdout — she must use the `msg` command (which hits the internal API). The nudge prompt injected via stdin is the only user input Claude CLI receives each turn.
 
 ---
 
@@ -81,7 +82,7 @@ Built fresh each invocation in `prompt.py:build_system_prompt()`:
 1. `config/system_prompt.txt` — base personality + tool docs (supports `<!-- FULL_ONLY_START -->..<!-- FULL_ONLY_END -->` blocks stripped in `chat` mode)
 2. Channel fragments (`common_*.md` + `{channel_id}_*.md`)
 3. Person fragments (contextual, based on who's talking)
-4. `TOOL_INSTRUCTIONS_TEMPLATE` — how to use the internal API (curl examples)
+4. `TOOL_INSTRUCTIONS_TEMPLATE` — how to use `msg`/`react` commands and the internal API
 5. Journal section — lists journal files, emits nudge if overdue
 6. Beads warning — active background task count
 7. Thread context (if in a thread)
@@ -112,16 +113,17 @@ Fragments are `.md` files in `/data/wendy/claude_fragments/` with YAML frontmatt
 
 ## Internal API (`wendy/api_server.py`, port 8945)
 
-Wendy calls this herself from inside the CLI subprocess. Key endpoints:
+Wendy calls this from inside the CLI subprocess. For sending messages and reactions, shell helper scripts (`bin/msg`, `bin/react`) wrap the HTTP calls -- Wendy uses those instead of raw curl. The helpers read `WENDY_CHANNEL_ID` and `WENDY_PROXY_PORT` from the subprocess environment (set by `_build_cli_env()` in `cli.py`).
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| `POST` | `/api/send_message` | Send Discord message (required to respond) |
-| `GET` | `/api/check_messages/:channel_id` | Fetch recent messages from SQLite |
-| `POST` | `/api/deploy_site` | Deploy static site tarball to wendy-web |
-| `POST` | `/api/deploy_game` | Deploy Deno game server tarball |
-| `POST` | `/api/analyze_file` | Gemini file analysis |
-| `GET` | `/api/emojis` | Search custom server emojis |
+| Command / Endpoint | Purpose |
+|---------------------|---------|
+| `msg "text"` | Send Discord message (wraps POST `/api/send_message`) |
+| `react MSG_ID emoji` | Add reaction (wraps POST `/api/send_message` with actions) |
+| `GET /api/check_messages/:channel_id` | Fetch recent messages from SQLite |
+| `POST /api/deploy_site` | Deploy static site tarball to wendy-web |
+| `POST /api/deploy_game` | Deploy Deno game server tarball |
+| `POST /api/analyze_file` | Gemini file analysis |
+| `GET /api/emojis` | Search custom server emojis |
 
 The `wendy-web` service (port 8910) hosts static sites, game containers, and the brain feed. It shares the `wendy_data` Docker volume (same SQLite DB and stream log).
 
@@ -212,9 +214,9 @@ Active hooks:
 
 ## Server Access
 
-See `config/docs/infrastructure.md` for architecture details. Server IPs and SSH credentials are environment-specific -- set `DEPLOY_HOST` for deploy scripts.
+See `config/docs/infrastructure.md` for architecture details. Server IPs and SSH credentials are environment-specific -- set `DEPLOY_HOST` (e.g. `root@<ip>`) for deploy scripts.
 
-Secrets live on the server in an `env_file` directory (mounted read-only, never overwritten by deploys):
+Secrets live on the server at `/srv/secrets/wendy/` (mounted read-only, never overwritten by deploys):
 
 | File | Contents |
 |------|----------|
@@ -235,7 +237,7 @@ A local copy with actual values is in `.env` (gitignored). See `.env.example` fo
 ./deploy.sh --logs         # Tail production logs
 ```
 
-The script rsyncs the repo to `$DEPLOY_HOST` and runs `docker compose up -d --build`.
+The script rsyncs the repo to `$DEPLOY_HOST` and runs `docker compose up -d --build`. Requires `rsync` (Linux/macOS). On Windows, manually `scp` changed files to `/srv/wendy-v2/` on the server, then `ssh $DEPLOY_HOST "cd /srv/wendy-v2/deploy && docker compose up -d --build wendy"`.
 
 ---
 
@@ -310,11 +312,13 @@ Contains: `claude_fragments/people/*.md`, `claude_fragments/<channel_id>_*.md`, 
 
 ## Troubleshooting
 
-### OAuth token expired
+### CLI auth failing silently
 
-```bash
-docker exec -it wendy claude login
-```
+The CLI uses `CLAUDE_CODE_OAUTH_TOKEN` from the env. **Do NOT use `claude login`** — it writes `.credentials.json` which takes priority over the env var and expires after ~2 days, causing silent failures. The entrypoint deletes `.credentials.json` on startup as a safeguard.
+
+To rotate the token: update `CLAUDE_CODE_OAUTH_TOKEN` in `/srv/secrets/wendy/bot.env` on the server, then restart.
+
+Note: `CLAUDE_CODE_OAUTH_TOKEN` is in `SENSITIVE_ENV_VARS` (stripped from the CLI subprocess env for security), then explicitly re-added by `_build_cli_env()` in `cli.py`. If the token isn't reaching the CLI, check that code path.
 
 ### Reset a session
 

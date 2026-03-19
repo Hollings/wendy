@@ -283,6 +283,12 @@ class StateManager:
         )
         conn.commit()
 
+    def reset_last_seen(self, channel_id: int) -> None:
+        """Delete the last-seen watermark so the next check_messages returns recent history."""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM channel_last_seen WHERE channel_id = ?", (channel_id,))
+        conn.commit()
+
     # =========================================================================
     # Message History
     # =========================================================================

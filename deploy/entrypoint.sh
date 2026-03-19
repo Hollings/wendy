@@ -64,6 +64,11 @@ mkdir -p /data/wendy/claude_fragments/people
 # from claude.ai cannot complete OAuth in headless mode and block the CLI.
 rm -f /root/.claude/mcp-needs-auth-cache.json
 
+# Remove stale credentials file -- if someone ran `claude login` interactively,
+# it writes .credentials.json which takes priority over CLAUDE_CODE_OAUTH_TOKEN.
+# When that session expires the CLI fails silently. Always use the env var.
+rm -f /root/.claude/.credentials.json
+
 # Writable areas: owned by wendy
 chown -R wendy:wendy /root/.claude/ 2>/dev/null || true
 chown -R wendy:wendy /data/wendy/channels/ 2>/dev/null || true
