@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""Fetch recent Discord messages from Wendy's internal API.
+
+Usage:
+    msgs              # fetch new messages since last check
+    msgs -n 10        # fetch last 10 messages regardless of watermark
+    msgs --all        # fetch all messages (ignores watermark)
+    msgs --raw        # dump raw JSON (for debugging)
+"""
+import argparse
+import json
+import os
+import sys
+import urllib.request
+from datetime import datetime
+
+
+SYNTHETIC_THRESHOLD = 9_000_000_000_000_000_000  # synthetic/context messages
+
+
+def format_message(m: dict) -> str:
+    ts = int(m.get("timestamp", 0))
+    time_str = datetime.fromtimestamp(ts).strftime("%H:%M") if ts else "??:??"
+    author = m.get("author", "?")
+    content = m.get("content", "").strip()
+    attachments = m.get("attachments", [])
+
+    lines = [f"[{time_str}] {author}: {content}"]
+    for att in attachments:
+        lines.append(f"  📎 {att}")
+    return "\n".join(lines)
+
+
+def main():
+    p = argparse.ArgumentParser(description="Fetch Discord messages")
+    p.add_argument("-n", "--count", type=int, help="Fetch last N messages (ignores watermark)")
+    p.add_argument("--all", action="store_true", help="Fetch all messages (ignores watermark)")
+    p.add_argument("--raw", action="store_true", help="Dump raw JSON")
+    p.add_argument("--peek", action="store_true", help="Fetch without advancing the watermark")
+    args = p.parse_args()
+
+    channel_id = os.environ.get("WENDY_CHANNEL_ID")
+    if not channel_id:
+        print("Error: WENDY_CHANNEL_ID not set", file=sys.stderr)
+        sys.exit(1)
+
+    port = os.environ.get("WENDY_PROXY_PORT", "8945")
+
+    params = []
+    if args.count:
+        params.append(f"count={args.count}")
+    if args.all:
+        params.append("all_messages=true")
+    if args.peek:
+        params.append("peek=true")
+
+    query = ("?" + "&".join(params)) if params else ""
+    url = f"http://localhost:{port}/api/check_messages/{channel_id}{query}"
+
+    req = urllib.request.Request(url)
+    try:
+        resp = urllib.request.urlopen(req)
+        data = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        print(f"Error ({e.code}): {e.read().decode()}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.raw:
+        print(json.dumps(data, indent=2))
+        return
+
+    messages = data.get("messages", [])
+    task_updates = data.get("task_updates", [])
+
+    # Filter out synthetic/context messages
+    real = [m for m in messages if m.get("message_id", 0) < SYNTHETIC_THRESHOLD
+            and not m.get("author", "").startswith("Context")]
+
+    if not real and not task_updates:
+        print("(no new messages)")
+        return
+
+    for m in real:
+        print(format_message(m))
+
+    if task_updates:
+        print("\n--- task updates ---")
+        for t in task_updates:
+            print(json.dumps(t))
+
+
+if __name__ == "__main__":
+    main()
