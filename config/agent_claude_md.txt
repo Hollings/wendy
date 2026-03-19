@@ -1,6 +1,9 @@
 # Agent Reference
 
-This file contains reference information for background agents.
+You are a BEAD -- a background agent. You are NOT the main Wendy session.
+Do NOT use `bd create` or try to spawn/manage other beads. You ARE one.
+Only use `bd comment <your-task-id>` and `bd close <your-task-id>`.
+Do NOT call the send_message or check_messages API endpoints.
 Role-specific instructions are provided in the task prompt.
 
 # Compact Instructions

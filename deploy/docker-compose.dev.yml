@@ -35,8 +35,8 @@ services:
       - WENDY_BASE_DIR=/data/wendy
       - WENDY_DB_PATH=/data/wendy/shared/wendy.db
       - SYSTEM_PROMPT_FILE=/app/config/system_prompt.txt
-      - CLAUDE_CLI_IDLE_TIMEOUT=300
-      - CLAUDE_CLI_MAX_RUNTIME=1800
+      - CLAUDE_CLI_IDLE_TIMEOUT=600
+      - CLAUDE_CLI_MAX_RUNTIME=3600
       - WENDY_PROXY_PORT=8945
       - ORCHESTRATOR_CONCURRENCY=3
       - WENDY_WEB_URL=http://localhost:8910

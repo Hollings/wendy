@@ -148,15 +148,14 @@ After importing, restart the bot to pick up the new fragments.
 Wendy is designed to run on a Linux server (tested on Orange Pi 5) via Docker Compose.
 
 ```bash
-# From the cee-wtf repo (or wherever your deploy tooling lives):
-tools/deploy wendy-v2
-
-# Or manually on the server:
-ssh user@your-server
-cd /srv/wendy-v2/deploy
-docker compose up -d
-docker compose logs -f wendy
+./deploy.sh               # Deploy bot (most common)
+./deploy.sh web            # Deploy web service only
+./deploy.sh all            # Deploy both
+./deploy.sh --restart-only # Restart without uploading/rebuilding
+./deploy.sh --logs         # Tail production logs
 ```
+
+The script rsyncs the repo to the server and runs `docker compose up -d --build`. On the server, code lives at `/srv/wendy-v2/`.
 
 Production secrets live at `/srv/secrets/wendy/bot.env` on the server (never overwritten by deploys).
 

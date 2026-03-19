@@ -492,7 +492,7 @@ async def handle_deploy_site(request: web.Request) -> web.Response:
         token_env_name="WENDY_DEPLOY_TOKEN",
         deploy_path="/api/sites/deploy",
         archive_filename="site.tar.gz",
-        timeout=60,
+        timeout=120,
         default_message="Site deployed",
     )
 
@@ -599,7 +599,7 @@ def _get_media_duration(content: bytes, media_type: str) -> float | None:
         try:
             result = subprocess.run(
                 ["ffprobe", "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", temp_path],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, timeout=60,
             )
             if result.returncode == 0 and result.stdout.strip():
                 return float(result.stdout.strip())
@@ -709,7 +709,7 @@ async def handle_analyze_file(request: web.Request) -> web.Response:
         gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         body = _build_gemini_request_body(file_content, media_type, prompt, duration)
 
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300)) as session:
             async with session.post(
                 gemini_url, headers={"x-goog-api-key": GEMINI_API_KEY}, json=body,
             ) as resp:

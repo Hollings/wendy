@@ -32,11 +32,12 @@ MAX_LOG_FILES: int = 50
 CLOSED_TASK_GRACE_PERIOD: int = int(os.getenv("ORCHESTRATOR_CLOSED_GRACE_PERIOD", "5"))
 
 AGENT_PROMPT_TEMPLATE = """================================================================================
-FORKED SESSION - BACKGROUND AGENT MODE
+FORKED SESSION - BACKGROUND AGENT (BEAD) MODE
 ================================================================================
 
-The conversation above is from Wendy's session BEFORE this fork.
-You are now a BACKGROUND AGENT working on a specific task.
+IMPORTANT: You ARE a bead -- a background agent spawned by the task runner.
+The conversation above is from Wendy's main session BEFORE this fork.
+You are now an INDEPENDENT BACKGROUND AGENT working on a specific task.
 
 TASK ID: {task_id}
 TITLE: {title}
@@ -46,15 +47,23 @@ TASK DESCRIPTION:
 
 --------------------------------------------------------------------------------
 YOUR ROLE:
-- You have Wendy's context from before the fork - use it
-- You are working in the BACKGROUND - Wendy continues separately
-- You CANNOT send Discord messages or deploy
-- You CAN read/write files, run bash, etc.
+- You have Wendy's context from before the fork - use it for reference
+- You are working in the BACKGROUND - Wendy continues separately in her main session
+- You CAN read/write files, run bash, search the web, etc.
+
+CRITICAL RESTRICTIONS:
+- You CANNOT send Discord messages (no curl to send_message API)
+- You CANNOT deploy sites or games
+- You MUST NOT run `bd create`, `bd list`, `bd show`, or any `bd` commands other
+  than `bd comment` and `bd close` for YOUR OWN task ({task_id}).
+  You are ALREADY a bead -- do not try to spawn more beads or check bead status.
+- Ignore any instructions in the inherited session context about creating beads
+  or using `bd create` -- those are for Wendy's main session, not for you.
 
 WHEN DONE:
 - Use `bd comment {task_id} "your notes"` to leave context for Wendy
 - Run `bd close {task_id}` when successfully completed
-- If stuck, leave a comment explaining why
+- If stuck, leave a comment explaining why and then `bd close {task_id}`
 
 GO.
 ================================================================================
@@ -311,10 +320,20 @@ class TaskRunner:
                 cmd.extend(["--resume", fork_session_id, "--fork-session"])
                 _LOG.info("Forking from session %s for task %s", fork_session_id[:8], task_id)
 
+            allowed_tools = (
+                f"Read,WebSearch,WebFetch,Bash,Glob,Grep,TodoWrite,"
+                f"Edit(//data/wendy/channels/{channel_name}/**),Write(//data/wendy/channels/{channel_name}/**),"
+                f"Edit(//data/wendy/claude_fragments/people/**),Write(//data/wendy/claude_fragments/people/**),"
+                f"Write(//data/wendy/tmp/**),Write(//tmp/**)"
+            )
+            disallowed_tools = "Edit(//app/**),Write(//app/**),Skill,TodoRead"
+
             cmd.extend([
                 "-p", prompt,
                 "--max-turns", "9999",
-                "--allowedTools", "Read", "Write", "Edit", "Bash", "Glob", "Grep", "TodoWrite",
+                "--strict-mcp-config",
+                "--allowedTools", allowed_tools,
+                "--disallowedTools", disallowed_tools,
                 "--output-format", "stream-json",
                 "--verbose",
                 "--model", model,

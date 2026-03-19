@@ -242,21 +242,14 @@ A local copy with actual values is in `.env` (gitignored). See `.env.example` fo
 ## Deployment
 
 ```bash
-# From the cee-wtf repo root:
-tools/deploy wendy-v2               # Full deploy
-tools/deploy --restart-only wendy-v2 # Restart without re-uploading
-tools/deploy --rollback wendy-v2     # Revert to previous version
+./deploy.sh               # Deploy bot (most common)
+./deploy.sh web            # Deploy web service only
+./deploy.sh all            # Deploy both
+./deploy.sh --restart-only # Restart without uploading/rebuilding
+./deploy.sh --logs         # Tail production logs
 ```
 
-On the server:
-
-```bash
-ssh ubuntu@100.120.250.100
-cd /srv/wendy-v2/deploy
-docker compose up -d
-docker compose logs -f wendy   # Bot logs
-docker compose logs -f web     # Web service logs
-```
+The script rsyncs the repo to the server and runs `docker compose up -d --build`. On the server, code lives at `/srv/wendy-v2/`.
 
 ---
 
