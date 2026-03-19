@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Stern-Brocot Tree</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #080c10;
+  color: #bbb;
+  font-family: monospace;
+  overflow: hidden;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+#top {
+  padding: 8px 14px;
+  background: #0d1117;
+  border-bottom: 1px solid #1a2030;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  min-height: 36px;
+}
+h1 { font-size: 12px; color: #667; letter-spacing: 2px; text-transform: uppercase; }
+#info-bar {
+  font-size: 11px;
+  color: #48a;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#cf-display {
+  font-size: 11px;
+  color: #7c8;
+  min-width: 180px;
+}
+button {
+  background: #111820;
+  border: 1px solid #223;
+  color: #789;
+  padding: 3px 9px;
+  font-family: monospace;
+  font-size: 10px;
+  cursor: pointer;
+  border-radius: 2px;
+}
+button:hover { background: #182030; color: #acd; }
+#canvas-wrap { flex: 1; position: relative; }
+canvas { width: 100%; height: 100%; display: block; }
+#hint {
+  position: absolute;
+  bottom: 8px;
+  left: 12px;
+  font-size: 10px;
+  color: #334;
+  pointer-events: none;
+}
+#tooltip {
+  position: absolute;
+  background: #0d1520;
+  border: 1px solid #2a3a55;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: #8ab;
+  pointer-events: none;
+  display: none;
+  border-radius: 3px;
+  line-height: 1.7;
+}
+</style>
+</head>
+<body>
+<div id="top">
+  <h1>Stern-Brocot</h1>
+  <div id="cf-display">click a node</div>
+  <div id="info-bar"></div>
+  <button onclick="zoomReset()">reset</button>
+  <button onclick="setDepth(Math.max(3,depth-1))">− depth</button>
+  <button id="depthBtn" onclick="setDepth(Math.min(8,depth+1))">+ depth</button>
+  <button onclick="searchMode()">search</button>
+</div>
+<div id="canvas-wrap">
+  <canvas id="c"></canvas>
+  <div id="hint">click node to inspect · scroll to zoom · drag to pan</div>
+  <div id="tooltip" id="tt"></div>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const wrap = document.getElementById('canvas-wrap');
+const tt = document.getElementById('tooltip');
+
+let W, H;
+let depth = 6;
+let camX = 0, camY = 0, camZ = 1; // pan + zoom
+let selected = null;
+
+// Build tree nodes up to given depth
+// Each node: { p, q, lp, lq, rp, rq, depth, x, y, parent }
+// lp/lq = left ancestor, rp/rq = right ancestor
+let nodes = [];
+
+function buildTree(maxDepth) {
+  nodes = [];
+  // BFS: each entry is [lp, lq, rp, rq, depth, parentIdx]
+  // Initial: between 0/1 (left) and 1/0 (right)
+  const queue = [[0, 1, 1, 0, 0, -1]];
+  while (queue.length > 0) {
+    const [lp, lq, rp, rq, d, pidx] = queue.shift();
+    const p = lp + rp;
+    const q = lq + rq;
+    const idx = nodes.length;
+    nodes.push({ p, q, lp, lq, rp, rq, depth: d, parent: pidx, x: 0, y: 0 });
+    if (d < maxDepth) {
+      queue.push([lp, lq, p, q, d + 1, idx]); // left child: between left and mediant
+      queue.push([p, q, rp, rq, d + 1, idx]); // right child: between mediant and right
+    }
+  }
+}
+
+// Assign x positions: node's x = p/q as fraction, mapped to [0,1]
+// y position: depth level
+function layoutTree() {
+  const levelH = Math.min(H * 0.12, 80);
+  const rootY = 55;
+  for (const nd of nodes) {
+    // x: rational value maps linearly to canvas. But range is [0, inf]
+    // Map via arctan: spread = atan(p/q) / (pi/2)
+    const val = nd.p / nd.q; // rational value
+    nd.xNorm = Math.atan(val) / (Math.PI / 2); // 0..1
+    nd.y = rootY + nd.depth * levelH;
+  }
+  // Scale xNorm to canvas width with padding
+  const pad = 30;
+  for (const nd of nodes) {
+    nd.x = pad + nd.xNorm * (W - 2 * pad);
+  }
+}
+
+// Continued fraction of p/q
+function cfrac(p, q) {
+  const terms = [];
+  while (q !== 0) {
+    terms.push(Math.floor(p / q));
+    [p, q] = [q, p % q];
+  }
+  return terms;
+}
+
+function cfString(p, q) {
+  const terms = cfrac(p, q);
+  if (terms.length === 1) return `[${terms[0]}]`;
+  return `[${terms[0]}; ${terms.slice(1).join(', ')}]`;
+}
+
+// Path from root to node (list of L/R turns)
+function pathString(nodeIdx) {
+  const path = [];
+  let idx = nodeIdx;
+  while (nodes[idx].parent !== -1) {
+    const parent = nodes[nodes[idx].parent];
+    const isRight = nodes[idx].p > parent.p || (nodes[idx].p === parent.p && nodes[idx].q < parent.q);
+    path.unshift(isRight ? 'R' : 'L');
+    idx = nodes[idx].parent;
+  }
+  return path.join('') || '(root)';
+}
+
+// Depth color
+function depthColor(d, alpha = 1) {
+  const hue = (d / depth) * 200 + 180; // cyan to blue-violet
+  return `hsla(${hue}, 70%, ${65 - d * 4}%, ${alpha})`;
+}
+
+// Hit test
+const NODE_R = 9;
+function hitTest(mx, my) {
+  const wx = (mx - camX) / camZ;
+  const wy = (my - camY) / camZ;
+  let best = null, bestDist = NODE_R * 2 / camZ;
+  for (const nd of nodes) {
+    const dx = nd.x - wx, dy = nd.y - wy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < bestDist) { bestDist = dist; best = nd; }
+  }
+  return best;
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  // Background
+  ctx.fillStyle = '#080c10';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.save();
+  ctx.translate(camX, camY);
+  ctx.scale(camZ, camZ);
+
+  // Draw edges first
+  ctx.lineWidth = 0.8 / camZ;
+  for (const nd of nodes) {
+    if (nd.parent === -1) continue;
+    const par = nodes[nd.parent];
+    ctx.strokeStyle = depthColor(nd.depth, 0.25);
+    ctx.beginPath();
+    ctx.moveTo(par.x, par.y);
+    ctx.lineTo(nd.x, nd.y);
+    ctx.stroke();
+  }
+
+  // Draw nodes
+  for (const nd of nodes) {
+    const r = (NODE_R - nd.depth * 0.5) / Math.max(1, camZ * 0.5);
+    const rClamped = Math.max(3, Math.min(NODE_R, r));
+    const isSelected = selected && selected.p === nd.p && selected.q === nd.q;
+
+    ctx.beginPath();
+    ctx.arc(nd.x, nd.y, rClamped, 0, Math.PI * 2);
+
+    if (isSelected) {
+      ctx.fillStyle = '#ffe080';
+      ctx.strokeStyle = '#ffd040';
+      ctx.lineWidth = 2 / camZ;
+    } else {
+      ctx.fillStyle = depthColor(nd.depth, 0.85);
+      ctx.strokeStyle = depthColor(nd.depth, 0.4);
+      ctx.lineWidth = 0.5 / camZ;
+    }
+    ctx.fill();
+    ctx.stroke();
+
+    // Label
+    const fontSize = Math.max(7, 11 - nd.depth * 0.8) / Math.max(1, camZ * 0.7);
+    if (fontSize > 5 && camZ > 0.3) {
+      ctx.fillStyle = isSelected ? '#ffe080' : depthColor(nd.depth, 0.95);
+      ctx.font = `${fontSize}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(`${nd.p}/${nd.q}`, nd.x, nd.y - rClamped - 1);
+    }
+  }
+
+  // Highlight path from root to selected
+  if (selected) {
+    let idx = nodes.findIndex(n => n.p === selected.p && n.q === selected.q);
+    while (idx !== -1 && nodes[idx].parent !== -1) {
+      const par = nodes[idx].parent;
+      ctx.strokeStyle = '#ffd04088';
+      ctx.lineWidth = 2 / camZ;
+      ctx.beginPath();
+      ctx.moveTo(nodes[par].x, nodes[par].y);
+      ctx.lineTo(nodes[idx].x, nodes[idx].y);
+      ctx.stroke();
+      idx = par;
+    }
+  }
+
+  // Number line at bottom
+  const lineY = H / camZ - 30 / camZ;
+  ctx.strokeStyle = '#1a2535';
+  ctx.lineWidth = 1 / camZ;
+  ctx.beginPath();
+  ctx.moveTo(0, lineY);
+  ctx.lineTo(W / camZ, lineY);
+  ctx.stroke();
+
+  // Tick marks for all nodes at bottom
+  for (const nd of nodes) {
+    const alpha = 0.15 + 0.6 * (1 - nd.depth / (depth + 1));
+    ctx.strokeStyle = depthColor(nd.depth, alpha);
+    ctx.lineWidth = 1 / camZ;
+    const tickH = (4 + (depth - nd.depth) * 2) / camZ;
+    ctx.beginPath();
+    ctx.moveTo(nd.x, lineY - tickH);
+    ctx.lineTo(nd.x, lineY + 1 / camZ);
+    ctx.stroke();
+    if (nd.depth <= 3) {
+      ctx.fillStyle = depthColor(nd.depth, 0.7);
+      ctx.font = `${9 / camZ}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(`${nd.p}/${nd.q}`, nd.x, lineY + 3 / camZ);
+    }
+  }
+
+  ctx.restore();
+
+  // Label "0" and "∞" on number line
+  ctx.fillStyle = '#334';
+  ctx.font = '10px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText('0', 14, H - 18);
+  ctx.textAlign = 'right';
+  ctx.fillText('∞', W - 14, H - 18);
+}
+
+function updateInfoBar(nd) {
+  const cf = document.getElementById('cf-display');
+  const info = document.getElementById('info-bar');
+  if (!nd) {
+    cf.textContent = 'click a node';
+    info.textContent = '';
+    return;
+  }
+  cf.textContent = `${nd.p}/${nd.q}  =  ${cfString(nd.p, nd.q)}`;
+  const dec = (nd.p / nd.q).toFixed(6);
+  const path = pathString(nodes.findIndex(n => n.p === nd.p && n.q === nd.q));
+  const gcd_val = gcd(nd.p, nd.q);
+  info.textContent = `≈ ${dec}   path: ${path}   depth: ${nd.depth}${gcd_val > 1 ? '  (not reduced!)' : ''}`;
+}
+
+function gcd(a, b) { return b === 0 ? a : gcd(b, a % b); }
+
+// Input
+let dragging = false, dragStartX = 0, dragStartY = 0, camXStart = 0, camYStart = 0;
+
+canvas.addEventListener('mousedown', e => {
+  dragging = true;
+  dragStartX = e.clientX; dragStartY = e.clientY;
+  camXStart = camX; camYStart = camY;
+});
+canvas.addEventListener('mousemove', e => {
+  if (dragging) {
+    camX = camXStart + (e.clientX - dragStartX);
+    camY = camYStart + (e.clientY - dragStartY);
+    draw();
+  }
+  // Tooltip
+  const nd = hitTest(e.clientX, e.clientY);
+  if (nd) {
+    tt.style.display = 'block';
+    tt.style.left = (e.clientX + 14) + 'px';
+    tt.style.top = (e.clientY - 10) + 'px';
+    tt.innerHTML = `<b>${nd.p}/${nd.q}</b><br>cf: ${cfString(nd.p, nd.q)}<br>≈ ${(nd.p/nd.q).toFixed(5)}<br>depth: ${nd.depth}`;
+  } else {
+    tt.style.display = 'none';
+  }
+});
+canvas.addEventListener('mouseup', e => {
+  if (Math.abs(e.clientX - dragStartX) < 5 && Math.abs(e.clientY - dragStartY) < 5) {
+    const nd = hitTest(e.clientX, e.clientY);
+    selected = nd || null;
+    updateInfoBar(selected);
+    draw();
+  }
+  dragging = false;
+});
+canvas.addEventListener('mouseleave', () => { dragging = false; tt.style.display = 'none'; });
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const factor = e.deltaY > 0 ? 0.85 : 1.18;
+  const mx = e.clientX, my = e.clientY;
+  camX = mx - (mx - camX) * factor;
+  camY = my - (my - camY) * factor;
+  camZ *= factor;
+  draw();
+}, { passive: false });
+
+// Touch
+let lastTouchDist = 0, touchStartCamX = 0, touchStartCamY = 0;
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (e.touches.length === 1) {
+    dragging = true;
+    dragStartX = e.touches[0].clientX; dragStartY = e.touches[0].clientY;
+    camXStart = camX; camYStart = camY;
+  } else if (e.touches.length === 2) {
+    dragging = false;
+    lastTouchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+  }
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (e.touches.length === 1 && dragging) {
+    camX = camXStart + (e.touches[0].clientX - dragStartX);
+    camY = camYStart + (e.touches[0].clientY - dragStartY);
+    draw();
+  } else if (e.touches.length === 2) {
+    const dist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+    const factor = dist / lastTouchDist;
+    const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+    const my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+    camX = mx - (mx - camX) * factor;
+    camY = my - (my - camY) * factor;
+    camZ *= factor;
+    lastTouchDist = dist;
+    draw();
+  }
+}, { passive: false });
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  if (e.changedTouches.length === 1 && dragging) {
+    const t = e.changedTouches[0];
+    if (Math.abs(t.clientX - dragStartX) < 10 && Math.abs(t.clientY - dragStartY) < 10) {
+      const nd = hitTest(t.clientX, t.clientY);
+      selected = nd || null;
+      updateInfoBar(selected);
+      draw();
+    }
+  }
+  dragging = false;
+}, { passive: false });
+
+function setDepth(d) {
+  depth = d;
+  document.getElementById('depthBtn').textContent = `depth: ${d}`;
+  selected = null;
+  buildTree(depth);
+  layoutTree();
+  updateInfoBar(null);
+  draw();
+}
+
+function zoomReset() {
+  camX = 0; camY = 0; camZ = 1;
+  draw();
+}
+
+function searchMode() {
+  const input = prompt('Enter a fraction (e.g. 3/5) or decimal (e.g. 0.6):');
+  if (!input) return;
+  let p, q;
+  if (input.includes('/')) {
+    [p, q] = input.split('/').map(Number);
+  } else {
+    // Convert decimal to fraction via CF
+    const dec = parseFloat(input);
+    q = 1000; p = Math.round(dec * q);
+    const g = gcd(Math.abs(p), q);
+    p /= g; q /= g;
+  }
+  if (isNaN(p) || isNaN(q) || q <= 0) return;
+  // Find in tree
+  const found = nodes.find(n => n.p === p && n.q === q);
+  if (found) {
+    selected = found;
+    // Pan to it
+    const cx = W / 2, cy = H / 2;
+    camX = cx - found.x * camZ;
+    camY = cy - found.y * camZ;
+    updateInfoBar(found);
+    draw();
+  } else {
+    alert(`${p}/${q} not found at depth ${depth}. Try increasing depth.`);
+  }
+}
+
+function resize() {
+  W = wrap.clientWidth;
+  H = wrap.clientHeight;
+  canvas.width = W * devicePixelRatio;
+  canvas.height = H * devicePixelRatio;
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  layoutTree();
+  draw();
+}
+
+window.addEventListener('resize', resize);
+buildTree(depth);
+document.getElementById('depthBtn').textContent = `depth: ${depth}`;
+resize();
+</script>
+</body>
+</html>
