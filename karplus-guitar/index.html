@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Karplus-Strong Guitar</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0c0a08;
+  color: #c4a882;
+  font-family: 'Courier New', monospace;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  overflow-x: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+h1 {
+  font-size: 13px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: #5a4a38;
+  margin: 18px 0 6px;
+}
+.subtitle {
+  font-size: 9px;
+  color: #3a3228;
+  letter-spacing: 2px;
+  margin-bottom: 16px;
+}
+
+/* String grid */
+#string-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  max-width: 420px;
+  width: 90vw;
+  margin-bottom: 14px;
+}
+.string-cell {
+  position: relative;
+  background: #1a1610;
+  border: 1px solid #2a2218;
+  border-radius: 6px;
+  padding: 8px 4px 28px;
+  cursor: pointer;
+  transition: border-color 0.1s, background 0.1s;
+  touch-action: manipulation;
+  overflow: hidden;
+}
+.string-cell:hover { border-color: #4a3a28; background: #1e1a14; }
+.string-cell.active { border-color: #8a6a40; background: #241e16; }
+
+.string-canvas {
+  display: block;
+  width: 100%;
+  height: 32px;
+}
+.note-label {
+  position: absolute;
+  bottom: 4px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 11px;
+  color: #6a5a48;
+  letter-spacing: 1px;
+}
+.key-hint {
+  position: absolute;
+  top: 3px;
+  right: 5px;
+  font-size: 8px;
+  color: #3a3228;
+  letter-spacing: 0;
+}
+
+/* Controls */
+#controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  justify-content: center;
+  align-items: flex-start;
+  max-width: 450px;
+  width: 90vw;
+  margin-bottom: 14px;
+}
+.ctrl-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.ctrl-label {
+  font-size: 9px;
+  color: #5a4a38;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+}
+.ctrl-val {
+  font-size: 10px;
+  color: #8a7a60;
+  min-width: 30px;
+  text-align: center;
+}
+input[type=range] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 90px;
+  height: 3px;
+  background: #2a2218;
+  border-radius: 2px;
+  outline: none;
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #8a6a40;
+  cursor: pointer;
+  border: 1px solid #5a4a30;
+}
+input[type=range]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #8a6a40;
+  cursor: pointer;
+  border: 1px solid #5a4a30;
+}
+
+/* Chord buttons */
+#chords {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-bottom: 14px;
+}
+.chord-btn {
+  background: #1a1610;
+  border: 1px solid #2a2218;
+  color: #8a7a60;
+  padding: 7px 14px;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  border-radius: 4px;
+  letter-spacing: 1px;
+  transition: all 0.1s;
+}
+.chord-btn:hover { border-color: #5a4a38; color: #c4a882; }
+.chord-btn:active, .chord-btn.active { background: #241e16; border-color: #8a6a40; color: #e0c8a0; }
+
+#reverb-btn {
+  background: #1a1610;
+  border: 1px solid #2a2218;
+  color: #5a4a38;
+  padding: 7px 14px;
+  font-family: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  border-radius: 4px;
+  letter-spacing: 1px;
+  transition: all 0.1s;
+}
+#reverb-btn.on { border-color: #6a8a40; color: #a0c870; background: #1a2010; }
+
+/* Chord name display */
+#chord-name {
+  font-size: 11px;
+  color: #5a4a38;
+  height: 16px;
+  margin-bottom: 8px;
+  letter-spacing: 2px;
+}
+
+/* Footer */
+.footer {
+  font-size: 8px;
+  color: #2a2218;
+  margin: auto 0 12px;
+  letter-spacing: 2px;
+}
+
+/* Scale selector */
+#scale-selector {
+  background: #1a1610;
+  border: 1px solid #2a2218;
+  color: #8a7a60;
+  padding: 4px 8px;
+  font-family: inherit;
+  font-size: 10px;
+  border-radius: 4px;
+  outline: none;
+  cursor: pointer;
+}
+#scale-selector option { background: #1a1610; }
+</style>
+</head>
+<body>
+
+<h1>karplus-strong</h1>
+<div class="subtitle">plucked string synthesis</div>
+
+<div id="string-grid"></div>
+
+<div id="chord-name">&nbsp;</div>
+
+<div id="controls">
+  <div class="ctrl-group">
+    <span class="ctrl-label">decay</span>
+    <input type="range" id="decay" min="0.85" max="0.998" step="0.002" value="0.96">
+    <span class="ctrl-val" id="decayVal">0.96</span>
+  </div>
+  <div class="ctrl-group">
+    <span class="ctrl-label">hardness</span>
+    <input type="range" id="hardness" min="1" max="15" step="0.5" value="4">
+    <span class="ctrl-val" id="hardnessVal">4ms</span>
+  </div>
+  <div class="ctrl-group">
+    <span class="ctrl-label">brightness</span>
+    <input type="range" id="brightness" min="0.3" max="1.0" step="0.05" value="0.7">
+    <span class="ctrl-val" id="brightnessVal">0.70</span>
+  </div>
+  <div class="ctrl-group">
+    <span class="ctrl-label">volume</span>
+    <input type="range" id="volume" min="0" max="1" step="0.05" value="0.6">
+    <span class="ctrl-val" id="volumeVal">0.60</span>
+  </div>
+  <div class="ctrl-group">
+    <span class="ctrl-label">scale</span>
+    <select id="scale-selector">
+      <option value="pentatonic">pentatonic</option>
+      <option value="major">major</option>
+      <option value="minor">natural minor</option>
+      <option value="blues">blues</option>
+      <option value="chromatic">chromatic</option>
+    </select>
+  </div>
+  <div class="ctrl-group">
+    <span class="ctrl-label">reverb</span>
+    <button id="reverb-btn">off</button>
+  </div>
+</div>
+
+<div id="chords"></div>
+
+<div class="footer">click strings or use keyboard · physical model synthesis</div>
+
+<script>
+// ─── Audio Context ───────────────────────────────────────────
+let ctx;
+let masterGain;
+let reverbNode;
+let reverbEnabled = false;
+let dryGain, wetGain;
+
+function ensureAudio() {
+  if (ctx) return;
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  masterGain = ctx.createGain();
+  masterGain.gain.value = parseFloat(document.getElementById('volume').value);
+
+  dryGain = ctx.createGain();
+  dryGain.gain.value = 1;
+  wetGain = ctx.createGain();
+  wetGain.gain.value = 0;
+
+  masterGain.connect(dryGain);
+  dryGain.connect(ctx.destination);
+
+  // Create synthetic IR for reverb
+  createReverb();
+  masterGain.connect(wetGain);
+  wetGain.connect(reverbNode);
+  reverbNode.connect(ctx.destination);
+}
+
+function createReverb() {
+  const duration = 3.0, decayPow = 2.2;
+  const len = ctx.sampleRate * duration;
+  const buf = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = buf.getChannelData(ch);
+    for (let i = 0; i < len; i++) {
+      d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decayPow);
+    }
+  }
+  reverbNode = ctx.createConvolver();
+  reverbNode.buffer = buf;
+}
+
+// ─── Scales ──────────────────────────────────────────────────
+const SCALES = {
+  pentatonic: { intervals: [0, 2, 4, 7, 9], name: 'C Pentatonic' },
+  major:      { intervals: [0, 2, 4, 5, 7, 9, 11], name: 'C Major' },
+  minor:      { intervals: [0, 2, 3, 5, 7, 8, 10], name: 'C Minor' },
+  blues:      { intervals: [0, 3, 5, 6, 7, 10], name: 'C Blues' },
+  chromatic:  { intervals: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], name: 'Chromatic' },
+};
+
+// Build note names
+const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+function midiToFreq(midi) { return 440 * Math.pow(2, (midi - 69) / 12); }
+function midiToName(midi) { return NOTE_NAMES[midi % 12] + Math.floor(midi / 12 - 1); }
+
+function buildNotes(scaleName) {
+  const scale = SCALES[scaleName];
+  const notes = [];
+  const baseMidi = 48; // C3
+  let midi = baseMidi;
+  // Build 16 notes from the scale across octaves
+  let octaveOffset = 0;
+  while (notes.length < 16) {
+    for (const interval of scale.intervals) {
+      const m = baseMidi + octaveOffset + interval;
+      if (m > 96) break; // cap at C7
+      notes.push(m);
+      if (notes.length >= 16) break;
+    }
+    octaveOffset += 12;
+  }
+  return notes;
+}
+
+// ─── Keyboard mapping ────────────────────────────────────────
+// 4 rows × 4 cols, mapped bottom-to-top
+const KEY_ROWS = [
+  ['z', 'x', 'c', 'v'],   // row 0 (bottom, lowest notes)
+  ['a', 's', 'd', 'f'],   // row 1
+  ['q', 'w', 'e', 'r'],   // row 2
+  ['1', '2', '3', '4'],   // row 3 (top, highest notes)
+];
+
+// ─── Chords per scale ────────────────────────────────────────
+const CHORD_DEFS = {
+  pentatonic: [
+    { name: 'C', midis: [48, 52, 55] },
+    { name: 'Am', midis: [57, 60, 64] },
+    { name: 'G', midis: [55, 59, 62] },
+    { name: 'Dm', midis: [50, 53, 57] },
+    { name: 'Em', midis: [52, 55, 59] },
+  ],
+  major: [
+    { name: 'C', midis: [48, 52, 55] },
+    { name: 'Am', midis: [57, 60, 64] },
+    { name: 'F', midis: [53, 57, 60] },
+    { name: 'G', midis: [55, 59, 62] },
+    { name: 'Dm', midis: [50, 53, 57] },
+    { name: 'Em', midis: [52, 55, 59] },
+  ],
+  minor: [
+    { name: 'Cm', midis: [48, 51, 55] },
+    { name: 'Fm', midis: [53, 56, 60] },
+    { name: 'Gm', midis: [55, 58, 62] },
+    { name: 'Ab', midis: [56, 60, 63] },
+    { name: 'Bb', midis: [58, 62, 65] },
+    { name: 'Eb', midis: [51, 55, 58] },
+  ],
+  blues: [
+    { name: 'C7', midis: [48, 52, 55, 58] },
+    { name: 'F7', midis: [53, 57, 60, 63] },
+    { name: 'G7', midis: [55, 59, 62, 65] },
+  ],
+  chromatic: [
+    { name: 'C', midis: [48, 52, 55] },
+    { name: 'Cm', midis: [48, 51, 55] },
+    { name: 'F', midis: [53, 57, 60] },
+    { name: 'G', midis: [55, 59, 62] },
+    { name: 'Am', midis: [57, 60, 64] },
+    { name: 'Dm', midis: [50, 53, 57] },
+  ],
+};
+
+// ─── Karplus-Strong Engine ───────────────────────────────────
+function ksBuffer(freq, duration, decay, brightness, hardnessMs) {
+  const sr = ctx.sampleRate;
+  const N = Math.round(sr / freq);
+  const totalSamples = Math.round(sr * duration);
+  const buf = new Float32Array(totalSamples);
+
+  // Initialize first N samples with noise burst (hardness controls burst shape)
+  const burstSamples = Math.round(sr * hardnessMs / 1000);
+  const initLen = Math.min(N, burstSamples);
+  for (let i = 0; i < initLen; i++) {
+    // Windowed noise burst for pluck excitation
+    const env = 1 - (i / initLen); // linear decay over burst
+    buf[i] = (Math.random() * 2 - 1) * env;
+  }
+  // If burst is shorter than period, fill rest of first period with zeros
+  // (already zeroed by Float32Array)
+
+  // Brightness controls the mix between averaging (low brightness=mellow) and pass-through (high=bright)
+  // Classic KS: buf[i] = decay * 0.5 * (buf[i-N] + buf[i-N+1])
+  // Extended: mix between simple average and pick one sample
+  const blend = brightness; // 1.0 = bright (more high freq), 0.3 = mellow (heavy averaging)
+
+  for (let i = N; i < totalSamples; i++) {
+    const avg = 0.5 * (buf[i - N] + buf[i - N + 1]);
+    // Brightness blends between heavy smoothing and lighter smoothing
+    // At low brightness, apply double averaging
+    const smoothed = blend * avg + (1 - blend) * (0.5 * (avg + buf[i - N]));
+    buf[i] = decay * smoothed;
+  }
+
+  const audioBuf = ctx.createBuffer(1, totalSamples, sr);
+  audioBuf.getChannelData(0).set(buf);
+  return audioBuf;
+}
+
+function pluck(midi, velocity = 1.0) {
+  ensureAudio();
+  if (ctx.state === 'suspended') ctx.resume();
+
+  const freq = midiToFreq(midi);
+  const decay = parseFloat(document.getElementById('decay').value);
+  const hardness = parseFloat(document.getElementById('hardness').value);
+  const brightness = parseFloat(document.getElementById('brightness').value);
+  const vol = parseFloat(document.getElementById('volume').value);
+
+  const duration = 2.5 + (1 - decay) * 0.5; // longer buffer for higher decay
+  const buffer = ksBuffer(freq, duration, decay, brightness, hardness);
+
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+
+  const gain = ctx.createGain();
+  gain.gain.value = velocity * vol * 0.5;
+
+  src.connect(gain);
+  gain.connect(masterGain);
+  src.start();
+
+  // Clean up after playback
+  src.onended = () => { src.disconnect(); gain.disconnect(); };
+
+  return src;
+}
+
+// ─── String vibration animation ──────────────────────────────
+const stringAnimations = new Map(); // midi -> { startTime, freq, decay }
+
+function animateString(midi) {
+  stringAnimations.set(midi, {
+    startTime: performance.now(),
+    freq: midiToFreq(midi),
+  });
+}
+
+function drawStrings() {
+  const now = performance.now();
+  const cells = document.querySelectorAll('.string-cell');
+
+  cells.forEach(cell => {
+    const midi = parseInt(cell.dataset.midi);
+    const canvas = cell.querySelector('.string-canvas');
+    const cCtx = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
+
+    cCtx.clearRect(0, 0, w, h);
+
+    const anim = stringAnimations.get(midi);
+    if (!anim) {
+      // Draw rest string
+      cCtx.strokeStyle = '#2a2218';
+      cCtx.lineWidth = 1;
+      cCtx.beginPath();
+      cCtx.moveTo(4, h / 2);
+      cCtx.lineTo(w - 4, h / 2);
+      cCtx.stroke();
+      return;
+    }
+
+    const elapsed = (now - anim.startTime) / 1000;
+    const decayVal = parseFloat(document.getElementById('decay').value);
+    // Amplitude decays exponentially
+    const amplitude = Math.exp(-elapsed * (1 - decayVal) * 15) * (h / 2 - 4);
+
+    if (amplitude < 0.3) {
+      stringAnimations.delete(midi);
+      cCtx.strokeStyle = '#2a2218';
+      cCtx.lineWidth = 1;
+      cCtx.beginPath();
+      cCtx.moveTo(4, h / 2);
+      cCtx.lineTo(w - 4, h / 2);
+      cCtx.stroke();
+      return;
+    }
+
+    // Draw vibrating string
+    const freq = anim.freq;
+    const phase = elapsed * freq * 2 * Math.PI * 0.3; // visual freq is slowed down for visibility
+
+    // Color intensity based on amplitude
+    const intensity = Math.min(1, amplitude / (h / 4));
+    const r = Math.round(138 + intensity * 80);
+    const g = Math.round(106 + intensity * 60);
+    const b = Math.round(64 + intensity * 30);
+    cCtx.strokeStyle = `rgb(${r},${g},${b})`;
+    cCtx.lineWidth = 1.5;
+
+    cCtx.beginPath();
+    for (let x = 4; x <= w - 4; x++) {
+      const t = (x - 4) / (w - 8); // 0 to 1
+      // Standing wave with fixed endpoints
+      const envelope = Math.sin(Math.PI * t);
+      // Add a few harmonics for visual richness
+      const y = h / 2 + amplitude * envelope * (
+        Math.sin(phase + t * Math.PI) * 0.7 +
+        Math.sin(phase * 1.5 + t * Math.PI * 2) * 0.2 +
+        Math.sin(phase * 2.1 + t * Math.PI * 3) * 0.1
+      );
+      if (x === 4) cCtx.moveTo(x, y);
+      else cCtx.lineTo(x, y);
+    }
+    cCtx.stroke();
+
+    // Draw fixed endpoints
+    cCtx.fillStyle = '#4a3a28';
+    cCtx.beginPath(); cCtx.arc(4, h / 2, 2, 0, Math.PI * 2); cCtx.fill();
+    cCtx.beginPath(); cCtx.arc(w - 4, h / 2, 2, 0, Math.PI * 2); cCtx.fill();
+  });
+
+  requestAnimationFrame(drawStrings);
+}
+
+// ─── Build Grid ──────────────────────────────────────────────
+let currentScale = 'pentatonic';
+let currentNotes = [];
+const keyToIndex = {};
+
+function buildGrid() {
+  currentNotes = buildNotes(currentScale);
+  const grid = document.getElementById('string-grid');
+  grid.innerHTML = '';
+
+  // Clear key mappings
+  for (const k in keyToIndex) delete keyToIndex[k];
+
+  // Arrange: row 0 = lowest notes at bottom, but grid renders top-to-bottom
+  // So reverse: row 3 (top of grid) = highest notes
+  const cols = 4;
+  const rows = Math.ceil(currentNotes.length / cols);
+
+  for (let row = rows - 1; row >= 0; row--) {
+    for (let col = 0; col < cols; col++) {
+      const idx = row * cols + col;
+      if (idx >= currentNotes.length) {
+        // Empty cell
+        const empty = document.createElement('div');
+        empty.className = 'string-cell';
+        empty.style.visibility = 'hidden';
+        grid.appendChild(empty);
+        continue;
+      }
+
+      const midi = currentNotes[idx];
+      const cell = document.createElement('div');
+      cell.className = 'string-cell';
+      cell.dataset.midi = midi;
+      cell.dataset.index = idx;
+
+      // Canvas for string animation
+      const canvas = document.createElement('canvas');
+      canvas.className = 'string-canvas';
+      canvas.width = 200;
+      canvas.height = 32;
+      cell.appendChild(canvas);
+
+      // Note label
+      const label = document.createElement('div');
+      label.className = 'note-label';
+      label.textContent = midiToName(midi);
+      cell.appendChild(label);
+
+      // Keyboard hint
+      const keyRow = KEY_ROWS[row];
+      if (keyRow && keyRow[col]) {
+        const hint = document.createElement('div');
+        hint.className = 'key-hint';
+        hint.textContent = keyRow[col].toUpperCase();
+        cell.appendChild(hint);
+        keyToIndex[keyRow[col]] = idx;
+      }
+
+      // Click/touch handlers
+      cell.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        triggerNote(midi, cell);
+      });
+      cell.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        triggerNote(midi, cell);
+      }, { passive: false });
+
+      grid.appendChild(cell);
+    }
+  }
+
+  buildChords();
+}
+
+function triggerNote(midi, cell) {
+  pluck(midi);
+  animateString(midi);
+  if (cell) {
+    cell.classList.add('active');
+    setTimeout(() => cell.classList.remove('active'), 200);
+  }
+}
+
+// ─── Chords ──────────────────────────────────────────────────
+let chordTimeout;
+
+function buildChords() {
+  const container = document.getElementById('chords');
+  container.innerHTML = '';
+  const chords = CHORD_DEFS[currentScale] || [];
+
+  chords.forEach(chord => {
+    const btn = document.createElement('button');
+    btn.className = 'chord-btn';
+    btn.textContent = chord.name;
+    btn.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      playChord(chord);
+      btn.classList.add('active');
+      setTimeout(() => btn.classList.remove('active'), 300);
+    });
+    btn.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      playChord(chord);
+      btn.classList.add('active');
+      setTimeout(() => btn.classList.remove('active'), 300);
+    }, { passive: false });
+    container.appendChild(btn);
+  });
+}
+
+function playChord(chord) {
+  const display = document.getElementById('chord-name');
+  display.textContent = chord.name;
+  clearTimeout(chordTimeout);
+  chordTimeout = setTimeout(() => { display.innerHTML = '&nbsp;'; }, 2000);
+
+  // Strum: slight delay between each note
+  chord.midis.forEach((midi, i) => {
+    setTimeout(() => {
+      pluck(midi, 0.8);
+      animateString(midi);
+      // Highlight matching cells
+      const cells = document.querySelectorAll(`.string-cell[data-midi="${midi}"]`);
+      cells.forEach(c => {
+        c.classList.add('active');
+        setTimeout(() => c.classList.remove('active'), 300);
+      });
+    }, i * 40); // 40ms strum offset
+  });
+}
+
+// ─── Controls ────────────────────────────────────────────────
+document.getElementById('decay').addEventListener('input', function() {
+  document.getElementById('decayVal').textContent = parseFloat(this.value).toFixed(3);
+});
+document.getElementById('hardness').addEventListener('input', function() {
+  document.getElementById('hardnessVal').textContent = this.value + 'ms';
+});
+document.getElementById('brightness').addEventListener('input', function() {
+  document.getElementById('brightnessVal').textContent = parseFloat(this.value).toFixed(2);
+});
+document.getElementById('volume').addEventListener('input', function() {
+  document.getElementById('volumeVal').textContent = parseFloat(this.value).toFixed(2);
+  if (masterGain) masterGain.gain.value = parseFloat(this.value);
+});
+
+document.getElementById('scale-selector').addEventListener('change', function() {
+  currentScale = this.value;
+  stringAnimations.clear();
+  buildGrid();
+});
+
+document.getElementById('reverb-btn').addEventListener('click', function() {
+  ensureAudio();
+  reverbEnabled = !reverbEnabled;
+  this.textContent = reverbEnabled ? 'on' : 'off';
+  this.classList.toggle('on', reverbEnabled);
+  dryGain.gain.value = reverbEnabled ? 0.7 : 1.0;
+  wetGain.gain.value = reverbEnabled ? 0.5 : 0;
+});
+
+// ─── Keyboard ────────────────────────────────────────────────
+const heldKeys = new Set();
+
+document.addEventListener('keydown', (e) => {
+  if (e.repeat) return;
+  const key = e.key.toLowerCase();
+  if (heldKeys.has(key)) return;
+  heldKeys.add(key);
+
+  if (key in keyToIndex) {
+    e.preventDefault();
+    const idx = keyToIndex[key];
+    if (idx < currentNotes.length) {
+      const midi = currentNotes[idx];
+      triggerNote(midi, document.querySelector(`.string-cell[data-index="${idx}"]`));
+    }
+  }
+
+  // Number keys 5-9 for chord shortcuts
+  const chordKeys = { '5': 0, '6': 1, '7': 2, '8': 3, '9': 4 };
+  if (key in chordKeys) {
+    const chords = CHORD_DEFS[currentScale] || [];
+    const ci = chordKeys[key];
+    if (ci < chords.length) {
+      playChord(chords[ci]);
+      const btns = document.querySelectorAll('.chord-btn');
+      if (btns[ci]) {
+        btns[ci].classList.add('active');
+        setTimeout(() => btns[ci].classList.remove('active'), 300);
+      }
+    }
+  }
+});
+
+document.addEventListener('keyup', (e) => {
+  heldKeys.delete(e.key.toLowerCase());
+});
+
+// ─── Init ────────────────────────────────────────────────────
+buildGrid();
+requestAnimationFrame(drawStrings);
+</script>
+</body>
+</html>
