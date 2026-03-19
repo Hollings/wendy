@@ -49,7 +49,20 @@ if $RESTART_ONLY; then
     exit 0
 fi
 
-# Full deploy: rsync code then rebuild
+# Full deploy: backup, rsync, rebuild
+BACKUP_DIR="/srv/wendy-backups"
+TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+
+echo "==> Backing up database..."
+remote "
+    mkdir -p $BACKUP_DIR
+    docker run --rm -v wendy_data:/data -v $BACKUP_DIR:/backup alpine \
+        cp /data/shared/wendy.db /backup/wendy-${TIMESTAMP}.db
+    # Prune backups older than 7 days
+    find $BACKUP_DIR -name 'wendy-*.db' -mtime +7 -delete 2>/dev/null || true
+    echo \"Backup: wendy-${TIMESTAMP}.db (\$(du -h $BACKUP_DIR/wendy-${TIMESTAMP}.db | cut -f1))\"
+"
+
 echo "==> Uploading to $SERVER:$REMOTE_DIR..."
 rsync -az --delete \
     --exclude='.git' \
