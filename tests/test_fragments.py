@@ -219,7 +219,6 @@ def test_scan_fragments_includes_people_dir(tmp_path):
 
 def test_topic_sticky_per_fragment(tmp_path):
     """Per-fragment sticky overrides TOPIC_STICKY_TURNS (behavioral topics only)."""
-    from wendy.fragments import TOPIC_STICKY_TURNS
     (tmp_path / "topic_short.md").write_text(
         "---\ntype: topic\norder: 1\nkeywords: [rareword]\nsticky: 1\nbehavioral: true\n---\nShort sticky."
     )

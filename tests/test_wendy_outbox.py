@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 import pytest
-
 from bot.wendy_outbox import WendyOutbox
 
 

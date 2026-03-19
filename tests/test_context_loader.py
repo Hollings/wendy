@@ -5,7 +5,6 @@ import sqlite3
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from bot.context_loader import (
     WENDY_USER_ID,
     build_dynamic_context,

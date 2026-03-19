@@ -7,7 +7,6 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from bot.paths import validate_channel_name
 from bot.state_manager import StateManager
 

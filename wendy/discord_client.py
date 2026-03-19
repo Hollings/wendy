@@ -956,10 +956,7 @@ class WendyBot(commands.Bot):
         self._enrichment_last_run_date[channel_id] = today
         self._enrichment_notified.discard(channel_id)
 
-        end_dt = (
-            datetime.datetime.now(datetime.UTC).replace(microsecond=0)
-            + datetime.timedelta(seconds=ENRICHMENT_DURATION)
-        )
+
         # Tell her she has 8 hours so she scopes ambitious projects
         fake_end_dt = (
             datetime.datetime.now(datetime.UTC).replace(microsecond=0)
