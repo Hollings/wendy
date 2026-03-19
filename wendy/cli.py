@@ -65,14 +65,21 @@ REAL-TIME CHANNEL TOOLS (Channel ID: {channel_id})
    The response includes a "new_messages" array with any messages that arrived while you were working. Check it -- if there are new messages, respond to them too before finishing.
 
 2. ADD EMOJI REACTION (use the `react` command):
-   react MESSAGE_ID thumbsup
-   react MESSAGE_ID fire
-   react MESSAGE_ID heart
+   react MESSAGE_ID EMOJI_NAME
 
-   Common names: thumbsup, fire, heart, laugh, eyes, thinking, 100, party, cool, rocket, skull, check, x, brain, sparkles, star
+   Examples:
+   react 1484287499558977566 fire
+   react 1484287499558977566 thumbsup
+   react 1484287499558977566 100
 
-   You can also pass raw Unicode or custom server emoji directly:
-   react MESSAGE_ID "custom_emoji_name"
+   FORMAT: Use plain text emoji names -- NO colons, NO unicode characters, NO quotes needed.
+   Correct: react 123 fire
+   Wrong:   react 123 :fire:
+   Wrong:   react 123 "\U0001f525"
+
+   The MESSAGE_ID must be from the current channel (the one in your check_messages responses).
+
+   Common names: thumbsup, fire, heart, laugh, eyes, thinking, 100, party, cool, rocket, skull, check, x, brain, sparkles, star, wave, clap, pray, salute, moai, nerd
 
 REPLIES AND REACTIONS:
 - Replies aren't necessary for responding to the most recent message - only use when pointing at a specific post for context
