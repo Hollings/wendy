@@ -144,8 +144,9 @@ def test_extract_forked_session_id_from_system():
     assert extract_forked_session_id(events, "coding") == "sys-id"
 
 
-def test_extract_forked_session_id_none():
+def test_extract_forked_session_id_none(tmp_path, monkeypatch):
     events = [
         {"type": "assistant", "message": "hello"},
     ]
+    monkeypatch.setattr("wendy.cli.session_dir", lambda name: tmp_path / name)
     assert extract_forked_session_id(events, "coding") is None

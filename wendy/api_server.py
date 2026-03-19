@@ -376,12 +376,15 @@ async def handle_check_messages(request: web.Request) -> web.Response:
         # Rows come back DESC; reverse to chronological order.
         messages.reverse()
 
-        # Advance the watermark for real messages; clean up consumed synthetics.
+        # Separate real messages from synthetic context injections.
         synthetic_ids = [m["message_id"] for m in messages if m["message_id"] >= SYNTHETIC_ID_THRESHOLD]
+        context_messages = [m for m in messages if m["message_id"] >= SYNTHETIC_ID_THRESHOLD]
         real_messages = [m for m in messages if m["message_id"] < SYNTHETIC_ID_THRESHOLD]
         if real_messages:
             state_manager.update_last_seen(channel_id, max(m["message_id"] for m in real_messages))
         _delete_synthetic_messages(synthetic_ids)
+        # Replace mixed list with real-only; context delivered separately
+        messages = real_messages
 
     except Exception as e:
         _LOG.error("Error reading messages: %s", e)
@@ -392,7 +395,7 @@ async def handle_check_messages(request: web.Request) -> web.Response:
     except Exception as e:
         _LOG.error("Error reading notifications: %s", e)
 
-    return web.json_response({"messages": messages, "task_updates": task_updates})
+    return web.json_response({"messages": messages, "context": context_messages, "task_updates": task_updates})
 
 
 async def handle_emojis(request: web.Request) -> web.Response:
