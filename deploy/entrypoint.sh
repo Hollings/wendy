@@ -74,6 +74,7 @@ chown -R wendy:wendy /root/.claude/ 2>/dev/null || true
 chown -R wendy:wendy /data/wendy/channels/ 2>/dev/null || true
 chown -R wendy:wendy /data/wendy/shared/ 2>/dev/null || true
 chown -R wendy:wendy /data/wendy/tmp/ 2>/dev/null || true
+chown -R wendy:wendy /data/wendy/secrets/ 2>/dev/null || true
 chown -R wendy:wendy /data/wendy/claude_fragments/people/ 2>/dev/null || true
 
 # Read-only areas: fragments dir owned by root (except people/)
