@@ -536,7 +536,7 @@ async def _stream_cli_output(
             else:
                 msg = f"idle for {idle_timeout}s (total runtime {elapsed:.0f}s)"
             _LOG.error("CLI %s", msg)
-            raise TimeoutError(msg)
+            raise TimeoutError(msg) from None
 
         if not raw:  # EOF -- process closed stdout
             break

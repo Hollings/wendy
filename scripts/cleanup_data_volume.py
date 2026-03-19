@@ -9,7 +9,6 @@ Run inside the Docker container:
   docker exec wendy python3 /app/scripts/cleanup_data_volume.py
 """
 
-import os
 import re
 import shutil
 from pathlib import Path
@@ -292,7 +291,7 @@ def archive_wrong_log_fragment():
 
 def report():
     print(f"\n{'='*60}")
-    print(f"CLEANUP COMPLETE")
+    print("CLEANUP COMPLETE")
     print(f"  Files moved: {len(moved)}")
     print(f"  Files merged: {len(merged)}")
     if errors:

@@ -253,7 +253,7 @@ async def _allocate_port(game_name: str) -> int:
                 ports[game_name] = port
                 _save_ports(ports)
                 return port
-    raise HTTPException(status_code=503, detail="No available ports (max %d games)" % MAX_GAMES)
+    raise HTTPException(status_code=503, detail=f"No available ports (max {MAX_GAMES} games)")
 
 
 def _container_name(game_name: str) -> str:
