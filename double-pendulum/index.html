@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Double Pendulum Chaos</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #000;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  font-family: 'Courier New', monospace;
+}
+canvas { display: block; }
+#ui {
+  position: fixed;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+button, label, select {
+  background: rgba(0, 0, 0, 0.8);
+  color: #0af;
+  border: 1px solid #1a1a3a;
+  padding: 4px 10px;
+  font-family: inherit;
+  font-size: 9px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  outline: none;
+}
+button:hover, select:hover { border-color: #0af; }
+.row { display: flex; align-items: center; gap: 6px; }
+input[type=range] {
+  -webkit-appearance: none;
+  width: 70px; height: 1px;
+  background: #1a2a4a; outline: none;
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 8px; height: 8px;
+  border-radius: 50%; background: #0af; cursor: pointer;
+}
+#label {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  color: #1a1a35;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+}
+</style>
+</head>
+<body>
+<div id="label">double pendulum · chaos</div>
+<canvas id="c"></canvas>
+<div id="ui">
+  <select id="preset">
+    <option value="drop">straight drop</option>
+    <option value="side">side release</option>
+    <option value="spin">near spin</option>
+    <option value="wild">wild start</option>
+  </select>
+  <div class="row">
+    <label>count</label>
+    <input type="range" id="count" min="5" max="40" step="1" value="20">
+    <span id="cval" style="color:#0af;font-size:9px;min-width:16px">20</span>
+  </div>
+  <div class="row">
+    <label>trails</label>
+    <input type="range" id="trails" min="50" max="600" step="50" value="300">
+  </div>
+  <button id="reset">reset</button>
+  <button id="pause">pause</button>
+  <button id="ghost">hide arms</button>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W = canvas.width  = window.innerWidth;
+let H = canvas.height = window.innerHeight;
+
+window.addEventListener('resize', () => {
+  W = canvas.width  = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  L = Math.min(W, H) * 0.22;
+  init();
+});
+
+// Physics constants
+const g  = 9.81;
+const m1 = 1, m2 = 1;
+let L; // arm length (set on resize/init)
+
+// Pendulum state: [θ1, ω1, θ2, ω2]
+// Equations of motion (Lagrangian mechanics)
+function deriv(θ1, ω1, θ2, ω2) {
+  const Δ  = θ1 - θ2;
+  const sΔ = Math.sin(Δ), cΔ = Math.cos(Δ);
+  const s1 = Math.sin(θ1), s2 = Math.sin(θ2);
+  const den = 2*m1 + m2 - m2*Math.cos(2*Δ);
+
+  const α1 = (
+    -g*(2*m1+m2)*s1
+    - m2*g*Math.sin(θ1-2*θ2)
+    - 2*sΔ*m2*(ω2*ω2*L + ω1*ω1*L*cΔ)
+  ) / (L * den);
+
+  const α2 = (
+    2*sΔ*(
+      ω1*ω1*L*(m1+m2)
+      + g*(m1+m2)*Math.cos(θ1)
+      + ω2*ω2*L*m2*cΔ
+    )
+  ) / (L * den);
+
+  return [ω1, α1, ω2, α2];
+}
+
+function rk4(θ1, ω1, θ2, ω2, dt) {
+  const f = deriv;
+  const [a,b,c,d] = f(θ1,ω1,θ2,ω2);
+  const [e,ff,gg,h] = f(θ1+dt/2*a, ω1+dt/2*b, θ2+dt/2*c, ω2+dt/2*d);
+  const [i,j,k,l] = f(θ1+dt/2*e, ω1+dt/2*ff, θ2+dt/2*gg, ω2+dt/2*h);
+  const [m,n,o,p] = f(θ1+dt*i, ω1+dt*j, θ2+dt*k, ω2+dt*l);
+  return [
+    θ1 + dt/6*(a+2*e+2*i+m),
+    ω1 + dt/6*(b+2*ff+2*j+n),
+    θ2 + dt/6*(c+2*gg+2*k+o),
+    ω2 + dt/6*(d+2*h+2*l+p),
+  ];
+}
+
+// Pendulums
+let pends = [];
+let N = 20;
+let maxTrail = 300;
+let showArms = true;
+let paused = false;
+
+const PRESETS = {
+  drop:  { θ1: Math.PI * 0.95, θ2: Math.PI * 0.95 },
+  side:  { θ1: Math.PI * 0.5,  θ2: Math.PI * 0.3 },
+  spin:  { θ1: Math.PI * 1.1,  θ2: Math.PI * 1.2 },
+  wild:  { θ1: Math.PI * 0.75, θ2: Math.PI * 1.5 },
+};
+let preset = PRESETS.drop;
+
+function init() {
+  L = Math.min(W, H) * 0.22;
+  pends = [];
+  const spread = 0.00005;
+  for (let i = 0; i < N; i++) {
+    const t = N > 1 ? i / (N - 1) : 0;
+    pends.push({
+      θ1: preset.θ1 + i * spread,
+      ω1: 0,
+      θ2: preset.θ2 + i * spread,
+      ω2: 0,
+      trail: [],
+      color: `hsl(${(i / N) * 320 + 180}, 90%, 60%)`,
+    });
+  }
+}
+
+function tip(p) {
+  const cx = W / 2, cy = H * 0.38;
+  const x1 = cx + Math.sin(p.θ1) * L;
+  const y1 = cy + Math.cos(p.θ1) * L;  // note: cos for θ measured from down
+  const x2 = x1 + Math.sin(p.θ2) * L;
+  const y2 = y1 + Math.cos(p.θ2) * L;
+  return { cx, cy, x1, y1, x2, y2 };
+}
+
+const DT = 0.02;
+const STEPS = 3; // sub-steps per frame
+
+function loop() {
+  requestAnimationFrame(loop);
+  if (paused) return;
+
+  // Physics steps
+  for (let s = 0; s < STEPS; s++) {
+    for (const p of pends) {
+      [p.θ1, p.ω1, p.θ2, p.ω2] = rk4(p.θ1, p.ω1, p.θ2, p.ω2, DT);
+      const {x2, y2} = tip(p);
+      p.trail.push(x2, y2);
+      if (p.trail.length > maxTrail * 2) p.trail.splice(0, 2);
+    }
+  }
+
+  // Draw
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.fillRect(0, 0, W, H);
+
+  for (const p of pends) {
+    const trail = p.trail;
+    const len   = trail.length;
+    if (len < 4) continue;
+
+    // Draw trail
+    for (let i = 2; i < len; i += 2) {
+      const α = i / len;
+      ctx.globalAlpha = α * 0.85;
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = α * 1.5;
+      ctx.beginPath();
+      ctx.moveTo(trail[i-2], trail[i-1]);
+      ctx.lineTo(trail[i], trail[i+1]);
+      ctx.stroke();
+    }
+
+    // Draw arms
+    if (showArms) {
+      ctx.globalAlpha = 0.35;
+      const {cx, cy, x1, y1, x2, y2} = tip(p);
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy); ctx.lineTo(x1, y1);
+      ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+      ctx.stroke();
+
+      // Bobs
+      ctx.globalAlpha = 0.6;
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(x1, y1, 3, 0, Math.PI*2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(x2, y2, 3, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+
+  // Pivot dot
+  ctx.globalAlpha = 0.5;
+  ctx.fillStyle = '#444';
+  ctx.beginPath();
+  ctx.arc(W/2, H * 0.38, 3, 0, Math.PI*2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+}
+
+// Controls
+document.getElementById('preset').addEventListener('change', e => {
+  preset = PRESETS[e.target.value] || PRESETS.drop;
+  init();
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+});
+document.getElementById('count').addEventListener('input', e => {
+  N = parseInt(e.target.value);
+  document.getElementById('cval').textContent = N;
+  init();
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+});
+document.getElementById('trails').addEventListener('input', e => {
+  maxTrail = parseInt(e.target.value);
+});
+document.getElementById('reset').addEventListener('click', () => {
+  init();
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+});
+document.getElementById('pause').addEventListener('click', e => {
+  paused = !paused;
+  e.target.textContent = paused ? 'resume' : 'pause';
+});
+document.getElementById('ghost').addEventListener('click', e => {
+  showArms = !showArms;
+  e.target.textContent = showArms ? 'hide arms' : 'show arms';
+});
+
+// Init and run
+L = Math.min(W, H) * 0.22;
+ctx.fillStyle = '#000';
+ctx.fillRect(0, 0, W, H);
+init();
+loop();
+</script>
+</body>
+</html>

@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>j-function</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#05050c; overflow:hidden; font-family:monospace; color:#889; }
+canvas { display:block; cursor:crosshair; touch-action:none; }
+#info {
+  position:fixed; top:12px; left:14px;
+  font-size:11px; color:#556; line-height:1.8; pointer-events:none;
+}
+#info .val { color:#8899cc; }
+#tooltip {
+  position:fixed; bottom:14px; left:50%; transform:translateX(-50%);
+  font-size:11px; color:#445; letter-spacing:0.04em; text-align:center;
+  pointer-events:none; white-space:nowrap;
+}
+#toolbar {
+  position:fixed; top:12px; right:14px;
+  display:flex; flex-direction:column; gap:5px; align-items:flex-end;
+}
+button {
+  background:#0c0c16; border:1px solid #1a1a2e; color:#668; font:10px monospace;
+  padding:3px 8px; cursor:pointer; border-radius:2px; white-space:nowrap;
+}
+button:hover { border-color:#3344aa; color:#aabbff; }
+button.active { border-color:#3355bb; color:#aabbff; background:#12122a; }
+#legend {
+  position:fixed; bottom:50px; right:14px;
+  font-size:10px; color:#445; line-height:1.7; text-align:right;
+  pointer-events:none;
+}
+.math { font-style:italic; color:#667; }
+#progress {
+  position:fixed; top:0; left:0; height:2px; background:#3355aa;
+  transition: width 0.1s; pointer-events:none;
+}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="progress" style="width:0%"></div>
+
+<div id="info">
+  <div>j-invariant domain coloring</div>
+  <div>τ = <span class="val" id="tauval">0.000 + 1.000i</span></div>
+  <div>j(τ) = <span class="val" id="jval">—</span></div>
+</div>
+
+<div id="toolbar">
+  <button onclick="toggleOverlay()" id="btnOverlay" class="active">domain ∂</button>
+  <button onclick="toggleRings()" id="btnRings" class="active">mag rings</button>
+  <button onclick="setPreset(0)">fundamental</button>
+  <button onclick="setPreset(1)">wide view</button>
+  <button onclick="setPreset(2)">cusp zoom</button>
+  <button onclick="setPreset(3)">ρ corner</button>
+</div>
+
+<div id="legend">
+  <div class="math">j(τ) = E₄(τ)³ / Δ(τ)</div>
+  <div class="math">= 1/q + 744 + 196884q + ...</div>
+  <div style="margin-top:4px; color:#334">q = e<sup>2πiτ</sup></div>
+  <div style="margin-top:6px; color:#3a3a55; font-size:9px">
+    The coefficient 196884 = 196883 + 1<br>
+    connects to the Monster group<br>
+    via monstrous moonshine
+  </div>
+</div>
+
+<div id="tooltip">hue = arg j(τ) · ring brightness = log|j(τ)| · scroll to zoom · drag to pan</div>
+
+<script>
+// ======== Complex arithmetic (inlined for speed) ========
+
+// ======== Number theory: σ₃(n) ========
+const MAX_N = 60;
+const S3 = new Float64Array(MAX_N + 1);
+for (let n = 1; n <= MAX_N; n++) {
+  let s = 0;
+  for (let d = 1; d <= n; d++) if (n % d === 0) s += d * d * d;
+  S3[n] = s;
+}
+
+// ======== j-function ========
+const N_E4 = 50, N_DELTA = 25;
+
+function computeJ(tauRe, tauIm) {
+  const TWO_PI = 6.283185307179586;
+  const qArg = TWO_PI * tauRe;
+  const qMag = Math.exp(-TWO_PI * tauIm);
+  if (qMag > 0.95) return null;
+
+  const qr = qMag * Math.cos(qArg), qi = qMag * Math.sin(qArg);
+
+  // E4 = 1 + 240 * Σ σ₃(n)·qⁿ
+  let e4r = 1, e4i = 0;
+  let qnr = 1, qni = 0;
+  for (let n = 1; n <= N_E4; n++) {
+    const tr = qnr * qr - qni * qi;
+    const ti = qnr * qi + qni * qr;
+    qnr = tr; qni = ti;
+    const c = 240 * S3[n];
+    e4r += c * qnr;
+    e4i += c * qni;
+    if (qnr * qnr + qni * qni < 1e-28) break;
+  }
+
+  // Δ = q · Π(1-qⁿ)²⁴
+  let pr = 1, pi = 0;
+  qnr = 1; qni = 0;
+  for (let n = 1; n <= N_DELTA; n++) {
+    const tr = qnr * qr - qni * qi;
+    const ti = qnr * qi + qni * qr;
+    qnr = tr; qni = ti;
+    // f = 1 - q^n
+    let fr = 1 - qnr, fi = -qni;
+    // f^24 via squaring: f2=f^2, f4=f2^2, f8=f4^2, f16=f8^2, f24=f16*f8
+    let ar, ai;
+    // f2
+    ar = fr * fr - fi * fi; ai = 2 * fr * fi; fr = ar; fi = ai;
+    // f4
+    ar = fr * fr - fi * fi; ai = 2 * fr * fi; fr = ar; fi = ai;
+    // f8
+    ar = fr * fr - fi * fi; ai = 2 * fr * fi; fr = ar; fi = ai;
+    // save f8
+    const f8r = fr, f8i = fi;
+    // f16
+    ar = fr * fr - fi * fi; ai = 2 * fr * fi; fr = ar; fi = ai;
+    // f24 = f16 * f8
+    ar = fr * f8r - fi * f8i; ai = fr * f8i + fi * f8r;
+    // multiply into product
+    const nr = pr * ar - pi * ai;
+    const ni = pr * ai + pi * ar;
+    pr = nr; pi = ni;
+    if (qnr * qnr + qni * qni < 1e-28) break;
+  }
+  // delta = q * prod
+  const dr = qr * pr - qi * pi;
+  const di = qr * pi + qi * pr;
+
+  // E4^3
+  const e42r = e4r * e4r - e4i * e4i;
+  const e42i = 2 * e4r * e4i;
+  const e43r = e42r * e4r - e42i * e4i;
+  const e43i = e42r * e4i + e42i * e4r;
+
+  // j = E4^3 / Δ
+  const dd = dr * dr + di * di;
+  if (dd < 1e-300) return null;
+  return [(e43r * dr + e43i * di) / dd, (e43i * dr - e43r * di) / dd];
+}
+
+// ======== Domain coloring ========
+function colorForJ(jr, ji, showRings) {
+  const phase = Math.atan2(ji, jr);
+  const mag = Math.sqrt(jr * jr + ji * ji);
+  const hue = ((phase / Math.PI * 180) + 360) % 360;
+
+  let light = 0.5;
+  if (showRings && mag > 1e-10) {
+    const logMag = Math.log(mag);
+    light = 0.42 + 0.22 * Math.cos(logMag * 1.8);
+  }
+
+  // Darken near zeros
+  if (mag < 1) light *= 0.3 + 0.7 * Math.min(1, mag);
+
+  const sat = 0.78;
+  // HSL → RGB
+  const h6 = hue / 60;
+  const c = (1 - Math.abs(2 * light - 1)) * sat;
+  const x = c * (1 - Math.abs(h6 % 2 - 1));
+  const m = light - c / 2;
+  let r, g, b;
+  if (h6 < 1)      { r = c; g = x; b = 0; }
+  else if (h6 < 2) { r = x; g = c; b = 0; }
+  else if (h6 < 3) { r = 0; g = c; b = x; }
+  else if (h6 < 4) { r = 0; g = x; b = c; }
+  else if (h6 < 5) { r = x; g = 0; b = c; }
+  else             { r = c; g = 0; b = x; }
+  return [((r + m) * 255) | 0, ((g + m) * 255) | 0, ((b + m) * 255) | 0];
+}
+
+// ======== Canvas ========
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const progress = document.getElementById('progress');
+
+let viewCx = 0, viewCy = 1.15, viewW = 2.2;
+let showOverlay = true, showRings = true;
+let W, H;
+
+const presets = [
+  { cx: 0, cy: 1.15, w: 2.2 },
+  { cx: 0, cy: 2.5, w: 7 },
+  { cx: 0, cy: 0.15, w: 0.5 },
+  { cx: -0.5, cy: 0.866, w: 0.6 },
+];
+
+function setPreset(i) {
+  viewCx = presets[i].cx; viewCy = presets[i].cy; viewW = presets[i].w;
+  startRender();
+}
+function toggleOverlay() {
+  showOverlay = !showOverlay;
+  document.getElementById('btnOverlay').classList.toggle('active', showOverlay);
+  startRender();
+}
+function toggleRings() {
+  showRings = !showRings;
+  document.getElementById('btnRings').classList.toggle('active', showRings);
+  startRender();
+}
+
+// Render state
+let renderId = 0;
+let offCanvas, offCtx, imgData;
+
+function resize() {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W;
+  canvas.height = H;
+  startRender();
+}
+
+function startRender() {
+  renderId++;
+  const id = renderId;
+
+  // Pick resolution: scale down for interactive speed
+  const maxDim = Math.max(W, H);
+  let scale = 1;
+  if (maxDim > 1200) scale = 3;
+  else if (maxDim > 800) scale = 2;
+
+  const rw = Math.ceil(W / scale);
+  const rh = Math.ceil(H / scale);
+
+  if (!offCanvas || offCanvas.width !== rw || offCanvas.height !== rh) {
+    offCanvas = document.createElement('canvas');
+    offCanvas.width = rw;
+    offCanvas.height = rh;
+    offCtx = offCanvas.getContext('2d');
+  }
+  imgData = offCtx.createImageData(rw, rh);
+  const data = imgData.data;
+
+  const aspect = H / W;
+  const viewH = viewW * aspect;
+  const rings = showRings;
+
+  let row = 0;
+  const ROWS_PER_CHUNK = Math.max(1, Math.ceil(rh / 40));
+
+  function chunk() {
+    if (id !== renderId) return; // cancelled
+    const end = Math.min(row + ROWS_PER_CHUNK, rh);
+    for (let y = row; y < end; y++) {
+      const tauIm = viewCy + viewH / 2 - (y / rh) * viewH;
+      for (let x = 0; x < rw; x++) {
+        const idx = (y * rw + x) * 4;
+        if (tauIm <= 0.005) {
+          // Below real axis: dark
+          data[idx] = data[idx+1] = data[idx+2] = 0;
+          data[idx+3] = 255;
+          continue;
+        }
+        const tauRe = viewCx - viewW / 2 + (x / rw) * viewW;
+        const j = computeJ(tauRe, tauIm);
+        if (j) {
+          const [r, g, b] = colorForJ(j[0], j[1], rings);
+          data[idx] = r; data[idx+1] = g; data[idx+2] = b;
+        } else {
+          data[idx] = data[idx+1] = data[idx+2] = 0;
+        }
+        data[idx+3] = 255;
+      }
+    }
+    row = end;
+
+    // Progress
+    const pct = (row / rh * 100);
+    progress.style.width = pct + '%';
+
+    // Partial display
+    offCtx.putImageData(imgData, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(offCanvas, 0, 0, W, H);
+    if (showOverlay) drawOverlay();
+
+    if (row < rh) {
+      requestAnimationFrame(chunk);
+    } else {
+      progress.style.width = '0%';
+      // Do a high-res pass if we were at low res
+      if (scale > 1 && id === renderId) {
+        hiResRender(id);
+      }
+    }
+  }
+  requestAnimationFrame(chunk);
+}
+
+function hiResRender(id) {
+  // Full resolution pass
+  const rw = Math.ceil(W / 1.5);
+  const rh = Math.ceil(H / 1.5);
+  const hCanvas = document.createElement('canvas');
+  hCanvas.width = rw; hCanvas.height = rh;
+  const hCtx = hCanvas.getContext('2d');
+  const hImg = hCtx.createImageData(rw, rh);
+  const data = hImg.data;
+
+  const aspect = H / W;
+  const viewH = viewW * aspect;
+  const rings = showRings;
+  const ov = showOverlay;
+
+  let row = 0;
+  const ROWS = Math.max(2, Math.ceil(rh / 30));
+
+  function chunk() {
+    if (id !== renderId) return;
+    const end = Math.min(row + ROWS, rh);
+    for (let y = row; y < end; y++) {
+      const tauIm = viewCy + viewH / 2 - (y / rh) * viewH;
+      for (let x = 0; x < rw; x++) {
+        const idx = (y * rw + x) * 4;
+        if (tauIm <= 0.005) {
+          data[idx] = data[idx+1] = data[idx+2] = 0;
+          data[idx+3] = 255;
+          continue;
+        }
+        const tauRe = viewCx - viewW / 2 + (x / rw) * viewW;
+        const j = computeJ(tauRe, tauIm);
+        if (j) {
+          const [r, g, b] = colorForJ(j[0], j[1], rings);
+          data[idx] = r; data[idx+1] = g; data[idx+2] = b;
+        } else {
+          data[idx] = data[idx+1] = data[idx+2] = 0;
+        }
+        data[idx+3] = 255;
+      }
+    }
+    row = end;
+    if (row < rh) {
+      requestAnimationFrame(chunk);
+    } else {
+      hCtx.putImageData(hImg, 0, 0);
+      if (id === renderId) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(hCanvas, 0, 0, W, H);
+        if (ov) drawOverlay();
+      }
+    }
+  }
+  requestAnimationFrame(chunk);
+}
+
+// ======== Fundamental domain overlay ========
+function tauToScreen(re, im) {
+  const aspect = H / W;
+  const viewH = viewW * aspect;
+  return [
+    ((re - viewCx + viewW / 2) / viewW) * W,
+    ((viewCy + viewH / 2 - im) / viewH) * H
+  ];
+}
+
+function drawOverlay() {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([6, 4]);
+
+  const aspect = H / W;
+  const viewH = viewW * aspect;
+  const imMin = Math.max(0.01, viewCy - viewH / 2);
+  const imMax = viewCy + viewH / 2;
+
+  // Vertical: Re = -1/2
+  let [x1, y1] = tauToScreen(-0.5, imMin);
+  let [x2, y2] = tauToScreen(-0.5, imMax);
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+
+  // Vertical: Re = 1/2
+  [x1, y1] = tauToScreen(0.5, imMin);
+  [x2, y2] = tauToScreen(0.5, imMax);
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+
+  // Arc |τ| = 1 from angle π/3 to 2π/3
+  ctx.setLineDash([]);
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+  ctx.beginPath();
+  for (let i = 0; i <= 80; i++) {
+    const a = Math.PI / 3 + (i / 80) * (Math.PI / 3);
+    const [sx, sy] = tauToScreen(Math.cos(a), Math.sin(a));
+    if (i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+  }
+  ctx.stroke();
+
+  // Also draw additional copies of the fundamental domain for periodic structure
+  // Translate by ±1 in Re direction
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+  ctx.setLineDash([4, 6]);
+  for (const shift of [-1, 1]) {
+    [x1, y1] = tauToScreen(-0.5 + shift, imMin);
+    [x2, y2] = tauToScreen(-0.5 + shift, imMax);
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+
+    [x1, y1] = tauToScreen(0.5 + shift, imMin);
+    [x2, y2] = tauToScreen(0.5 + shift, imMax);
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    for (let i = 0; i <= 80; i++) {
+      const a = Math.PI / 3 + (i / 80) * (Math.PI / 3);
+      const [sx, sy] = tauToScreen(Math.cos(a) + shift, Math.sin(a));
+      if (i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+    }
+    ctx.stroke();
+    ctx.setLineDash([4, 6]);
+  }
+
+  // Also draw S transformation arcs: |τ ± n| = 1
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.setLineDash([]);
+  for (const shift of [-2, -1, 0, 1, 2]) {
+    if (shift === 0) continue; // already drawn main one
+    ctx.beginPath();
+    for (let i = 0; i <= 80; i++) {
+      const a = (i / 80) * Math.PI;
+      const re = Math.cos(a) + shift;
+      const im = Math.sin(a);
+      if (im < 0.01) continue;
+      const [sx, sy] = tauToScreen(re, im);
+      if (i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+    }
+    ctx.stroke();
+  }
+
+  // Special points
+  ctx.setLineDash([]);
+  ctx.fillStyle = 'rgba(200,220,255,0.5)';
+  const pts = [
+    [-0.5, Math.sqrt(3)/2, 'ρ'],
+    [0.5, Math.sqrt(3)/2, '-ρ̄'],
+    [0, 1, 'i'],
+  ];
+  for (const [re, im, label] of pts) {
+    const [sx, sy] = tauToScreen(re, im);
+    ctx.beginPath(); ctx.arc(sx, sy, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(200,210,255,0.45)';
+    ctx.font = '10px monospace';
+    ctx.fillText(label, sx + 6, sy - 5);
+    ctx.fillStyle = 'rgba(200,220,255,0.5)';
+  }
+
+  // Annotations at special points
+  ctx.font = '9px monospace';
+  ctx.fillStyle = 'rgba(170,190,230,0.3)';
+  {
+    const [sx, sy] = tauToScreen(0, 1);
+    ctx.fillText('j = 1728', sx + 6, sy + 14);
+  }
+  {
+    const [sx, sy] = tauToScreen(-0.5, Math.sqrt(3)/2);
+    ctx.fillText('j = 0', sx + 6, sy + 14);
+  }
+
+  // Cusp label
+  const topIm = Math.min(imMax * 0.93, viewCy + viewH * 0.4);
+  if (topIm > 1.5) {
+    const [cx, cy] = tauToScreen(0, topIm);
+    ctx.fillStyle = 'rgba(200,210,255,0.2)';
+    ctx.font = '9px monospace';
+    ctx.fillText('↑ i∞ (pole, j→∞)', cx + 4, cy);
+  }
+
+  ctx.restore();
+}
+
+// ======== Interaction ========
+let dragging = false, dragX, dragY, dragCx, dragCy;
+
+canvas.addEventListener('mousedown', e => {
+  dragging = true;
+  dragX = e.clientX; dragY = e.clientY;
+  dragCx = viewCx; dragCy = viewCy;
+});
+
+window.addEventListener('mousemove', e => {
+  const aspect = H / W;
+  const viewH = viewW * aspect;
+  const tauRe = viewCx - viewW / 2 + (e.clientX / W) * viewW;
+  const tauIm = viewCy + viewH / 2 - (e.clientY / H) * viewH;
+
+  document.getElementById('tauval').textContent =
+    `${tauRe.toFixed(4)} ${tauIm >= 0 ? '+' : '−'} ${Math.abs(tauIm).toFixed(4)}i`;
+
+  if (tauIm > 0.005) {
+    const j = computeJ(tauRe, tauIm);
+    if (j) {
+      const mag = Math.sqrt(j[0]*j[0]+j[1]*j[1]);
+      if (mag > 1e6) {
+        document.getElementById('jval').textContent = `|j| ≈ ${mag.toExponential(2)}`;
+      } else if (mag < 0.01) {
+        document.getElementById('jval').textContent = `≈ 0`;
+      } else {
+        document.getElementById('jval').textContent =
+          `${j[0].toFixed(1)} ${j[1] >= 0 ? '+' : '−'} ${Math.abs(j[1]).toFixed(1)}i`;
+      }
+    } else {
+      document.getElementById('jval').textContent = '(divergent)';
+    }
+  } else {
+    document.getElementById('jval').textContent = '—';
+  }
+
+  if (dragging) {
+    const dx = (e.clientX - dragX) / W * viewW;
+    const dy = (e.clientY - dragY) / H * (viewW * aspect);
+    viewCx = dragCx - dx;
+    viewCy = dragCy + dy;
+    startRender();
+  }
+});
+
+window.addEventListener('mouseup', () => { dragging = false; });
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const aspect = H / W;
+  const viewH = viewW * aspect;
+  const mx = viewCx - viewW / 2 + (e.clientX / W) * viewW;
+  const my = viewCy + viewH / 2 - (e.clientY / H) * viewH;
+  const factor = e.deltaY > 0 ? 1.25 : 0.8;
+  viewW *= factor;
+  viewCx = mx - (mx - viewCx) * factor;
+  viewCy = my - (my - viewCy) * factor;
+  startRender();
+}, { passive: false });
+
+// Touch
+let lastTouchDist = 0;
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (e.touches.length === 1) {
+    dragging = true;
+    dragX = e.touches[0].clientX; dragY = e.touches[0].clientY;
+    dragCx = viewCx; dragCy = viewCy;
+  } else if (e.touches.length === 2) {
+    const dx = e.touches[1].clientX - e.touches[0].clientX;
+    const dy = e.touches[1].clientY - e.touches[0].clientY;
+    lastTouchDist = Math.sqrt(dx*dx + dy*dy);
+  }
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const aspect = H / W;
+  if (e.touches.length === 1 && dragging) {
+    const dx = (e.touches[0].clientX - dragX) / W * viewW;
+    const dy = (e.touches[0].clientY - dragY) / H * (viewW * aspect);
+    viewCx = dragCx - dx;
+    viewCy = dragCy + dy;
+    startRender();
+  } else if (e.touches.length === 2) {
+    const dx = e.touches[1].clientX - e.touches[0].clientX;
+    const dy = e.touches[1].clientY - e.touches[0].clientY;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    if (lastTouchDist > 0) viewW *= lastTouchDist / dist;
+    lastTouchDist = dist;
+    startRender();
+  }
+}, { passive: false });
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  dragging = false; lastTouchDist = 0;
+}, { passive: false });
+
+// ======== Init ========
+window.addEventListener('resize', resize);
+resize();
+</script>
+</body>
+</html>
