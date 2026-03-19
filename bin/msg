@@ -62,11 +62,15 @@ def main():
     try:
         resp = urllib.request.urlopen(req)
         result = json.loads(resp.read().decode())
-        if result.get("new_messages"):
-            print(json.dumps(result, indent=2))
-        elif result.get("error"):
+        if result.get("error"):
             print(f"Error: {result['error']}", file=sys.stderr)
             sys.exit(1)
+        # Echo back what Discord actually delivered
+        delivered = result.get("content", "")
+        if delivered:
+            print(f"Sent (id={result.get('message_id', '?')}): {delivered}")
+        if result.get("new_messages"):
+            print(json.dumps({"new_messages": result["new_messages"]}, indent=2))
     except urllib.error.HTTPError as e:
         error_body = e.read().decode()
         try:

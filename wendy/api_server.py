@@ -205,7 +205,10 @@ async def _execute_batch_actions(
                 return web.json_response({"error": f"Action {i}: {err}"}, status=400)
             sent_msg = await channel.send(**kwargs)
             _save_bot_message(sent_msg, channel_id)
-            results.append({"action": i, "type": "send_message", "success": True})
+            results.append({
+                "action": i, "type": "send_message", "success": True,
+                "message_id": sent_msg.id, "content": sent_msg.content or "",
+            })
 
         elif action_type == "add_reaction":
             msg_id = action.get("message_id")
@@ -283,7 +286,13 @@ async def handle_send_message(request: web.Request) -> web.Response:
     sent_msg = await channel.send(**kwargs)
     _save_bot_message(sent_msg, channel_id)
     new_messages = check_for_new_messages(channel_id)
-    return web.json_response({"success": True, "message": "Message sent", "new_messages": new_messages})
+    return web.json_response({
+        "success": True,
+        "message": "Message sent",
+        "message_id": sent_msg.id,
+        "content": sent_msg.content or "",
+        "new_messages": new_messages,
+    })
 
 
 def _delete_synthetic_messages(synthetic_ids: list[int]) -> None:
