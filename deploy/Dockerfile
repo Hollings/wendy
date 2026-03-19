@@ -6,7 +6,9 @@ WORKDIR /app
 # System dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2 libpangocairo-1.0-0 fonts-dejavu-core \
-    curl wget git tmux jq vim-tiny less unzip zip tar gzip ffmpeg iputils-ping openssh-client rsync p7zip-full \
+    curl wget git tmux jq vim-tiny less ffmpeg \
+    unzip zip tar gzip p7zip-full \
+    iputils-ping openssh-client rsync \
     sqlite3 imagemagick \
     build-essential \
     libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
