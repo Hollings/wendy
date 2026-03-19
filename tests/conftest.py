@@ -16,7 +16,6 @@ import wendy.state  # noqa: E402
 sys.modules.setdefault("bot", wendy)
 sys.modules.setdefault("bot.paths", wendy.paths)
 sys.modules.setdefault("bot.state_manager", wendy.state)
-sys.modules.setdefault("bot.fragments", wendy.fragments)
 
 # Test files that import modules removed during the bot→wendy rename.
 # Skip them at collection time rather than erroring.
