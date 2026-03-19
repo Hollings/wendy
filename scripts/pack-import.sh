@@ -3,7 +3,7 @@
 #
 # Usage: ./scripts/pack-import.sh [pack] [server]
 #   pack    Local pack file (default: personal-pack.tar.gz)
-#   server  SSH target (default: ubuntu@100.120.250.100)
+#   server  SSH target (default: $DEPLOY_HOST)
 #
 # Extracts into /data/wendy/ inside the wendy container:
 #   claude_fragments/people/   -> /data/wendy/claude_fragments/people/
@@ -13,7 +13,7 @@
 set -euo pipefail
 
 PACK="${1:-personal-pack.tar.gz}"
-SERVER="${2:-ubuntu@100.120.250.100}"
+SERVER="${2:-${DEPLOY_HOST:?Set DEPLOY_HOST or pass server as second arg}}"
 CONTAINER="wendy"
 REMOTE_TMP="/tmp/wendy-pack.tar.gz"
 
@@ -37,4 +37,4 @@ ssh "$SERVER" "
 
 echo "Import complete."
 echo "Restart wendy to pick up new fragments:"
-echo "  ssh $SERVER 'cd /srv/wendy-v2/deploy && docker compose restart wendy'"
+echo "  ./deploy.sh --restart-only"

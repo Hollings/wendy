@@ -155,9 +155,9 @@ Wendy is designed to run on a Linux server (tested on Orange Pi 5) via Docker Co
 ./deploy.sh --logs         # Tail production logs
 ```
 
-The script rsyncs the repo to the server and runs `docker compose up -d --build`. On the server, code lives at `/srv/wendy-v2/`.
+The script rsyncs the repo to `$DEPLOY_HOST` and runs `docker compose up -d --build`. Set `DEPLOY_HOST` (e.g. `export DEPLOY_HOST=user@your-server`).
 
-Production secrets live at `/srv/secrets/wendy/bot.env` on the server (never overwritten by deploys).
+Production secrets live in an `env_file` directory on the server (never overwritten by deploys).
 
 ### Docker volumes
 

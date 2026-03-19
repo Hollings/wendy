@@ -2,7 +2,7 @@
 # Export personal pack from server runtime volume.
 #
 # Usage: ./scripts/pack-export.sh [server] [output]
-#   server  SSH target (default: ubuntu@100.120.250.100)
+#   server  SSH target (default: $DEPLOY_HOST)
 #   output  Local output path (default: personal-pack.tar.gz)
 #
 # Personal pack contents:
@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-SERVER="${1:-ubuntu@100.120.250.100}"
+SERVER="${1:-${DEPLOY_HOST:?Set DEPLOY_HOST or pass server as first arg}}"
 OUTPUT="${2:-personal-pack.tar.gz}"
 CONTAINER="wendy"
 REMOTE_TMP="/tmp/wendy-pack.tar.gz"

@@ -29,7 +29,7 @@ There are several files named `CLAUDE.md` or similar in this project. They serve
 Configuration lives in five tiers, ordered from most sensitive to most ephemeral:
 
 ### Tier 1: Secrets
-**Location:** `/srv/secrets/wendy/*.env` on Orange Pi (mounted read-only at `/secrets/`)
+**Location:** Server env_file directory (mounted read-only at `/secrets/`)
 
 | File | Contents |
 |------|----------|
@@ -158,14 +158,14 @@ bot/wendy_outbox.py   (imports: paths, state_manager)
 
 ### Adding a new Discord channel
 
-1. Add channel config to `WENDY_CHANNEL_CONFIG` in `/srv/secrets/wendy/bot.env` on the Orange Pi
+1. Add channel config to `WENDY_CHANNEL_CONFIG` in `bot.env` on the server
 2. Choose `mode` (`"chat"` or `"full"`) and optionally `model` and `beads_enabled`
 3. Restart the bot service -- `bot/paths.py:ensure_channel_dirs()` creates the workspace automatically
 
 ### Adding a new environment variable
 
 1. Decide which tier it belongs to (see Section 3)
-2. If it's a secret: add to the appropriate `.env` file in `/srv/secrets/wendy/`
+2. If it's a secret: add to the appropriate `.env` file on the server
 3. If it's config: add to `docker-compose.yml` environment section
 4. Document it in `CLAUDE.md` under "Environment Variables"
 5. Add a sensible default in the code (`os.environ.get("VAR", "default")`)

@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-ORANGE_PI="ubuntu@100.120.250.100"
+ORANGE_PI="${DEPLOY_HOST:?Set DEPLOY_HOST (e.g. export DEPLOY_HOST=user@your-server)}"
 REPO_URL="https://github.com/Hollings/wendy.git"
 
 echo "=== Wendy Dev Staging Setup ==="
@@ -21,14 +21,14 @@ ssh "$ORANGE_PI" "
 "
 
 # Step 2: Clone deploy repo
-echo "[2/5] Cloning deploy repo to /srv/wendy-bot-dev/..."
+echo "[2/5] Cloning deploy repo to /srv/wendy-v2-dev/..."
 ssh "$ORANGE_PI" "
-    if [ -d /srv/wendy-bot-dev ]; then
+    if [ -d /srv/wendy-v2-dev ]; then
         echo 'Deploy clone already exists, pulling latest...'
-        cd /srv/wendy-bot-dev && git pull origin main --ff-only
+        cd /srv/wendy-v2-dev && git pull origin main --ff-only
     else
-        sudo git clone $REPO_URL /srv/wendy-bot-dev
-        sudo chown -R ubuntu:ubuntu /srv/wendy-bot-dev
+        sudo git clone $REPO_URL /srv/wendy-v2-dev
+        sudo chown -R ubuntu:ubuntu /srv/wendy-v2-dev
     fi
 "
 
@@ -92,8 +92,8 @@ echo "=== Setup Complete ==="
 echo ""
 echo "Next steps:"
 echo "  1. Create a new Discord bot at https://discord.com/developers/applications"
-echo "  2. Edit /srv/secrets/wendy/dev-bot.env on Orange Pi with the bot token and channel config"
-echo "  3. Edit /srv/secrets/wendy/dev-sites.env if needed"
-echo "  4. Add WENDY_DEV_CHANNEL_ID to /srv/secrets/wendy/bot.env (prod bot needs this)"
-echo "  5. Deploy prod bot: tools/deploy wendy-bot"
+echo "  2. Edit dev-bot.env on server with the bot token and channel config"
+echo "  3. Edit dev-sites.env if needed"
+echo "  4. Add WENDY_DEV_CHANNEL_ID to bot.env (prod bot needs this)"
+echo "  5. Deploy: ./deploy.sh"
 echo "  6. Run !deploy main in the dev channel to start the dev stack"

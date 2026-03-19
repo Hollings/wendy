@@ -212,23 +212,9 @@ Active hooks:
 
 ## Server Access
 
-See `config/docs/infrastructure.md` for full details (Lightsail VPS, Caddy, SSH keys).
+See `config/docs/infrastructure.md` for architecture details. Server IPs and SSH credentials are environment-specific -- set `DEPLOY_HOST` for deploy scripts.
 
-Orange Pi (Docker services):
-
-```bash
-ssh ubuntu@100.120.250.100
-```
-
-Lightsail VPS (Caddy/SSL — wendy.monster routing):
-
-```bash
-ssh -i ~/.ssh/lightsail-west-2.pem ec2-user@44.255.209.109
-sudo vi /etc/caddy/Caddyfile
-sudo systemctl reload caddy
-```
-
-Secrets live at `/srv/secrets/wendy/` (never overwritten by deploys):
+Secrets live on the server in an `env_file` directory (mounted read-only, never overwritten by deploys):
 
 | File | Contents |
 |------|----------|
@@ -249,7 +235,7 @@ A local copy with actual values is in `.env` (gitignored). See `.env.example` fo
 ./deploy.sh --logs         # Tail production logs
 ```
 
-The script rsyncs the repo to the server and runs `docker compose up -d --build`. On the server, code lives at `/srv/wendy-v2/`.
+The script rsyncs the repo to `$DEPLOY_HOST` and runs `docker compose up -d --build`.
 
 ---
 
@@ -293,7 +279,7 @@ Note: `/tmp/wendy-games-dev` is not persistent across reboots. For a permanent d
 
 ## Adding a Discord Channel
 
-Edit `WENDY_CHANNEL_CONFIG` in `/srv/secrets/wendy/bot.env`, then restart.
+Edit `WENDY_CHANNEL_CONFIG` in `bot.env` on the server, then restart.
 
 ```json
 [
@@ -361,7 +347,7 @@ docker exec wendy ls -lt /root/.claude/projects/-data-wendy-channels-coding/ | h
 | `wendy_data` | `/data/wendy` | All persistent bot data (channels, fragments, DB, stream log) |
 | `claude_config` | `/root/.claude` | Claude CLI session files |
 | `wendy-sites_sites_data` | `/data/sites` | Deployed static sites |
-| bind: `/srv/wendy-games/data` | `/data/games` | Deployed game server files |
+| bind: `HOST_GAMES_DIR` | `/data/games` | Deployed game server files |
 
 `wendy_data` is shared between `wendy` and `wendy-web` — both read/write the same SQLite DB.
 
@@ -404,7 +390,7 @@ docker exec wendy ls -lt /root/.claude/projects/-data-wendy-channels-coding/ | h
 | `WENDY_DB_PATH` | SQLite path (shared with wendy) | `/data/wendy/shared/wendy.db` |
 | `SITES_DIR` | Static sites directory | `/data/sites` |
 | `GAMES_DIR` | Game files directory | `/data/games` |
-| `HOST_GAMES_DIR` | Host path for game volume mounts | `/srv/wendy-games/data` |
+| `HOST_GAMES_DIR` | Host path for game volume mounts | (set in compose) |
 | `BASE_PORT` | First port for game containers | `8921` |
 | `MAX_GAMES` | Max simultaneous games | `20` |
 | `DOCKER_NETWORK` | Network game containers join | `wendy_web` |

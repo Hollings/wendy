@@ -7,7 +7,7 @@ if [ -f /app/config/claude-sync/setup-hooks.sh ]; then
 fi
 
 # Allow git operations on bind-mounted repos
-git config --global --add safe.directory /srv/wendy-bot-dev
+git config --global --add safe.directory /srv/wendy-v2
 git config --global --add safe.directory /app
 
 # Ensure Claude CLI onboarding is marked complete for both users.
@@ -39,7 +39,7 @@ fi
 
 # Git safe directories for wendy user
 HOME=/home/wendy git config --global --add safe.directory /app
-HOME=/home/wendy git config --global --add safe.directory /srv/wendy-bot-dev
+HOME=/home/wendy git config --global --add safe.directory /srv/wendy-v2
 chown wendy:wendy /home/wendy/.gitconfig 2>/dev/null || true
 
 # ---------------------------------------------------------------------------

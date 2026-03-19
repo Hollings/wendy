@@ -11,7 +11,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SERVER="${DEPLOY_HOST:-ubuntu@100.120.250.100}"
+SERVER="${DEPLOY_HOST:?Set DEPLOY_HOST (e.g. export DEPLOY_HOST=user@your-server)}"
 REMOTE_DIR="/srv/wendy-v2"
 COMPOSE="docker compose -f $REMOTE_DIR/deploy/docker-compose.yml"
 
