@@ -146,6 +146,12 @@ def main():
         if not result.get("success"):
             print(json.dumps(result, indent=2), file=sys.stderr)
             sys.exit(1)
+        # Check per-action results for errors
+        for r in result.get("results", []):
+            if r.get("error"):
+                print(f"Error: {r['error']}", file=sys.stderr)
+                sys.exit(1)
+        print(f"Reacted {emoji_name} to {message_id}")
     except urllib.error.HTTPError as e:
         print(f"Error ({e.code}): {e.read().decode()}", file=sys.stderr)
         sys.exit(1)
