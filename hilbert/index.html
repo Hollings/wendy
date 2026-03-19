@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Space-Filling Curves</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #080810;
+  color: #bbb;
+  font-family: monospace;
+  overflow: hidden;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+#top {
+  padding: 7px 14px;
+  background: #0c0c18;
+  border-bottom: 1px solid #1a1a30;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+h1 { font-size: 12px; color: #556; letter-spacing: 2px; text-transform: uppercase; }
+button {
+  background: #12121f;
+  border: 1px solid #222;
+  color: #889;
+  padding: 3px 10px;
+  font-family: monospace;
+  font-size: 10px;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: background 0.1s;
+}
+button:hover { background: #1e1e35; color: #bbd; }
+button.active { background: #181830; border-color: #449; color: #8af; }
+label { font-size: 10px; color: #556; }
+input[type=range] { width: 70px; accent-color: #66c; }
+select {
+  background: #12121f;
+  border: 1px solid #222;
+  color: #889;
+  padding: 3px 8px;
+  font-family: monospace;
+  font-size: 10px;
+  outline: none;
+}
+#stat { font-size: 10px; color: #445; margin-left: auto; }
+#canvas-wrap { flex: 1; position: relative; }
+canvas { width: 100%; height: 100%; display: block; }
+#hint { position: absolute; bottom: 8px; left: 12px; font-size: 10px; color: #223; }
+</style>
+</head>
+<body>
+<div id="top">
+  <h1>Space-Filling Curves</h1>
+  <select id="curveType" onchange="rebuild()">
+    <option value="hilbert">Hilbert</option>
+    <option value="peano">Peano</option>
+    <option value="moore">Moore</option>
+    <option value="gosper">Gosper (flowsnake)</option>
+  </select>
+  <label>Order <input type="range" id="orderSlider" min="1" max="8" step="1" value="5" oninput="onOrderChange()"> <span id="orderVal">5</span></label>
+  <button id="animBtn" onclick="toggleAnim()">Animate</button>
+  <button id="colorBtn" onclick="nextColorMode()" class="active">Rainbow</button>
+  <button onclick="resetView()">Reset view</button>
+  <div id="stat"></div>
+</div>
+<div id="canvas-wrap">
+  <canvas id="c"></canvas>
+  <div id="hint">scroll to zoom · drag to pan</div>
+</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const wrap = document.getElementById('canvas-wrap');
+let W, H;
+
+// Camera
+let camX = 0, camY = 0, camZ = 1;
+
+// Curve state
+let points = [];
+let order = 5;
+let curveType = 'hilbert';
+let colorMode = 0; // 0=rainbow, 1=heatmap, 2=monochrome, 3=depth
+const colorModes = ['Rainbow', 'Fire', 'Cyan', 'White'];
+let animating = false;
+let animIdx = 0;
+let animFrame = 0;
+
+// ---- Hilbert curve ----
+// Using L-system / recursion. Returns array of [x,y] in unit grid [0, 2^n - 1]
+function hilbert(n) {
+  const pts = [];
+  function step(x, y, ax, ay, bx, by, depth) {
+    if (depth === 0) { pts.push([x + (ax + bx) / 2, y + (ay + by) / 2]); return; }
+    step(x,            y,            ay/2, ax/2,  by/2, bx/2, depth-1);
+    step(x+ax/2,       y+ay/2,       ax/2, ay/2,  bx/2, by/2, depth-1);
+    step(x+ax/2+bx/2,  y+ay/2+by/2,  ax/2, ay/2,  bx/2, by/2, depth-1);
+    step(x+ax+bx/2,    y+ay+by/2,   -ay/2,-ax/2, -by/2,-bx/2, depth-1);
+  }
+  const size = Math.pow(2, n);
+  step(0, 0, size, 0, 0, size, n);
+  return pts;
+}
+
+// Moore curve (variant of Hilbert, closed loop)
+function moore(n) {
+  // Moore = 4 rotated Hilbert curves tiled
+  function hilbertPts(n) {
+    const pts = [];
+    function h(x, y, xi, xj, yi, yj, n) {
+      if (n <= 0) { pts.push([x + (xi + yi) / 2, y + (xj + yj) / 2]); return; }
+      h(x,         y,         yi/2,yj/2, xi/2,xj/2, n-1);
+      h(x+xi/2,    y+xj/2,    xi/2,xj/2, yi/2,yj/2, n-1);
+      h(x+xi/2+yi/2,y+xj/2+yj/2, xi/2,xj/2, yi/2,yj/2, n-1);
+      h(x+xi+yi/2, y+xj+yj/2,-yi/2,-yj/2,-xi/2,-xj/2,n-1);
+    }
+    const s = Math.pow(2, n);
+    h(0,0,s,0,0,s,n);
+    return pts;
+  }
+  // Tile 4 copies
+  const s = Math.pow(2, n);
+  const q = hilbertPts(n - 1);
+  const result = [];
+  // Top-left: rotate 90 CCW
+  for (const [x,y] of q) result.push([y, s - 1 - x]);
+  // Top-right: identity
+  for (const [x,y] of q) result.push([x + s, y]);
+  // Bottom-right: rotate 90 CW
+  for (const [x,y] of q.slice().reverse()) result.push([s + y, s + x]);
+  // Bottom-left: rotate 180
+  for (const [x,y] of q.slice().reverse()) result.push([s - 1 - x, s + y]);
+  return result;
+}
+
+// Peano curve (3^n grid)
+function peano(n) {
+  const pts = [];
+  function step(x, y, dx, dy, depth) {
+    if (depth === 0) { pts.push([x, y]); return; }
+    const s = Math.pow(3, depth - 1);
+    // 9 sub-squares in snake order
+    const pattern = [
+      [0,0,1,1],[0,1,1,0],[0,2,1,1],
+      [1,2,0,1],[1,1,0,0],[1,0,0,1],
+      [2,0,1,1],[2,1,1,0],[2,2,1,1]
+    ];
+    for (const [row, col, flipX, flipY] of pattern) {
+      const nx = x + (flipX ? (2 - col) : col) * dx * s;
+      const ny = y + (flipY ? (2 - row) : row) * dy * s;
+      step(nx, ny, flipX ? -dx : dx, flipY ? -dy : dy, depth - 1);
+    }
+  }
+  step(0, 0, 1, 1, n);
+  return pts;
+}
+
+// Gosper curve (flowsnake) via L-system
+function gosper(n) {
+  // L-system: A → A-B--B+A++AA+B-, B → +A-BB--B-A++A+B
+  // angle: 60 degrees
+  let s = 'A';
+  for (let i = 0; i < n; i++) {
+    let next = '';
+    for (const c of s) {
+      if (c === 'A') next += 'A-B--B+A++AA+B-';
+      else if (c === 'B') next += '+A-BB--B-A++A+B';
+      else next += c;
+    }
+    s = next;
+  }
+  // Render
+  const pts = [[0, 0]];
+  let angle = 0;
+  const step = 1;
+  const da = Math.PI / 3;
+  let cx = 0, cy = 0;
+  for (const c of s) {
+    if (c === 'A' || c === 'B') {
+      cx += Math.cos(angle) * step;
+      cy += Math.sin(angle) * step;
+      pts.push([cx, cy]);
+    } else if (c === '+') angle += da;
+    else if (c === '-') angle -= da;
+  }
+  return pts;
+}
+
+function rebuild() {
+  curveType = document.getElementById('curveType').value;
+  order = parseInt(document.getElementById('orderSlider').value);
+
+  // Cap order for performance
+  const maxOrders = { hilbert: 8, moore: 7, peano: 6, gosper: 5 };
+  const maxO = maxOrders[curveType] || 7;
+  if (order > maxO) {
+    order = maxO;
+    document.getElementById('orderSlider').value = maxO;
+    document.getElementById('orderVal').textContent = maxO;
+  }
+
+  if (curveType === 'hilbert') points = hilbert(order);
+  else if (curveType === 'moore') points = moore(Math.max(2, order));
+  else if (curveType === 'peano') points = peano(order);
+  else if (curveType === 'gosper') points = gosper(order);
+
+  animIdx = points.length;
+  document.getElementById('stat').textContent = `${points.length.toLocaleString()} points`;
+  fitView();
+  draw();
+}
+
+function fitView() {
+  if (!points.length) return;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of points) {
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+  }
+  const pw = maxX - minX, ph = maxY - minY;
+  const pad = 40;
+  const scaleX = (W - pad * 2) / (pw || 1);
+  const scaleY = (H - pad * 2) / (ph || 1);
+  camZ = Math.min(scaleX, scaleY);
+  camX = W / 2 - (minX + pw / 2) * camZ;
+  camY = H / 2 - (minY + ph / 2) * camZ;
+}
+
+function getColor(i, total) {
+  const t = i / (total - 1);
+  if (colorMode === 0) { // rainbow
+    const h = t * 300 + 200;
+    return `hsl(${h % 360}, 80%, 60%)`;
+  } else if (colorMode === 1) { // fire
+    const r = Math.round(255 * Math.min(1, t * 2));
+    const g = Math.round(255 * Math.max(0, t * 2 - 1));
+    return `rgb(${r},${g},0)`;
+  } else if (colorMode === 2) { // cyan-white
+    const v = Math.round(100 + 155 * t);
+    return `rgb(${Math.round(v * 0.7)},${v},${v})`;
+  } else { // white
+    const v = Math.round(80 + 175 * t);
+    return `rgb(${v},${v},${v})`;
+  }
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#080810';
+  ctx.fillRect(0, 0, W, H);
+  if (!points.length) return;
+
+  ctx.save();
+  ctx.translate(camX, camY);
+  ctx.scale(camZ, camZ);
+
+  const drawCount = animating ? animIdx : points.length;
+  const lw = Math.max(0.3, Math.min(2, 2 / camZ));
+
+  ctx.lineWidth = lw;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+
+  // Draw in segments for color gradient
+  const segSize = Math.max(1, Math.floor(drawCount / 500));
+  for (let i = 1; i < drawCount; i += segSize) {
+    const end = Math.min(drawCount - 1, i + segSize);
+    ctx.strokeStyle = getColor(i, points.length);
+    ctx.beginPath();
+    ctx.moveTo(points[i-1][0], points[i-1][1]);
+    for (let j = i; j <= end; j++) {
+      ctx.lineTo(points[j][0], points[j][1]);
+    }
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// Animation
+function toggleAnim() {
+  animating = !animating;
+  document.getElementById('animBtn').classList.toggle('active', animating);
+  if (animating) { animIdx = 0; animLoop(); }
+}
+
+function animLoop() {
+  if (!animating) return;
+  const speed = Math.max(1, Math.floor(points.length / 200));
+  animIdx = Math.min(points.length, animIdx + speed);
+  draw();
+  if (animIdx < points.length) requestAnimationFrame(animLoop);
+  else animating = false;
+}
+
+function nextColorMode() {
+  colorMode = (colorMode + 1) % colorModes.length;
+  document.getElementById('colorBtn').textContent = colorModes[colorMode];
+  draw();
+}
+
+function onOrderChange() {
+  const v = document.getElementById('orderSlider').value;
+  document.getElementById('orderVal').textContent = v;
+  rebuild();
+}
+
+// Input
+let drag = false, dx0 = 0, dy0 = 0, cx0 = 0, cy0 = 0;
+canvas.addEventListener('mousedown', e => { drag = true; dx0 = e.clientX; dy0 = e.clientY; cx0 = camX; cy0 = camY; });
+canvas.addEventListener('mousemove', e => { if (drag) { camX = cx0 + e.clientX - dx0; camY = cy0 + e.clientY - dy0; draw(); } });
+canvas.addEventListener('mouseup', () => drag = false);
+canvas.addEventListener('mouseleave', () => drag = false);
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const f = e.deltaY > 0 ? 0.85 : 1.18;
+  camX = e.clientX - (e.clientX - camX) * f;
+  camY = e.clientY - (e.clientY - camY) * f;
+  camZ *= f;
+  draw();
+}, { passive: false });
+
+// Touch
+let pinchDist = 0;
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (e.touches.length === 1) { drag = true; dx0 = e.touches[0].clientX; dy0 = e.touches[0].clientY; cx0 = camX; cy0 = camY; }
+  else if (e.touches.length === 2) { drag = false; pinchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); }
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (e.touches.length === 1 && drag) { camX = cx0 + e.touches[0].clientX - dx0; camY = cy0 + e.touches[0].clientY - dy0; draw(); }
+  else if (e.touches.length === 2) {
+    const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+    const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+    const my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+    const f = d / pinchDist;
+    camX = mx - (mx - camX) * f; camY = my - (my - camY) * f; camZ *= f;
+    pinchDist = d; draw();
+  }
+}, { passive: false });
+canvas.addEventListener('touchend', e => { e.preventDefault(); drag = false; }, { passive: false });
+
+function resetView() { fitView(); draw(); }
+
+function resize() {
+  W = wrap.clientWidth; H = wrap.clientHeight;
+  canvas.width = W * devicePixelRatio; canvas.height = H * devicePixelRatio;
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  fitView(); draw();
+}
+
+window.addEventListener('resize', resize);
+rebuild();
+resize();
+</script>
+</body>
+</html>
