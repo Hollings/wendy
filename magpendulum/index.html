@@ -1,0 +1,948 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Magnetic Pendulum</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #06060e;
+  color: #aab;
+  font: 13px/1.6 monospace;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+#top {
+  display: flex;
+  align-items: center;
+  padding: 8px 14px;
+  gap: 14px;
+  background: #0a0a14;
+  border-bottom: 1px solid #1a1a2a;
+  flex-wrap: wrap;
+  z-index: 10;
+}
+h1 { font-size: 15px; color: #dde; font-weight: normal; white-space: nowrap; }
+.ctrl {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #668;
+}
+.ctrl label { white-space: nowrap; }
+.ctrl input[type=range] { width: 80px; accent-color: #5566cc; }
+.ctrl .val { color: #99a; min-width: 30px; text-align: right; font-size: 11px; }
+.ctrl select {
+  background: #111120;
+  border: 1px solid #2a2a40;
+  color: #99a;
+  font: 11px monospace;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+button {
+  background: #151525;
+  border: 1px solid #2a2a40;
+  color: #889;
+  font: 11px monospace;
+  padding: 4px 10px;
+  cursor: pointer;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+button:hover { border-color: #4455aa; color: #bbccff; }
+button.active { border-color: #4455aa; color: #bbccff; background: #1a1a30; }
+#progress { font-size: 10px; color: #446; min-width: 50px; text-align: right; }
+#canvasWrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+}
+canvas { image-rendering: pixelated; cursor: crosshair; touch-action: none; }
+#info {
+  position: fixed;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: #334;
+  white-space: nowrap;
+}
+#tooltip {
+  position: fixed;
+  background: #0e0e1aee;
+  border: 1px solid #2a2a40;
+  color: #99a;
+  font: 11px monospace;
+  padding: 5px 9px;
+  border-radius: 3px;
+  pointer-events: none;
+  display: none;
+  z-index: 20;
+}
+#row2 {
+  display: flex;
+  align-items: center;
+  padding: 4px 14px 6px;
+  gap: 14px;
+  background: #090912;
+  border-bottom: 1px solid #141420;
+  flex-wrap: wrap;
+}
+@media (max-width: 700px) {
+  #top, #row2 { gap: 8px; padding: 6px 8px; }
+  .ctrl input[type=range] { width: 60px; }
+  h1 { font-size: 13px; }
+}
+</style>
+</head>
+<body>
+<div id="top">
+  <h1>magnetic pendulum</h1>
+  <div class="ctrl">
+    <label>magnets</label>
+    <select id="selMagnets">
+      <option value="3" selected>3</option>
+      <option value="4">4</option>
+      <option value="5">5</option>
+      <option value="6">6</option>
+    </select>
+  </div>
+  <div class="ctrl">
+    <label>strength</label>
+    <input type="range" id="sStrength" min="0.5" max="20" step="0.5" value="8">
+    <span class="val" id="vStrength">8</span>
+  </div>
+  <div class="ctrl">
+    <label>damping</label>
+    <input type="range" id="sDamping" min="0.01" max="0.5" step="0.01" value="0.1">
+    <span class="val" id="vDamping">0.1</span>
+  </div>
+  <div class="ctrl">
+    <label>height</label>
+    <input type="range" id="sHeight" min="0.1" max="2" step="0.05" value="0.5">
+    <span class="val" id="vHeight">0.5</span>
+  </div>
+  <div class="ctrl">
+    <label>gravity</label>
+    <input type="range" id="sGravity" min="0.05" max="2" step="0.05" value="0.5">
+    <span class="val" id="vGravity">0.5</span>
+  </div>
+  <span id="progress"></span>
+</div>
+<div id="row2">
+  <div class="ctrl">
+    <label>resolution</label>
+    <select id="selRes">
+      <option value="200">200</option>
+      <option value="300">300</option>
+      <option value="400">400</option>
+      <option value="512" selected>512</option>
+      <option value="768">768</option>
+      <option value="1024">1024</option>
+    </select>
+  </div>
+  <div class="ctrl">
+    <label>palette</label>
+    <select id="selPalette">
+      <option value="jewel" selected>jewel</option>
+      <option value="neon">neon</option>
+      <option value="sunset">sunset</option>
+      <option value="earth">earth</option>
+      <option value="pastel">pastel</option>
+      <option value="mono">monochrome</option>
+    </select>
+  </div>
+  <div class="ctrl">
+    <label>color by</label>
+    <select id="selColorMode">
+      <option value="mixed" selected>basin + time</option>
+      <option value="basin">basin only</option>
+      <option value="time">time only</option>
+      <option value="distance">distance traveled</option>
+    </select>
+  </div>
+  <select id="selPreset">
+    <option value="">presets...</option>
+    <option value="classic">classic</option>
+    <option value="lowdamp">low damping</option>
+    <option value="strong">strong magnets</option>
+    <option value="weak">weak gravity</option>
+    <option value="close">close magnets</option>
+    <option value="chaos">chaotic</option>
+    <option value="quad">4 magnets</option>
+    <option value="penta">5 magnets</option>
+    <option value="hex">6 magnets</option>
+  </select>
+  <button id="btnRender">render</button>
+  <button id="btnTrace">trace</button>
+  <button id="btnAnimate">animate</button>
+  <button id="btnExport">export png</button>
+</div>
+<div id="canvasWrap">
+  <canvas id="canvas"></canvas>
+</div>
+<div id="tooltip"></div>
+<div id="info">RK4 integration &middot; fractal basin boundaries &middot; scroll to zoom &middot; drag to pan</div>
+
+<script>
+// ---- Configuration ----
+let magnetCount = 3;
+let magnets = [];
+
+function buildMagnets(n) {
+  magnets = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 - Math.PI / 2;
+    magnets.push({ x: Math.cos(a), y: Math.sin(a) });
+  }
+}
+buildMagnets(3);
+
+// ---- Color palettes ----
+// Each palette: array of [r,g,b] base colors per magnet (up to 6)
+const PALETTES = {
+  jewel: [
+    [220, 40, 60],   // ruby
+    [30, 190, 80],   // emerald
+    [50, 100, 240],  // sapphire
+    [200, 160, 30],  // amber
+    [160, 50, 200],  // amethyst
+    [30, 190, 200],  // aquamarine
+  ],
+  neon: [
+    [255, 30, 100],  // hot pink
+    [30, 255, 150],  // neon green
+    [80, 120, 255],  // electric blue
+    [255, 255, 30],  // yellow
+    [200, 50, 255],  // purple
+    [30, 255, 255],  // cyan
+  ],
+  sunset: [
+    [240, 80, 40],   // tangerine
+    [220, 50, 130],  // rose
+    [120, 60, 200],  // violet
+    [240, 180, 40],  // gold
+    [60, 120, 180],  // steel blue
+    [200, 100, 80],  // terracotta
+  ],
+  earth: [
+    [180, 100, 50],  // copper
+    [50, 130, 60],   // forest
+    [40, 100, 160],  // ocean
+    [160, 140, 80],  // sandstone
+    [100, 60, 40],   // umber
+    [80, 140, 130],  // teal
+  ],
+  pastel: [
+    [255, 140, 150], // pink
+    [140, 230, 160], // mint
+    [150, 170, 255], // lavender
+    [255, 220, 140], // peach
+    [200, 160, 230], // lilac
+    [140, 220, 230], // sky
+  ],
+  mono: [
+    [200, 200, 210],
+    [200, 200, 210],
+    [200, 200, 210],
+    [200, 200, 210],
+    [200, 200, 210],
+    [200, 200, 210],
+  ]
+};
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+const sStrength = document.getElementById('sStrength');
+const sDamping = document.getElementById('sDamping');
+const sHeight = document.getElementById('sHeight');
+const sGravity = document.getElementById('sGravity');
+const selRes = document.getElementById('selRes');
+const selPalette = document.getElementById('selPalette');
+const selColorMode = document.getElementById('selColorMode');
+const selMagnets = document.getElementById('selMagnets');
+const btnRender = document.getElementById('btnRender');
+const btnTrace = document.getElementById('btnTrace');
+const btnAnimate = document.getElementById('btnAnimate');
+const btnExport = document.getElementById('btnExport');
+const progress = document.getElementById('progress');
+const tooltip = document.getElementById('tooltip');
+
+const vStrength = document.getElementById('vStrength');
+const vDamping = document.getElementById('vDamping');
+const vHeight = document.getElementById('vHeight');
+const vGravity = document.getElementById('vGravity');
+
+[sStrength, sDamping, sHeight, sGravity].forEach(s => {
+  const v = document.getElementById('v' + s.id.slice(1));
+  s.addEventListener('input', () => v.textContent = s.value);
+});
+
+selMagnets.addEventListener('change', () => {
+  magnetCount = parseInt(selMagnets.value);
+  buildMagnets(magnetCount);
+  startRender();
+});
+
+// View parameters
+let viewCx = 0, viewCy = 0, viewSize = 4;
+
+// Worker pool
+const WORKER_COUNT = Math.min(navigator.hardwareConcurrency || 4, 8);
+let workers = [];
+let workerBusy = [];
+let renderQueue = [];
+let img = null;
+let rawResults = null; // store raw simulation data for re-coloring
+let RES = 512;
+let rowsDone = 0;
+let totalRows = 0;
+let rendering = false;
+let lastFlush = 0;
+let traceMode = false;
+let animating = false;
+let animFrame = null;
+
+// Create web worker blob
+function createWorkerBlob() {
+  const code = `
+    let magnets = [];
+
+    function simulate(x0, y0, strength, damping, height, gravity) {
+      let x = x0, y = y0, vx = 0, vy = 0;
+      const h2 = height * height;
+      const dt = 0.004;
+      const maxSteps = 25000;
+      const settleThreshold = 0.0008;
+      let settleCount = 0;
+      let totalDist = 0;
+      let prevX = x, prevY = y;
+
+      function accel(px, py, pvx, pvy) {
+        let ax = -gravity * px - damping * pvx;
+        let ay = -gravity * py - damping * pvy;
+        for (let i = 0; i < magnets.length; i++) {
+          const dx = magnets[i].x - px;
+          const dy = magnets[i].y - py;
+          const r2 = dx*dx + dy*dy + h2;
+          const r3 = r2 * Math.sqrt(r2);
+          const f = strength / r3;
+          ax += f * dx;
+          ay += f * dy;
+        }
+        return [ax, ay];
+      }
+
+      for (let step = 0; step < maxSteps; step++) {
+        // RK4
+        const [ax1, ay1] = accel(x, y, vx, vy);
+        const x2 = x + vx*dt/2, y2 = y + vy*dt/2;
+        const vx2 = vx + ax1*dt/2, vy2 = vy + ay1*dt/2;
+        const [ax2, ay2] = accel(x2, y2, vx2, vy2);
+        const x3 = x + vx2*dt/2, y3 = y + vy2*dt/2;
+        const vx3 = vx + ax2*dt/2, vy3 = vy + ay2*dt/2;
+        const [ax3, ay3] = accel(x3, y3, vx3, vy3);
+        const x4 = x + vx3*dt, y4 = y + vy3*dt;
+        const vx4 = vx + ax3*dt, vy4 = vy + ay3*dt;
+        const [ax4, ay4] = accel(x4, y4, vx4, vy4);
+
+        x += (vx + 2*vx2 + 2*vx3 + vx4) * dt / 6;
+        y += (vy + 2*vy2 + 2*vy3 + vy4) * dt / 6;
+        vx += (ax1 + 2*ax2 + 2*ax3 + ax4) * dt / 6;
+        vy += (ay1 + 2*ay2 + 2*ay3 + ay4) * dt / 6;
+
+        // Track distance
+        if (step % 10 === 0) {
+          const ddx = x - prevX, ddy = y - prevY;
+          totalDist += Math.sqrt(ddx*ddx + ddy*ddy);
+          prevX = x; prevY = y;
+        }
+
+        const speed2 = vx*vx + vy*vy;
+        if (speed2 < settleThreshold * settleThreshold) {
+          settleCount++;
+          if (settleCount > 60) {
+            let minD = Infinity, closest = 0;
+            for (let i = 0; i < magnets.length; i++) {
+              const dx = x - magnets[i].x;
+              const dy = y - magnets[i].y;
+              const d = dx*dx + dy*dy;
+              if (d < minD) { minD = d; closest = i; }
+            }
+            return { magnet: closest, steps: step, dist: totalDist };
+          }
+        } else {
+          settleCount = 0;
+        }
+      }
+
+      let minD = Infinity, closest = 0;
+      for (let i = 0; i < magnets.length; i++) {
+        const dx = x - magnets[i].x;
+        const dy = y - magnets[i].y;
+        const d = dx*dx + dy*dy;
+        if (d < minD) { minD = d; closest = i; }
+      }
+      return { magnet: closest, steps: maxSteps, dist: totalDist };
+    }
+
+    self.onmessage = function(e) {
+      if (e.data.type === 'init') {
+        magnets = e.data.magnets;
+        return;
+      }
+      const { row, res, viewCx, viewCy, viewSize, strength, damping, height, gravity } = e.data;
+      // 3 values per pixel: magnet, time (u16), distance (u16)
+      const results = new Uint16Array(res * 3);
+      const half = viewSize / 2;
+
+      for (let col = 0; col < res; col++) {
+        const px = viewCx - half + (col + 0.5) * viewSize / res;
+        const py = viewCy + half - (row + 0.5) * viewSize / res;
+        const result = simulate(px, py, strength, damping, height, gravity);
+        results[col * 3] = result.magnet;
+        results[col * 3 + 1] = Math.min(65535, result.steps);
+        results[col * 3 + 2] = Math.min(65535, Math.floor(result.dist * 100));
+      }
+      self.postMessage({ row, results }, [results.buffer]);
+    };
+  `;
+  return new Blob([code], { type: 'application/javascript' });
+}
+
+function initWorkers() {
+  workers.forEach(w => w.terminate());
+  workers = [];
+  workerBusy = [];
+  const blob = createWorkerBlob();
+  const url = URL.createObjectURL(blob);
+  for (let i = 0; i < WORKER_COUNT; i++) {
+    const w = new Worker(url);
+    w.onmessage = handleWorkerResult;
+    w.postMessage({ type: 'init', magnets: magnets });
+    workers.push(w);
+    workerBusy.push(false);
+  }
+  URL.revokeObjectURL(url);
+}
+
+function handleWorkerResult(e) {
+  const { row, results } = e.data;
+  const res = RES;
+
+  // Store raw data
+  for (let col = 0; col < res; col++) {
+    rawResults[row * res * 3 + col * 3] = results[col * 3];
+    rawResults[row * res * 3 + col * 3 + 1] = results[col * 3 + 1];
+    rawResults[row * res * 3 + col * 3 + 2] = results[col * 3 + 2];
+  }
+
+  colorRow(row);
+
+  rowsDone++;
+  progress.textContent = `${Math.floor(rowsDone / totalRows * 100)}%`;
+
+  const workerIdx = workers.findIndex(w => e.target === w);
+  if (workerIdx >= 0) workerBusy[workerIdx] = false;
+
+  if (rowsDone - lastFlush >= 16) {
+    ctx.putImageData(img, 0, 0);
+    lastFlush = rowsDone;
+  }
+
+  dispatchNext();
+
+  if (rowsDone === totalRows) {
+    ctx.putImageData(img, 0, 0);
+    drawMagnets();
+    rendering = false;
+    progress.textContent = 'done';
+  }
+}
+
+// Color a single row from raw data
+function colorRow(row) {
+  const res = RES;
+  const d = img.data;
+  const palette = PALETTES[selPalette.value] || PALETTES.jewel;
+  const mode = selColorMode.value;
+
+  for (let col = 0; col < res; col++) {
+    const magnet = rawResults[row * res * 3 + col * 3];
+    const steps = rawResults[row * res * 3 + col * 3 + 1];
+    const dist = rawResults[row * res * 3 + col * 3 + 2];
+
+    const timeNorm = Math.min(1, Math.log(steps + 1) / Math.log(25001));
+    const distNorm = Math.min(1, Math.log(dist + 1) / Math.log(5000));
+
+    let r, g, b;
+    const base = palette[magnet % palette.length];
+
+    if (mode === 'mixed') {
+      const bright = 1.0 - timeNorm * 0.85;
+      r = Math.floor(base[0] * bright);
+      g = Math.floor(base[1] * bright);
+      b = Math.floor(base[2] * bright);
+    } else if (mode === 'basin') {
+      r = base[0];
+      g = base[1];
+      b = base[2];
+    } else if (mode === 'time') {
+      // Smooth time-based coloring — cool to warm
+      const t = timeNorm;
+      r = Math.floor(10 + t * 240);
+      g = Math.floor(10 + (1 - Math.abs(t - 0.5) * 2) * 180);
+      b = Math.floor(240 - t * 230);
+    } else if (mode === 'distance') {
+      const bright = 1.0 - distNorm * 0.85;
+      r = Math.floor(base[0] * bright);
+      g = Math.floor(base[1] * bright);
+      b = Math.floor(base[2] * bright);
+    }
+
+    const idx = (row * res + col) * 4;
+    d[idx] = Math.min(255, Math.max(0, r));
+    d[idx + 1] = Math.min(255, Math.max(0, g));
+    d[idx + 2] = Math.min(255, Math.max(0, b));
+    d[idx + 3] = 255;
+  }
+}
+
+// Recolor all rows without re-simulating
+function recolor() {
+  if (!rawResults || rendering) return;
+  for (let row = 0; row < RES; row++) colorRow(row);
+  ctx.putImageData(img, 0, 0);
+  drawMagnets();
+}
+
+selPalette.addEventListener('change', recolor);
+selColorMode.addEventListener('change', recolor);
+
+function dispatchNext() {
+  while (renderQueue.length > 0) {
+    const freeIdx = workerBusy.indexOf(false);
+    if (freeIdx < 0) return;
+    workerBusy[freeIdx] = true;
+    const row = renderQueue.shift();
+    workers[freeIdx].postMessage({
+      row,
+      res: RES,
+      viewCx,
+      viewCy,
+      viewSize,
+      strength: parseFloat(sStrength.value),
+      damping: parseFloat(sDamping.value),
+      height: parseFloat(sHeight.value),
+      gravity: parseFloat(sGravity.value)
+    });
+  }
+}
+
+function drawMagnets() {
+  const res = RES;
+  const half = viewSize / 2;
+  const palette = PALETTES[selPalette.value] || PALETTES.jewel;
+  ctx.save();
+  for (let i = 0; i < magnets.length; i++) {
+    const sx = (magnets[i].x - viewCx + half) / viewSize * res;
+    const sy = (viewCy + half - magnets[i].y) / viewSize * res;
+    const c = palette[i % palette.length];
+    const col = `rgb(${c[0]},${c[1]},${c[2]})`;
+    // Glow
+    ctx.beginPath();
+    ctx.arc(sx, sy, 8, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},0.3)`;
+    ctx.fill();
+    // Dot
+    ctx.beginPath();
+    ctx.arc(sx, sy, 4, 0, Math.PI * 2);
+    ctx.fillStyle = col;
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function startRender() {
+  if (rendering) {
+    // Cancel current render
+    renderQueue = [];
+    workers.forEach((w, i) => workerBusy[i] = false);
+  }
+  rendering = true;
+  RES = parseInt(selRes.value);
+  canvas.width = RES;
+  canvas.height = RES;
+
+  const wrap = document.getElementById('canvasWrap');
+  const displaySize = Math.min(wrap.clientWidth, wrap.clientHeight) - 16;
+  canvas.style.width = displaySize + 'px';
+  canvas.style.height = displaySize + 'px';
+
+  img = ctx.createImageData(RES, RES);
+  rawResults = new Uint16Array(RES * RES * 3);
+
+  // Fill dark
+  for (let i = 0; i < img.data.length; i += 4) {
+    img.data[i] = 6; img.data[i+1] = 6; img.data[i+2] = 14; img.data[i+3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+
+  rowsDone = 0;
+  totalRows = RES;
+  lastFlush = 0;
+  renderQueue = [];
+  for (let r = 0; r < RES; r++) renderQueue.push(r);
+
+  initWorkers();
+  dispatchNext();
+  progress.textContent = '0%';
+}
+
+btnRender.addEventListener('click', startRender);
+
+// ---- Tooltip ----
+canvas.addEventListener('mousemove', e => {
+  if (dragging) return;
+  const rect = canvas.getBoundingClientRect();
+  const sx = (e.clientX - rect.left) / rect.width;
+  const sy = (e.clientY - rect.top) / rect.height;
+  const half = viewSize / 2;
+  const wx = viewCx - half + sx * viewSize;
+  const wy = viewCy + half - sy * viewSize;
+  tooltip.style.left = (e.clientX + 14) + 'px';
+  tooltip.style.top = (e.clientY - 30) + 'px';
+  tooltip.style.display = 'block';
+  tooltip.textContent = `(${wx.toFixed(3)}, ${wy.toFixed(3)})`;
+});
+canvas.addEventListener('mouseleave', () => tooltip.style.display = 'none');
+
+// ---- Zoom ----
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const sx = (e.clientX - rect.left) / rect.width;
+  const sy = (e.clientY - rect.top) / rect.height;
+  const half = viewSize / 2;
+  const wx = viewCx - half + sx * viewSize;
+  const wy = viewCy + half - sy * viewSize;
+
+  const factor = e.deltaY > 0 ? 1.2 : 0.83;
+  viewSize *= factor;
+  viewCx = wx - (sx - 0.5) * viewSize;
+  viewCy = wy + (sy - 0.5) * viewSize;
+
+  startRender();
+}, { passive: false });
+
+// ---- Pan ----
+let dragging = false, dragX0, dragY0, cx0, cy0;
+canvas.addEventListener('mousedown', e => {
+  if (traceMode) return;
+  dragging = true;
+  dragX0 = e.clientX;
+  dragY0 = e.clientY;
+  cx0 = viewCx;
+  cy0 = viewCy;
+  canvas.style.cursor = 'grabbing';
+});
+document.addEventListener('mousemove', e => {
+  if (!dragging) return;
+  const rect = canvas.getBoundingClientRect();
+  const dx = (e.clientX - dragX0) / rect.width * viewSize;
+  const dy = (e.clientY - dragY0) / rect.height * viewSize;
+  viewCx = cx0 - dx;
+  viewCy = cy0 + dy;
+});
+document.addEventListener('mouseup', e => {
+  if (!dragging) return;
+  dragging = false;
+  canvas.style.cursor = 'crosshair';
+  if (Math.abs(e.clientX - dragX0) > 3 || Math.abs(e.clientY - dragY0) > 3) {
+    startRender();
+  }
+});
+
+// ---- Touch ----
+let touchDist0 = 0, touchCx0, touchCy0, touchSize0;
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (e.touches.length === 1 && !traceMode) {
+    dragging = true;
+    dragX0 = e.touches[0].clientX;
+    dragY0 = e.touches[0].clientY;
+    cx0 = viewCx;
+    cy0 = viewCy;
+  } else if (e.touches.length === 2) {
+    dragging = false;
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    touchDist0 = Math.sqrt(dx*dx + dy*dy);
+    touchCx0 = viewCx;
+    touchCy0 = viewCy;
+    touchSize0 = viewSize;
+  }
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (e.touches.length === 1 && dragging) {
+    const rect = canvas.getBoundingClientRect();
+    const dx = (e.touches[0].clientX - dragX0) / rect.width * viewSize;
+    const dy = (e.touches[0].clientY - dragY0) / rect.height * viewSize;
+    viewCx = cx0 - dx;
+    viewCy = cy0 + dy;
+  } else if (e.touches.length === 2 && touchDist0 > 0) {
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    viewSize = touchSize0 * (touchDist0 / dist);
+  }
+}, { passive: false });
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  if (e.touches.length === 0) {
+    if (traceMode && !dragging) {
+      // trace from touch
+      const rect = canvas.getBoundingClientRect();
+      const ct = e.changedTouches[0];
+      const sx = (ct.clientX - rect.left) / rect.width;
+      const sy = (ct.clientY - rect.top) / rect.height;
+      const half = viewSize / 2;
+      drawTrace(viewCx - half + sx * viewSize, viewCy + half - sy * viewSize);
+    }
+    dragging = false;
+    startRender();
+  }
+}, { passive: false });
+
+// ---- Presets ----
+const PRESETS = {
+  classic:  { n: 3, strength: 8,  damping: 0.1,  height: 0.5,  gravity: 0.5,  view: [0,0,4] },
+  lowdamp:  { n: 3, strength: 8,  damping: 0.03, height: 0.5,  gravity: 0.5,  view: [0,0,4] },
+  strong:   { n: 3, strength: 16, damping: 0.1,  height: 0.3,  gravity: 0.5,  view: [0,0,4] },
+  weak:     { n: 3, strength: 8,  damping: 0.1,  height: 0.5,  gravity: 0.15, view: [0,0,4] },
+  close:    { n: 3, strength: 12, damping: 0.08, height: 0.2,  gravity: 0.6,  view: [0,0,3] },
+  chaos:    { n: 3, strength: 10, damping: 0.02, height: 0.4,  gravity: 0.3,  view: [0,0,5] },
+  quad:     { n: 4, strength: 8,  damping: 0.08, height: 0.5,  gravity: 0.5,  view: [0,0,4] },
+  penta:    { n: 5, strength: 8,  damping: 0.08, height: 0.5,  gravity: 0.5,  view: [0,0,4] },
+  hex:      { n: 6, strength: 8,  damping: 0.08, height: 0.5,  gravity: 0.5,  view: [0,0,4] },
+};
+
+document.getElementById('selPreset').addEventListener('change', e => {
+  const p = PRESETS[e.target.value];
+  if (!p) return;
+  sStrength.value = p.strength; vStrength.textContent = p.strength;
+  sDamping.value = p.damping; vDamping.textContent = p.damping;
+  sHeight.value = p.height; vHeight.textContent = p.height;
+  sGravity.value = p.gravity; vGravity.textContent = p.gravity;
+  if (p.n) {
+    magnetCount = p.n;
+    selMagnets.value = p.n;
+    buildMagnets(p.n);
+  }
+  viewCx = p.view[0]; viewCy = p.view[1]; viewSize = p.view[2];
+  startRender();
+  e.target.value = '';
+});
+
+// ---- Trace mode ----
+btnTrace.addEventListener('click', () => {
+  traceMode = !traceMode;
+  btnTrace.classList.toggle('active', traceMode);
+  canvas.style.cursor = traceMode ? 'crosshair' : 'crosshair';
+});
+
+canvas.addEventListener('click', e => {
+  if (!traceMode || rendering) return;
+  const rect = canvas.getBoundingClientRect();
+  const sx = (e.clientX - rect.left) / rect.width;
+  const sy = (e.clientY - rect.top) / rect.height;
+  const half = viewSize / 2;
+  drawTrace(viewCx - half + sx * viewSize, viewCy + half - sy * viewSize);
+});
+
+function drawTrace(x0, y0) {
+  ctx.putImageData(img, 0, 0);
+  drawMagnets();
+
+  const strength = parseFloat(sStrength.value);
+  const damping = parseFloat(sDamping.value);
+  const height = parseFloat(sHeight.value);
+  const gravity = parseFloat(sGravity.value);
+  const h2 = height * height;
+  const dt = 0.004;
+  const maxSteps = 25000;
+
+  let x = x0, y = y0, vx = 0, vy = 0;
+  const half = viewSize / 2;
+  const points = [];
+  let settleCount = 0;
+
+  function accel(px, py, pvx, pvy) {
+    let ax = -gravity * px - damping * pvx;
+    let ay = -gravity * py - damping * pvy;
+    for (let i = 0; i < magnets.length; i++) {
+      const dx = magnets[i].x - px;
+      const dy = magnets[i].y - py;
+      const r2 = dx*dx + dy*dy + h2;
+      const r3 = r2 * Math.sqrt(r2);
+      const f = strength / r3;
+      ax += f * dx;
+      ay += f * dy;
+    }
+    return [ax, ay];
+  }
+
+  for (let step = 0; step < maxSteps; step++) {
+    if (step % 4 === 0) points.push([x, y]);
+    const [ax1, ay1] = accel(x, y, vx, vy);
+    const x2 = x + vx*dt/2, y2 = y + vy*dt/2;
+    const vx2 = vx + ax1*dt/2, vy2 = vy + ay1*dt/2;
+    const [ax2, ay2] = accel(x2, y2, vx2, vy2);
+    const x3 = x + vx2*dt/2, y3 = y + vy2*dt/2;
+    const vx3 = vx + ax2*dt/2, vy3 = vy + ay2*dt/2;
+    const [ax3, ay3] = accel(x3, y3, vx3, vy3);
+    const x4 = x + vx3*dt, y4 = y + vy3*dt;
+    const vx4 = vx + ax3*dt, vy4 = vy + ay3*dt;
+    const [ax4, ay4] = accel(x4, y4, vx4, vy4);
+
+    x += (vx + 2*vx2 + 2*vx3 + vx4) * dt / 6;
+    y += (vy + 2*vy2 + 2*vy3 + vy4) * dt / 6;
+    vx += (ax1 + 2*ax2 + 2*ax3 + ax4) * dt / 6;
+    vy += (ay1 + 2*ay2 + 2*ay3 + ay4) * dt / 6;
+
+    if (vx*vx + vy*vy < 0.0008 * 0.0008) {
+      settleCount++;
+      if (settleCount > 60) break;
+    } else settleCount = 0;
+  }
+
+  // Find closest magnet
+  let minD = Infinity, closest = 0;
+  for (let i = 0; i < magnets.length; i++) {
+    const dx = x - magnets[i].x;
+    const dy = y - magnets[i].y;
+    const d = dx*dx + dy*dy;
+    if (d < minD) { minD = d; closest = i; }
+  }
+
+  // Draw trajectory with fading opacity
+  const palette = PALETTES[selPalette.value] || PALETTES.jewel;
+  const c = palette[closest % palette.length];
+  ctx.save();
+  ctx.lineWidth = 1.5;
+
+  // Draw in segments with fading alpha
+  const segLen = Math.ceil(points.length / 8);
+  for (let seg = 0; seg < 8; seg++) {
+    const startI = seg * segLen;
+    const endI = Math.min((seg + 1) * segLen, points.length);
+    if (startI >= points.length) break;
+    const alpha = 0.3 + 0.6 * (1 - seg / 8);
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    for (let i = startI; i < endI; i++) {
+      const px = (points[i][0] - viewCx + half) / viewSize * RES;
+      const py = (viewCy + half - points[i][1]) / viewSize * RES;
+      if (i === startI) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.strokeStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
+    ctx.stroke();
+  }
+
+  ctx.globalAlpha = 1;
+
+  // Start point
+  const sx0 = (x0 - viewCx + half) / viewSize * RES;
+  const sy0 = (viewCy + half - y0) / viewSize * RES;
+  ctx.beginPath();
+  ctx.arc(sx0, sy0, 5, 0, Math.PI * 2);
+  ctx.fillStyle = '#fff';
+  ctx.fill();
+  ctx.strokeStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // End point
+  const sxe = (x - viewCx + half) / viewSize * RES;
+  const sye = (viewCy + half - y) / viewSize * RES;
+  ctx.beginPath();
+  ctx.arc(sxe, sye, 3, 0, Math.PI * 2);
+  ctx.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
+  ctx.fill();
+
+  ctx.restore();
+}
+
+// ---- Animate mode ----
+btnAnimate.addEventListener('click', () => {
+  animating = !animating;
+  btnAnimate.classList.toggle('active', animating);
+  if (animating) animateLoop();
+  else if (animFrame) cancelAnimationFrame(animFrame);
+});
+
+let animPhase = 0;
+function animateLoop() {
+  if (!animating) return;
+  animPhase += 0.015;
+  // Oscillate strength
+  const baseStrength = parseFloat(sStrength.value);
+  const str = 6 + 6 * Math.sin(animPhase);
+  sStrength.value = str.toFixed(1);
+  vStrength.textContent = str.toFixed(1);
+
+  // Use lower res for smooth animation
+  const oldRes = selRes.value;
+  selRes.value = '200';
+  startRender();
+  selRes.value = oldRes;
+
+  // Wait for render to complete, then schedule next frame
+  const check = () => {
+    if (!rendering) {
+      if (animating) animFrame = requestAnimationFrame(animateLoop);
+    } else {
+      setTimeout(check, 50);
+    }
+  };
+  setTimeout(check, 50);
+}
+
+// ---- Export PNG ----
+btnExport.addEventListener('click', () => {
+  if (rendering) return;
+  const link = document.createElement('a');
+  link.download = `magpendulum-${Date.now()}.png`;
+  link.href = canvas.toDataURL('image/png');
+  link.click();
+});
+
+// ---- Resize ----
+window.addEventListener('resize', () => {
+  if (!rendering) {
+    const wrap = document.getElementById('canvasWrap');
+    const displaySize = Math.min(wrap.clientWidth, wrap.clientHeight) - 16;
+    canvas.style.width = displaySize + 'px';
+    canvas.style.height = displaySize + 'px';
+  }
+});
+
+// ---- Auto-start ----
+startRender();
+</script>
+</body>
+</html>
