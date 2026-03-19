@@ -36,3 +36,8 @@ collect_ignore.append(str(Path(__file__).parent / "test_journal.py"))
 # test_thread_support.py internally imports bot.claude_cli at runtime.
 collect_ignore.append(str(Path(__file__).parent / "test_state_manager.py"))
 collect_ignore.append(str(Path(__file__).parent / "test_thread_support.py"))
+
+# test_fragments.py and test_prompt.py import wendy.fragments which imports yaml
+# (pyyaml), not installed in the CI test environment.
+collect_ignore.append(str(Path(__file__).parent / "test_fragments.py"))
+collect_ignore.append(str(Path(__file__).parent / "test_prompt.py"))
