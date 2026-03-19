@@ -76,12 +76,19 @@ def main():
     real = [m for m in messages if m.get("message_id", 0) < SYNTHETIC_THRESHOLD
             and not m.get("author", "").startswith("Context")]
 
-    if not real and not task_updates:
+    context = data.get("context", [])
+
+    if not real and not task_updates and not context:
         print("(no new messages)")
         return
 
     for m in real:
         print(format_message(m))
+
+    if context:
+        print("\n--- context ---")
+        for m in context:
+            print(f"  {m.get('content', '').strip()}")
 
     if task_updates:
         print("\n--- task updates ---")
