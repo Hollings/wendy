@@ -286,13 +286,19 @@ async def handle_send_message(request: web.Request) -> web.Response:
     sent_msg = await channel.send(**kwargs)
     _save_bot_message(sent_msg, channel_id)
     new_messages = check_for_new_messages(channel_id)
-    return web.json_response({
+    resp_body: dict = {
         "success": True,
         "message": "Message sent",
         "message_id": sent_msg.id,
         "content": sent_msg.content or "",
         "new_messages": new_messages,
-    })
+    }
+    if sent_msg.attachments:
+        resp_body["attachments"] = [
+            {"filename": a.filename, "size": a.size, "url": a.url}
+            for a in sent_msg.attachments
+        ]
+    return web.json_response(resp_body)
 
 
 def _delete_synthetic_messages(synthetic_ids: list[int]) -> None:

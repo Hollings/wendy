@@ -66,11 +66,18 @@ def main():
             print(f"Error: {result['error']}", file=sys.stderr)
             sys.exit(1)
         # Echo back what Discord actually delivered
+        msg_id = result.get("message_id", "?")
         delivered = result.get("content", "")
         if delivered:
-            print(f"Sent (id={result.get('message_id', '?')}): {delivered}")
-        if result.get("new_messages"):
-            print(json.dumps({"new_messages": result["new_messages"]}, indent=2))
+            print(f"Sent (id={msg_id}): {delivered}")
+        # Show attachment confirmation
+        for att in result.get("attachments", []):
+            size_kb = att.get("size", 0) / 1024
+            print(f"  Attachment: {att.get('filename')} ({size_kb:.1f} KB) {att.get('url')}")
+        # Surface queued messages (especially important with --force)
+        new_msgs = result.get("new_messages", [])
+        if new_msgs:
+            print(json.dumps({"new_messages": new_msgs}, indent=2))
     except urllib.error.HTTPError as e:
         error_body = e.read().decode()
         try:
