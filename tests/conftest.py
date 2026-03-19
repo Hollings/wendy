@@ -9,7 +9,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # The package was renamed from `bot` to `wendy`. Register aliases so old-style
 # test imports (from bot.X import Y) still resolve to the correct modules.
 import wendy  # noqa: E402
-import wendy.fragments  # noqa: E402
 import wendy.paths  # noqa: E402
 import wendy.state  # noqa: E402
 
