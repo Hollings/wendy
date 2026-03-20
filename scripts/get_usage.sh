@@ -2,19 +2,18 @@
 # Get Claude Code usage via direct API call
 # No interactive mode needed - just reads credentials and calls API
 
-CREDS_FILE="/root/.claude/.credentials.json"
-
-# Check if credentials file exists
-if [ ! -f "$CREDS_FILE" ]; then
-    echo '{"error": "No credentials file found"}'
-    exit 1
-fi
-
-# Extract access token from credentials
-ACCESS_TOKEN=$(cat "$CREDS_FILE" | grep -o '"accessToken":"[^"]*"' | cut -d'"' -f4)
+# Use CLAUDE_CODE_OAUTH_TOKEN env var (primary), fall back to credentials file
+ACCESS_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}"
 
 if [ -z "$ACCESS_TOKEN" ]; then
-    echo '{"error": "No access token found in credentials"}'
+    CREDS_FILE="/root/.claude/.credentials.json"
+    if [ -f "$CREDS_FILE" ]; then
+        ACCESS_TOKEN=$(cat "$CREDS_FILE" | grep -o '"accessToken":"[^"]*"' | cut -d'"' -f4)
+    fi
+fi
+
+if [ -z "$ACCESS_TOKEN" ]; then
+    echo '{"error": "No access token (set CLAUDE_CODE_OAUTH_TOKEN or create credentials file)"}'
     exit 1
 fi
 
