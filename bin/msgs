@@ -77,6 +77,11 @@ def main():
     real = [m for m in messages if m.get("message_id", 0) < SYNTHETIC_THRESHOLD
             and not m.get("author", "").startswith("Context")]
 
+    # Strip leading bot messages -- Wendy already knows what she said.
+    # Keep bot messages that appear after a human message (the human msg was unread).
+    while real and real[0].get("is_bot"):
+        real.pop(0)
+
     if not real and not task_updates:
         print("(no new messages)")
         return
