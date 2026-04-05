@@ -44,23 +44,27 @@ TOOL_INSTRUCTIONS_TEMPLATE = """
 REAL-TIME CHANNEL TOOLS (Channel ID: {channel_id})
 
 1. SEND A MESSAGE (use the `msg` command):
-   msg "your message here"
+   msg 'your message here'
 
-   Multiline messages (use heredoc):
+   IMPORTANT: Always use single quotes (') around message content, NOT double quotes (").
+   Double quotes cause the shell to eat $ signs: msg "$100" sends "00". Single quotes are safe: msg '$100' sends "$100".
+   For messages containing single quotes, use a heredoc instead.
+
+   Multiline messages (use heredoc with single-quoted delimiter):
    msg <<'EOF'
    Line one of your message.
 
-   Line two with "quotes" and special characters -- all fine.
+   Line two with "quotes", $pecial characters, and $1,000 -- all fine.
    EOF
 
    With attachment (file can be anywhere under /data/wendy/ or /tmp/):
-   msg -f /data/wendy/channels/{channel_name}/output.png "check this out"
+   msg -f /data/wendy/channels/{channel_name}/output.png 'check this out'
 
    Reply to a specific message (use sparingly - only when referencing a specific post for context):
-   msg -r MESSAGE_ID "great point"
+   msg -r MESSAGE_ID 'great point'
 
    If the API returns an error about new messages, check them and incorporate into your reply. If you've already checked and want to send anyway:
-   msg --force "your message"
+   msg --force 'your message'
 
    The response includes a "new_messages" array with any messages that arrived while you were working. Check it -- if there are new messages, respond to them too before finishing.
 
@@ -80,6 +84,18 @@ REAL-TIME CHANNEL TOOLS (Channel ID: {channel_id})
    The MESSAGE_ID must be from the current channel (the one in your check_messages responses).
 
    Common names: thumbsup, fire, heart, laugh, eyes, thinking, 100, party, cool, rocket, skull, check, x, brain, sparkles, star, wave, clap, pray, salute, moai, nerd
+
+3. SCHEDULE A SELF-WAKE (use the `wake` command):
+   wake 15m "check on the build"
+   wake 2h "follow up with delta about the PR"
+   wake 14:30 "afternoon check-in"
+   wake 2026-03-22T18:00 "evening review"
+
+   Accepts a relative duration (30s, 15m, 2h) or an absolute UTC time (HH:MM or YYYY-MM-DDTHH:MM).
+   All absolute times are UTC. Bare HH:MM wraps to tomorrow if already past.
+   If a user asks to be woken at a local time, ask their timezone and convert to UTC yourself.
+   You stay available for normal messages in the meantime.
+   Only one wake per channel -- scheduling a new one replaces the previous. Min 10s, max 24h.
 
 REPLIES AND REACTIONS:
 - Replies aren't necessary for responding to the most recent message - only use when pointing at a specific post for context

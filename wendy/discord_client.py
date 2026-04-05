@@ -119,6 +119,7 @@ class WendyBot(commands.Bot):
         self._enrichment_last_run_date: dict[int, datetime.date] = {}
         self._enrichment_notified: set[int] = set()
         self._feature_digest_last_date: datetime.date | None = None
+        self._pending_wakes: dict[int, asyncio.TimerHandle] = {}
 
         ensure_shared_dirs()
         self._register_commands()
@@ -654,8 +655,19 @@ class WendyBot(commands.Bot):
                     week_resets_str.replace("Z", "+00:00")
                 )
                 now = datetime.datetime.now(datetime.UTC)
-                secs_remaining = (resets_at - now).total_seconds()
+                # If resets_at is in the past, the cached percentage is from a
+                # previous billing week.  Project the date forward and treat
+                # usage as 0% for the new week.
                 week_secs = 7 * 24 * 3600
+                week_rolled = False
+                while resets_at <= now:
+                    resets_at += datetime.timedelta(seconds=week_secs)
+                    week_rolled = True
+                if week_rolled:
+                    week_pct = 0
+                    week_pct_str = "0%"
+                    _cached_usage["week_all_percent"] = 0
+                secs_remaining = (resets_at - now).total_seconds()
                 elapsed_pct = int((1 - secs_remaining / week_secs) * 100)
                 elapsed_pct = max(0, min(100, elapsed_pct))
                 surplus = elapsed_pct - week_pct
@@ -1045,6 +1057,40 @@ class WendyBot(commands.Bot):
                 existing_job.new_message_pending = True
             else:
                 self._start_generation(channel, self.channel_configs.get(channel_id, {}))
+
+    # ------------------------------------------------------------------
+    # Self-wake scheduling
+    # ------------------------------------------------------------------
+
+    def schedule_wake(self, channel_id: int, delay_seconds: int, message: str) -> str:
+        """Schedule a delayed self-wake for a channel. Returns the wake time as a string."""
+        # Cancel any existing wake for this channel
+        existing = self._pending_wakes.pop(channel_id, None)
+        if existing is not None:
+            existing.cancel()
+
+        wake_at = datetime.datetime.now(datetime.UTC) + datetime.timedelta(seconds=delay_seconds)
+        wake_time_str = wake_at.strftime("%H:%M:%S UTC")
+
+        handle = self.loop.call_later(
+            delay_seconds,
+            lambda: self.loop.create_task(self._fire_wake(channel_id, message)),
+        )
+        self._pending_wakes[channel_id] = handle
+        _LOG.info("Wake scheduled for channel %s in %ds (%s): %s",
+                  channel_id, delay_seconds, wake_time_str, message[:80])
+        return wake_time_str
+
+    async def _fire_wake(self, channel_id: int, message: str) -> None:
+        """Fire a scheduled wake: inject synthetic message and trigger generation."""
+        self._pending_wakes.pop(channel_id, None)
+        self._insert_synthetic_message(
+            channel_id,
+            "Self-Wake",
+            f"[Scheduled wake] {message}",
+        )
+        _LOG.info("Self-wake fired for channel %s: %s", channel_id, message[:80])
+        self._wake_channels({channel_id})
 
     def _insert_synthetic_message(
         self,

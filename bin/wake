@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""Schedule a self-wake via Wendy's internal API.
+
+Usage:
+    wake 15m "check on the build"
+    wake 2h "follow up with delta"
+    wake 30s "quick timer test"
+    wake 14:30 "afternoon check-in"
+    wake 2026-03-22T18:00 "evening review"
+
+Accepts either a relative duration (15m, 2h) or an absolute UTC time
+(HH:MM or ISO 8601). All absolute times are interpreted as UTC.
+If a bare HH:MM is in the past, it's assumed to mean tomorrow.
+"""
+import json
+import os
+import re
+import sys
+import urllib.request
+from datetime import UTC, datetime, timedelta
+
+
+def parse_duration(s: str) -> int | None:
+    """Parse a duration string like '15m', '2h', '30s' into seconds."""
+    m = re.fullmatch(r"(\d+)\s*(s|sec|m|min|h|hr|hours?|minutes?|seconds?)", s.strip().lower())
+    if not m:
+        return None
+    value = int(m.group(1))
+    unit = m.group(2)
+    if unit.startswith("s"):
+        return value
+    elif unit.startswith("m"):
+        return value * 60
+    elif unit.startswith("h"):
+        return value * 3600
+    return None
+
+
+def parse_timestamp(s: str) -> int | None:
+    """Parse a UTC timestamp and return delay in seconds from now.
+
+    Supported formats:
+        HH:MM           (today or tomorrow if past)
+        HH:MM:SS        (today or tomorrow if past)
+        YYYY-MM-DDTHH:MM
+        YYYY-MM-DDTHH:MM:SS
+    """
+    now = datetime.now(UTC)
+
+    # Try ISO 8601 with date
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
+        try:
+            target = datetime.strptime(s, fmt).replace(tzinfo=UTC)
+            delay = int((target - now).total_seconds())
+            return delay if delay > 0 else None
+        except ValueError:
+            continue
+
+    # Try bare HH:MM or HH:MM:SS (assume UTC, wrap to tomorrow if past)
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            parsed_time = datetime.strptime(s, fmt).time()
+            target = now.replace(
+                hour=parsed_time.hour,
+                minute=parsed_time.minute,
+                second=parsed_time.second if fmt == "%H:%M:%S" else 0,
+                microsecond=0,
+            )
+            if target <= now:
+                target += timedelta(days=1)
+            return int((target - now).total_seconds())
+        except ValueError:
+            continue
+
+    return None
+
+
+def main():
+    if len(sys.argv) < 3:
+        print("Usage: wake <duration-or-time> <message>", file=sys.stderr)
+        print("  Duration: wake 15m \"check on the build\"", file=sys.stderr)
+        print("  UTC time: wake 14:30 \"afternoon check-in\"", file=sys.stderr)
+        sys.exit(1)
+
+    time_str = sys.argv[1]
+    message = " ".join(sys.argv[2:])
+
+    # Try duration first, then timestamp
+    delay = parse_duration(time_str)
+    is_absolute = False
+    if delay is None:
+        delay = parse_timestamp(time_str)
+        is_absolute = True
+
+    if delay is None:
+        print(f"Error: can't parse '{time_str}' as duration or UTC time", file=sys.stderr)
+        print("  Duration examples: 30s, 5m, 15m, 1h, 2h", file=sys.stderr)
+        print("  UTC time examples: 14:30, 2026-03-22T18:00", file=sys.stderr)
+        sys.exit(1)
+
+    if delay < 10:
+        print("Error: minimum delay is 10 seconds", file=sys.stderr)
+        sys.exit(1)
+
+    if delay > 86400:
+        print("Error: maximum delay is 24 hours", file=sys.stderr)
+        sys.exit(1)
+
+    channel_id = os.environ.get("WENDY_CHANNEL_ID")
+    if not channel_id:
+        print("Error: WENDY_CHANNEL_ID not set", file=sys.stderr)
+        sys.exit(1)
+
+    port = os.environ.get("WENDY_PROXY_PORT", "8945")
+
+    body = {
+        "channel_id": channel_id,
+        "delay_seconds": delay,
+        "message": message,
+    }
+
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(
+        f"http://localhost:{port}/api/schedule_wake",
+        data=data,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        resp = urllib.request.urlopen(req)
+        result = json.loads(resp.read().decode())
+        wake_time = result.get("wake_time", "?")
+        if is_absolute:
+            print(f"Wake scheduled: {time_str} UTC ({wake_time})")
+        else:
+            print(f"Wake scheduled: {time_str} from now ({wake_time})")
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode()
+        print(f"Error ({e.code}): {error_body}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

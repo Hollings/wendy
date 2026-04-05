@@ -871,6 +871,41 @@ async def handle_resolve_feature_request(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# Self-wake scheduling
+# ---------------------------------------------------------------------------
+
+
+async def handle_schedule_wake(request: web.Request) -> web.Response:
+    """POST /api/schedule_wake -- schedule a delayed self-wake for a channel."""
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+
+    channel_id = data.get("channel_id")
+    delay = data.get("delay_seconds")
+    message = data.get("message", "")
+
+    if not channel_id or not delay:
+        return web.json_response({"error": "channel_id and delay_seconds required"}, status=400)
+
+    try:
+        channel_id = int(channel_id)
+        delay = int(delay)
+    except (ValueError, TypeError):
+        return web.json_response({"error": "channel_id and delay_seconds must be integers"}, status=400)
+
+    if delay < 10 or delay > 86400:
+        return web.json_response({"error": "delay must be between 10 seconds and 24 hours"}, status=400)
+
+    if not _discord_bot or not hasattr(_discord_bot, "schedule_wake"):
+        return web.json_response({"error": "bot not available"}, status=503)
+
+    wake_time = _discord_bot.schedule_wake(channel_id, delay, message)
+    return web.json_response({"success": True, "wake_time": wake_time})
+
+
+# ---------------------------------------------------------------------------
 # Application factory and server startup
 # ---------------------------------------------------------------------------
 
@@ -890,6 +925,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/feature_request", handle_feature_request)
     app.router.add_get("/api/feature_requests", handle_list_feature_requests)
     app.router.add_post("/api/feature_request/resolve", handle_resolve_feature_request)
+    app.router.add_post("/api/schedule_wake", handle_schedule_wake)
     app.router.add_get("/health", handle_health)
     return app
 
