@@ -25,7 +25,7 @@ RUN install -m 0755 -d /etc/apt/keyrings && \
 # Node.js, Claude Code CLI, Beads
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
-    && npm install -g @anthropic-ai/claude-code @beads/bd@0.41.0 playwright \
+    && npm install -g @anthropic-ai/claude-code @beads/bd@0.63.3 playwright \
     && rm -rf /var/lib/apt/lists/*
 
 # Playwright Chromium

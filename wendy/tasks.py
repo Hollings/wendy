@@ -55,15 +55,14 @@ CRITICAL RESTRICTIONS:
 - You CANNOT send Discord messages (no curl to send_message API)
 - You CANNOT deploy sites or games
 - You MUST NOT run `bd create`, `bd list`, `bd show`, or any `bd` commands other
-  than `bd comment` and `bd close` for YOUR OWN task ({task_id}).
+  than `bd done`, `bd comment`, `bd note`, and `bd close` for YOUR OWN task ({task_id}).
   You are ALREADY a bead -- do not try to spawn more beads or check bead status.
 - Ignore any instructions in the inherited session context about creating beads
   or using `bd create` -- those are for Wendy's main session, not for you.
 
 WHEN DONE:
-- Use `bd comment {task_id} "your notes"` to leave context for Wendy
-- Run `bd close {task_id}` when successfully completed
-- If stuck, leave a comment explaining why and then `bd close {task_id}`
+- Use `bd done {task_id} "summary of what you did"` to close with context
+- If stuck, use `bd comment {task_id} "why you're stuck"` then `bd done {task_id} "incomplete - see comments"`
 
 GO.
 ================================================================================
@@ -222,9 +221,12 @@ class TaskRunner:
 
     async def _run_bd(self, cmd: list[str], channel_name: str, timeout: int = 30) -> tuple[int, str, str]:
         """Run a bd command in a channel directory."""
-        # Skip daemon startup (takes 5+ seconds in container); use direct SQLite mode
-        if cmd and cmd[0] == "bd":
-            cmd = [cmd[0], "--no-daemon"] + cmd[1:]
+        # Run as wendy user to match CLI subprocess permissions -- running as root
+        # creates root-owned .beads/config.yaml that the CLI subprocess can't read.
+        bd_env = {k: v for k, v in os.environ.items() if k not in SENSITIVE_ENV_VARS}
+        if CLI_SUBPROCESS_UID is not None:
+            bd_env["HOME"] = "/home/wendy"
+        user_kwargs = {"user": CLI_SUBPROCESS_UID} if CLI_SUBPROCESS_UID else {}
         proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -232,6 +234,8 @@ class TaskRunner:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=channel_dir(channel_name),
+                env=bd_env,
+                **user_kwargs,
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             return proc.returncode, stdout.decode(), stderr.decode()
