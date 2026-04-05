@@ -593,24 +593,17 @@ async def brain_agent_events(
 
 @app.get("/api/brain/beads")
 async def brain_beads(_auth: None = Depends(_require_brain_auth)) -> dict:
-    jsonl_path = brain.BEADS_JSONL
-    if not jsonl_path.exists():
+    if not brain.BEADS_SNAPSHOT.exists():
         return {"beads": []}
 
-    issues_by_id: dict = {}
-    for line in jsonl_path.read_text().strip().split("\n"):
-        if not line.strip():
-            continue
-        try:
-            data = json.loads(line)
-            if issue_id := data.get("id"):
-                issues_by_id[issue_id] = data
-        except json.JSONDecodeError:
-            continue
+    try:
+        raw = json.loads(brain.BEADS_SNAPSHOT.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {"beads": []}
 
     beads = [
         {
-            "id": iid,
+            "id": d.get("id", "?"),
             "title": d.get("title", "Untitled"),
             "status": d.get("status", "open"),
             "priority": d.get("priority", 2),
@@ -618,7 +611,7 @@ async def brain_beads(_auth: None = Depends(_require_brain_auth)) -> dict:
             "updated": d.get("updated", d.get("created")),
             "labels": d.get("labels", []),
         }
-        for iid, d in issues_by_id.items()
+        for d in raw
     ]
 
     status_order = {"in_progress": 0, "open": 1, "closed": 2, "tombstone": 3}

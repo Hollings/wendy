@@ -51,7 +51,10 @@ ORCHESTRATOR_LOGS_DIR: Path = Path("/data/wendy/orchestrator_logs")
 """Directory containing agent_{task_id}_{ts}.log files from beads agents."""
 
 BEADS_JSONL: Path = Path("/data/wendy/channels/coding/.beads/issues.jsonl")
-"""Beads task list (issues.jsonl) — watched for live sidebar updates."""
+"""Legacy beads task list (issues.jsonl) — kept for backwards compat."""
+
+BEADS_SNAPSHOT: Path = Path("/data/wendy/shared/beads_snapshot.json")
+"""Beads snapshot written by wendy's TaskRunner every poll cycle."""
 
 MAX_HISTORY: int = 50
 """Number of recent events to send to newly connected clients."""
@@ -576,34 +579,24 @@ def get_channels_map() -> dict:
 
 
 def _read_beads_list() -> list[dict]:
-    """Read and deduplicate issues.jsonl, return sorted beads list."""
-    if not BEADS_JSONL.exists():
+    """Read beads from the snapshot file written by wendy's TaskRunner."""
+    if not BEADS_SNAPSHOT.exists():
         return []
-    issues: dict = {}
     try:
-        for line in BEADS_JSONL.read_text().strip().split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                data = json.loads(line)
-                if iid := data.get("id"):
-                    issues[iid] = data
-            except json.JSONDecodeError:
-                continue
+        raw = json.loads(BEADS_SNAPSHOT.read_text())
     except Exception as e:
-        _LOG.debug("Failed to read beads list: %s", e)
+        _LOG.debug("Failed to read beads snapshot: %s", e)
         return []
 
     beads = [
         {
-            "id": iid,
+            "id": d.get("id", "?"),
             "title": d.get("title", "Untitled"),
             "status": d.get("status", "open"),
             "created": d.get("created"),
             "updated": d.get("updated", d.get("created")),
         }
-        for iid, d in issues.items()
+        for d in raw
     ]
     order = {"in_progress": 0, "open": 1, "closed": 2, "tombstone": 3}
     beads.sort(key=lambda b: (order.get(b["status"], 4),))
@@ -621,10 +614,10 @@ def _extract_task_id(filename: str) -> str | None:
 
 
 async def tail_beads() -> None:
-    """Watch orchestrator logs and issues.jsonl; broadcast live bead updates.
+    """Watch orchestrator logs and beads snapshot; broadcast live bead updates.
 
     Two broadcast types emitted:
-    - {"type": "beads_list", "beads": [...]}  when issues.jsonl changes
+    - {"type": "beads_list", "beads": [...]}  when beads_snapshot.json changes
     - {ts, bead_id, channel_id: null, event: {...}}  when an agent log grows
     """
     _LOG.info("Starting beads watcher...")
@@ -635,8 +628,8 @@ async def tail_beads() -> None:
             watch_dirs = []
             if ORCHESTRATOR_LOGS_DIR.exists():
                 watch_dirs.append(ORCHESTRATOR_LOGS_DIR)
-            if BEADS_JSONL.parent.exists():
-                watch_dirs.append(BEADS_JSONL.parent)
+            if BEADS_SNAPSHOT.parent.exists():
+                watch_dirs.append(BEADS_SNAPSHOT.parent)
 
             if not watch_dirs:
                 await asyncio.sleep(10)
@@ -646,8 +639,8 @@ async def tail_beads() -> None:
                 for change_type, path_str in changes:
                     path = Path(path_str)
 
-                    # issues.jsonl changed -> broadcast updated beads list
-                    if path == BEADS_JSONL:
+                    # beads snapshot changed -> broadcast updated beads list
+                    if path == BEADS_SNAPSHOT:
                         beads = _read_beads_list()
                         await broadcast(json.dumps({"type": "beads_list", "beads": beads}))
                         continue

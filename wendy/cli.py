@@ -97,10 +97,20 @@ REAL-TIME CHANNEL TOOLS (Channel ID: {channel_id})
    You stay available for normal messages in the meantime.
    Only one wake per channel -- scheduling a new one replaces the previous. Min 10s, max 24h.
 
+4. CHECK MESSAGES (use the `msgs` command):
+   msgs                 # fetch new messages since last check
+   msgs -n 10           # fetch last 10 messages
+   msgs --all           # fetch all messages (ignores watermark)
+   msgs --peek          # fetch without advancing the read watermark
+   msgs --raw           # dump raw JSON (for debugging/parsing)
+
+   This is what you MUST call at the start of every turn. Equivalent to the
+   check_messages API but formatted for the terminal.
+
 REPLIES AND REACTIONS:
 - Replies aren't necessary for responding to the most recent message - only use when pointing at a specific post for context
 - Reactions should be used sparingly for effect, not on every message
-- message_id values come from check_messages responses
+- message_id values come from msgs --raw output
 
 ATTACHMENTS:
 When users upload files (images, documents, code, etc.), the check_messages response includes an "attachments" array with file paths:
@@ -234,18 +244,18 @@ def build_nudge_prompt(
         base = (
             f'<you\'ve been forked into a Discord thread: "{thread_name}". '
             f"Your conversation history from the parent channel has been preserved. "
-            f"You MUST call curl -s http://localhost:{PROXY_PORT}/api/check_messages/{channel_id} "
-            f"before any other action. Do not assume what the messages contain.>"
+            f"You MUST run `msgs` before any other action. Do not assume what the messages contain.>"
         )
     else:
         base = (
-            f"<new messages - you MUST call curl -s http://localhost:{PROXY_PORT}/api/check_messages/{channel_id} "
+            f"<new messages - you MUST run `msgs` "
             f"before any other action. Do not assume what the messages contain.>"
         )
     compacted_note = (
         f"<your session was auto-compacted since your last turn. "
-        f"Use count=20 to restore context: "
-        f"curl -s 'http://localhost:{PROXY_PORT}/api/check_messages/{channel_id}?count=20'>"
+        f"Use `msgs -n 20` THIS TIME to restore context. "
+        f"After this, go back to plain `msgs` with no flags -- "
+        f"do not use -n unless you have a specific reason.>"
     ) if was_compacted else ""
     extras = "\n".join(x for x in [journal_note, beads_note, compacted_note] if x)
     return base + ("\n" + extras if extras else "")

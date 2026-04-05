@@ -109,15 +109,13 @@ def test_build_cli_command_no_system_prompt():
 
 def test_build_nudge_prompt_normal():
     prompt = build_nudge_prompt(123)
-    assert "check_messages" in prompt
-    assert "123" in prompt
+    assert "msgs" in prompt
     assert "thread" not in prompt.lower()
 
 
 def test_build_nudge_prompt_thread():
     prompt = build_nudge_prompt(456, is_thread=True, thread_name="cool-thread")
-    assert "check_messages" in prompt
-    assert "456" in prompt
+    assert "msgs" in prompt
     assert "cool-thread" in prompt
     assert "thread" in prompt.lower()
 

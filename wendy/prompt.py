@@ -193,25 +193,24 @@ Full reference: /app/config/docs/bd_usage.md
 
 def get_beads_warning_for_nudge(channel_name: str) -> str:
     """Return a compact beads warning for the nudge prompt, or empty string if none active."""
+    import subprocess
+    from .paths import channel_dir
+
     try:
-        jsonl_path = beads_dir(channel_name) / "issues.jsonl"
-        if not jsonl_path.exists():
+        bd_dir = beads_dir(channel_name)
+        if not (bd_dir / "config.yaml").exists():
             return ""
 
-        issues_by_id = {}
-        for line in jsonl_path.read_text().strip().split("\n"):
-            if not line.strip():
-                continue
-            try:
-                data = json.loads(line)
-                issue_id = data.get("id")
-                if issue_id:
-                    issues_by_id[issue_id] = data
-            except json.JSONDecodeError:
-                continue
+        result = subprocess.run(
+            ["bd", "list", "--status", "in_progress", "--json"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(channel_dir(channel_name)),
+            env={**os.environ, "BEADS_DIR": str(bd_dir)},
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return ""
 
-        active = [t for t in issues_by_id.values() if t.get("status") == "in_progress"]
-
+        active = json.loads(result.stdout)
         if not active:
             return ""
 

@@ -19,15 +19,16 @@ SYNTHETIC_THRESHOLD = 9_000_000_000_000_000_000  # synthetic/context messages
 
 
 def format_message(m: dict) -> str:
+    msg_id = m.get("message_id", "")
     ts = int(m.get("timestamp", 0))
     time_str = datetime.fromtimestamp(ts).strftime("%H:%M") if ts else "??:??"
     author = m.get("author", "?")
     content = m.get("content", "").strip()
     attachments = m.get("attachments", [])
 
-    lines = [f"[{time_str}] {author}: {content}"]
+    lines = [f"[{time_str}] {author} (id:{msg_id}): {content}"]
     for att in attachments:
-        lines.append(f"  📎 {att}")
+        lines.append(f"  attachment: {att}")
     return "\n".join(lines)
 
 

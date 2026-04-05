@@ -87,7 +87,7 @@ def test_get_journal_listing_for_nudge_empty(tmp_path):
 def test_get_beads_warning_for_nudge_no_beads(tmp_path):
     b_dir = tmp_path / ".beads"
     b_dir.mkdir()
-
+    # No config.yaml -> not initialized -> should return empty
     with mock.patch("wendy.prompt.beads_dir", return_value=b_dir):
         result = get_beads_warning_for_nudge("general")
     assert result == ""
@@ -96,22 +96,23 @@ def test_get_beads_warning_for_nudge_no_beads(tmp_path):
 def test_get_beads_warning_for_nudge_with_active_tasks(tmp_path):
     b_dir = tmp_path / ".beads"
     b_dir.mkdir()
+    (b_dir / "config.yaml").write_text("backend: dolt")
 
-    issues_file = b_dir / "issues.jsonl"
-    issues = [
+    active_tasks = [
         {"id": "task-1", "title": "Do something", "status": "in_progress"},
-        {"id": "task-2", "title": "Done thing", "status": "closed"},
         {"id": "task-3", "title": "Another task", "status": "in_progress"},
     ]
-    issues_file.write_text("\n".join(json.dumps(i) for i in issues))
+    mock_result = mock.Mock(returncode=0, stdout=json.dumps(active_tasks))
 
-    with mock.patch("wendy.prompt.beads_dir", return_value=b_dir):
+    with (
+        mock.patch("wendy.prompt.beads_dir", return_value=b_dir),
+        mock.patch("subprocess.run", return_value=mock_result),
+    ):
         result = get_beads_warning_for_nudge("general")
 
     assert "2 active bead(s)" in result
     assert "task-1" in result
     assert "task-3" in result
-    assert "task-2" not in result  # closed task should not appear
 
 
 def test_build_system_prompt_integration(tmp_path):

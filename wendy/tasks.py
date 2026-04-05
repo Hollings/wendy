@@ -161,9 +161,11 @@ class TaskRunner:
         _LOG.info("Task runner started: channels=%s concurrency=%d poll=%ds",
                   [c.name for c in self.beads_channels], CONCURRENCY, POLL_INTERVAL)
 
-        # Init beads for channels that need it
+        # Init beads for channels that need it (check config.yaml, not just directory
+        # existence -- ensure_channel_dirs creates .beads/ via mkdir but bd init
+        # populates it with config.yaml, database, etc.)
         for channel in self.beads_channels:
-            if not channel.beads_path.exists():
+            if not (channel.beads_path / "config.yaml").exists():
                 await self._run_bd(["bd", "init"], channel.name)
 
         try:
@@ -196,6 +198,7 @@ class TaskRunner:
                                     break
 
                     self._cleanup_logs()
+                    await self._write_beads_snapshot()
                     await self._check_usage()
                 except Exception:
                     _LOG.exception("Task runner loop error")
@@ -250,7 +253,7 @@ class TaskRunner:
 
     async def _get_ready_tasks(self, channel: ChannelBeads) -> list[dict]:
         """Get ready, unassigned tasks from a channel's beads queue."""
-        if not (channel.beads_path / "issues.jsonl").exists():
+        if not (channel.beads_path / "config.yaml").exists():
             return []
         code, stdout, stderr = await self._run_bd(
             ["bd", "ready", "--unassigned", "--sort", "priority", "--json"],
@@ -508,6 +511,34 @@ class TaskRunner:
             state_manager.cleanup_old_notifications(keep_count=100)
         except Exception:
             _LOG.exception("Failed to write completion notification for %s", task_id)
+
+    async def _write_beads_snapshot(self) -> None:
+        """Write a combined beads snapshot for the web dashboard.
+
+        The web service can't run bd (it's not installed there), so we write
+        a JSON file to the shared volume every poll cycle.
+        """
+        snapshot_path = WENDY_BASE / "shared" / "beads_snapshot.json"
+        all_beads: list[dict] = []
+        try:
+            for channel in self.beads_channels:
+                if not (channel.beads_path / "config.yaml").exists():
+                    continue
+                code, stdout, _ = await self._run_bd(
+                    ["bd", "list", "--json"], channel.name, timeout=10,
+                )
+                if code != 0 or not stdout.strip():
+                    continue
+                try:
+                    issues = json.loads(stdout)
+                    for issue in issues:
+                        issue["_channel"] = channel.name
+                    all_beads.extend(issues)
+                except json.JSONDecodeError:
+                    continue
+            snapshot_path.write_text(json.dumps(all_beads))
+        except Exception:
+            _LOG.debug("Failed to write beads snapshot", exc_info=True)
 
     async def _check_usage(self) -> None:
         """Periodically check Claude Code usage via get_usage.sh."""
