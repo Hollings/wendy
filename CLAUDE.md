@@ -109,6 +109,8 @@ Fragments are `.md` files in `/data/wendy/claude_fragments/` with YAML frontmatt
 
 **`select` field**: arbitrary Python expression evaluated against recent messages for conditional loading.
 
+**Seeding vs runtime**: `fragment_setup.py` copies `config/claude_fragments/` to `/data/wendy/claude_fragments/` on startup but **never overwrites** existing files. This means Wendy can edit fragments at runtime and her changes persist. However, repo updates to existing fragments won't propagate automatically. Use `scripts/sync-fragments.sh` to compare and resolve differences between repo and server.
+
 ---
 
 ## Internal API (`wendy/api_server.py`, port 8945)
@@ -156,13 +158,14 @@ sessions.py                       (imports: paths, state, config)
          |
          v
 prompt.py                         (imports: paths, fragments, config)
+enrichment.py                     (no internal imports)
 cli.py                            (imports: paths, sessions, prompt, state, config)
 tasks.py                          (imports: paths, sessions, cli, state, config)
          |
          v
 api_server.py                     (imports: state, paths, config)
 discord_client.py                 (imports: cli, api_server, tasks, state,
-                                            fragment_setup, config)
+                                            fragment_setup, enrichment, config)
          |
          v
 __main__.py                       (imports: discord_client)
@@ -183,6 +186,13 @@ No circular imports. `paths.py`, `models.py`, and `config.py` are leaf modules â
 ---
 
 ## Beads Background Tasks (`wendy/tasks.py`)
+
+**`bd` is an external Go binary** ([github.com/steveyegge/beads](https://github.com/steveyegge/beads)) installed in the Docker image -- it is NOT part of this repo. It provides a lightweight issue tracker backed by a `.beads/` directory (SQLite + JSONL). Wendy's code interfaces with bd exclusively through subprocess calls; it never imports or modifies bd's internals.
+
+**How Wendy connects to bd:**
+- `TaskRunner._run_bd()` in `tasks.py` executes `bd` subcommands (init, ready, update, show, close, comment) as the wendy user via `asyncio.create_subprocess_exec`
+- The CLI subprocess (Wendy in Discord) runs `bd create`, `bd list`, etc. directly from the shell -- the `BEADS_DIR` env var (set by `_build_cli_env()` in `cli.py`) tells bd where the channel's `.beads/` directory is
+- Both paths must run as the wendy user (UID 1000) so file ownership stays consistent
 
 `bd create "description"` forks the current Claude session (`--fork-session`) to run a background agent. The `TaskRunner` polls `beads_dir/issues.jsonl` and emits `task_completion` notifications when tasks finish. Up to `ORCHESTRATOR_CONCURRENCY` (default 3) agents run concurrently.
 
@@ -214,7 +224,9 @@ Active hooks:
 
 ## Server Access
 
-See `config/docs/infrastructure.md` for architecture details. Server IPs and SSH credentials are environment-specific -- set `DEPLOY_HOST` (e.g. `root@<ip>`) for deploy scripts.
+`DEPLOY_HOST` is defined in `.env` (e.g. `root@100.x.x.x`). Always read it from there -- do NOT go hunting through SSH keys or `~/.ssh/config` to find the server.
+
+See `config/docs/infrastructure.md` for architecture details.
 
 Secrets live on the server at `/srv/secrets/wendy/` (mounted read-only, never overwritten by deploys):
 
@@ -238,6 +250,8 @@ A local copy with actual values is in `.env` (gitignored). See `.env.example` fo
 ```
 
 The script rsyncs the repo to `$DEPLOY_HOST` and runs `docker compose up -d --build`. Requires `rsync` (Linux/macOS). On Windows, manually `scp` changed files to `/srv/wendy-v2/` on the server, then `ssh $DEPLOY_HOST "cd /srv/wendy-v2/deploy && docker compose up -d --build wendy"`.
+
+**Fragment sync**: after deploying code, run `scripts/sync-fragments.sh` to diff repo fragments against the server's live copies and resolve conflicts interactively. Wendy edits fragments at runtime, so repo and server can diverge.
 
 ---
 
