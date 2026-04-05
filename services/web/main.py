@@ -593,7 +593,7 @@ async def brain_agent_events(
 
 @app.get("/api/brain/beads")
 async def brain_beads(_auth: None = Depends(_require_brain_auth)) -> dict:
-    jsonl_path = Path("/data/wendy/channels/coding/.beads/issues.jsonl")
+    jsonl_path = brain.BEADS_JSONL
     if not jsonl_path.exists():
         return {"beads": []}
 
