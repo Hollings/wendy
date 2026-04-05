@@ -86,6 +86,26 @@ bd dep add bd-def456 bd-abc123   # def456 waits for abc123
 - `bd dep add <child> <parent>` - child waits for parent
 - `bd dep list <task-id>` - show dependencies
 
+## New Commands
+
+### Quick Close with Reason
+```bash
+bd done <task-id> "summary of what was accomplished"
+```
+Shorthand for closing a task with a reason in one command (instead of `bd comment` + `bd close`).
+
+### Notes
+```bash
+bd note <task-id> "quick note text"
+```
+Lighter than `bd comment` -- for quick status updates or breadcrumbs.
+
+### Additional Flags
+- `bd close <task-id> --claim-next` -- auto-claims the next highest priority task after closing
+- `bd list --exclude-type <type>` -- filter out specific issue types
+- `bd ready --exclude-type <type>` -- same for ready queue
+- `bd list --status open,in_progress` -- comma-separated status filter
+
 ## When to Use Tasks
 
 **Use tasks for:**
