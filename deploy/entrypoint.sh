@@ -72,6 +72,7 @@ rm -f /root/.claude/.credentials.json
 # Writable areas: owned by wendy
 chown -R wendy:wendy /root/.claude/ 2>/dev/null || true
 chown -R wendy:wendy /data/wendy/channels/ 2>/dev/null || true
+chown -R wendy:wendy /data/wendy/.beads/ 2>/dev/null || true
 chown -R wendy:wendy /data/wendy/shared/ 2>/dev/null || true
 chown -R wendy:wendy /data/wendy/tmp/ 2>/dev/null || true
 chown -R wendy:wendy /data/wendy/secrets/ 2>/dev/null || true
