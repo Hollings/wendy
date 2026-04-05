@@ -194,6 +194,7 @@ Full reference: /app/config/docs/bd_usage.md
 def get_beads_warning_for_nudge(channel_name: str) -> str:
     """Return a compact beads warning for the nudge prompt, or empty string if none active."""
     import subprocess
+    from .config import CLI_SUBPROCESS_UID, SENSITIVE_ENV_VARS
     from .paths import channel_dir
 
     try:
@@ -201,11 +202,20 @@ def get_beads_warning_for_nudge(channel_name: str) -> str:
         if not (bd_dir / "config.yaml").exists():
             return ""
 
+        # Run as wendy user -- running bd as root creates root-owned Dolt files
+        # that the CLI subprocess (wendy user) can't access.
+        bd_env = {k: v for k, v in os.environ.items() if k not in SENSITIVE_ENV_VARS}
+        bd_env["BEADS_DIR"] = str(bd_dir)
+        if CLI_SUBPROCESS_UID is not None:
+            bd_env["HOME"] = "/home/wendy"
+        user_kwargs = {"user": CLI_SUBPROCESS_UID} if CLI_SUBPROCESS_UID else {}
+
         result = subprocess.run(
             ["bd", "list", "--status", "in_progress", "--json"],
             capture_output=True, text=True, timeout=5,
             cwd=str(channel_dir(channel_name)),
-            env={**os.environ, "BEADS_DIR": str(bd_dir)},
+            env=bd_env,
+            **user_kwargs,
         )
         if result.returncode != 0 or not result.stdout.strip():
             return ""
