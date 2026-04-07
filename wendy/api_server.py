@@ -25,6 +25,7 @@ import base64
 import json
 import logging
 import os
+import re
 import subprocess
 import tempfile
 from datetime import UTC, datetime
@@ -119,10 +120,14 @@ def _validate_attachment_path(path_str: str) -> str | None:
     """Validate that *path_str* lives under an allowed directory and exists.
 
     Returns an error string on failure, or ``None`` when valid.
+
+    Uses Path.resolve() so that symlinks are fully expanded before the
+    allowed-parent check: a symlink pointing outside the allowed tree will
+    resolve to its real target and be caught here.
     """
     att_path = Path(path_str).resolve()
     allowed_parents = [WENDY_BASE.resolve(), Path("/tmp").resolve()]
-    if not any(att_path == parent or parent in att_path.parents for parent in allowed_parents):
+    if not any(att_path.is_relative_to(parent) for parent in allowed_parents):
         return f"Attachment must be in {WENDY_BASE}/ or /tmp/, got: {path_str}"
     if not att_path.exists():
         return f"Attachment file not found: {path_str}"
@@ -526,6 +531,9 @@ async def handle_deploy_game(request: web.Request) -> web.Response:
     )
 
 
+_GAME_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$|^[a-z0-9]$")
+
+
 async def handle_game_logs(request: web.Request) -> web.Response:
     """GET /api/game_logs/{name} -- proxy game log retrieval from wendy-web.
 
@@ -533,6 +541,8 @@ async def handle_game_logs(request: web.Request) -> web.Response:
         lines -- number of log lines to return (default 100)
     """
     name = request.match_info["name"]
+    if not _GAME_NAME_RE.match(name):
+        return web.json_response({"error": "Invalid game name"}, status=400)
     lines = int(request.query.get("lines", "100"))
 
     try:

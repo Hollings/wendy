@@ -152,11 +152,15 @@ def _valid_name(name: str) -> bool:
 
 
 def _safe_extract(tar_path: Path, dest_dir: Path) -> None:
+    resolved_dest = dest_dir.resolve()
     with tarfile.open(tar_path, "r:gz") as tar:
         for member in tar.getmembers():
             if Path(member.name).is_absolute():
                 raise HTTPException(status_code=400, detail="Tarball contains absolute paths")
-            if not str((dest_dir / member.name).resolve()).startswith(str(dest_dir.resolve())):
+            # Use is_relative_to() instead of startswith() to prevent the
+            # prefix-confusion attack where dest="/data/sites/foo" falsely
+            # accepts a resolved path of "/data/sites/fooBAR/evil".
+            if not (resolved_dest / member.name).resolve().is_relative_to(resolved_dest):
                 raise HTTPException(status_code=400, detail="Tarball contains path traversal")
             if member.name.startswith(".") and member.name != ".":
                 continue
@@ -629,6 +633,10 @@ async def brain_beads(_auth: None = Depends(_require_brain_auth)) -> dict:
 async def brain_task_log(
     task_id: str, offset: int = 0, _auth: None = Depends(_require_brain_auth),
 ) -> dict:
+    # Validate task_id before using it in a glob pattern -- glob metacharacters
+    # like * or ? would enumerate unintended files; ../ would path-traverse.
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", task_id):
+        raise HTTPException(status_code=400, detail="Invalid task ID")
     logs_dir = Path("/data/wendy/orchestrator_logs")
     if not logs_dir.exists():
         return {"task_id": task_id, "log": "", "offset": 0, "complete": False}

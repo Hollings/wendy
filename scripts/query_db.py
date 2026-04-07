@@ -27,6 +27,7 @@ Examples:
 """
 import argparse
 import json
+import re
 import sqlite3
 import sys
 
@@ -72,11 +73,12 @@ def execute_query(query: str, limit: int = 10000) -> dict:
             "query": query[:100],
         }
 
-    # Check for obviously dangerous keywords (defense in depth)
+    # Check for obviously dangerous keywords (defense in depth).
+    # Use word-boundary regex so that space-padding tricks like /*DELETE*/
+    # or identifiers containing the keyword don't bypass the check.
     dangerous_keywords = ['INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER', 'CREATE', 'ATTACH', 'DETACH']
     for keyword in dangerous_keywords:
-        # Check for keyword as a standalone word (not part of column name)
-        if f' {keyword} ' in f' {query_upper} ' or query_upper.startswith(f'{keyword} '):
+        if re.search(r'\b' + keyword + r'\b', query_upper):
             return {
                 "error": f"Query contains disallowed keyword: {keyword}",
                 "query": query[:100],
@@ -132,9 +134,13 @@ def get_schema() -> dict:
 
     schema = {}
     for table in tables:
-        # Get column info
-        columns = conn.execute(f"PRAGMA table_info({table['name']})").fetchall()
-        schema[table['name']] = {
+        table_name = table['name']
+        # Validate table name before interpolating into PRAGMA -- SQLite doesn't
+        # support parameterized PRAGMA arguments, so we guard manually.
+        if not re.fullmatch(r'[A-Za-z0-9_]+', table_name):
+            continue
+        columns = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        schema[table_name] = {
             "columns": [{"name": c['name'], "type": c['type']} for c in columns],
             "sql": table['sql'],
         }

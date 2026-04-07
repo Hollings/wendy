@@ -304,7 +304,12 @@ class TaskRunner:
                 break
         model = resolve_model(model or "opus")
 
-        prompt = AGENT_PROMPT_TEMPLATE.format(task_id=task_id, title=title, description=description)
+        # Escape braces in user-controlled fields so they are not interpreted
+        # as .format() placeholders (e.g., a task title of "{task_id}" would
+        # otherwise cause a KeyError or leak internal variable names).
+        safe_title = title.replace("{", "{{").replace("}", "}}")
+        safe_description = description.replace("{", "{{").replace("}", "}}")
+        prompt = AGENT_PROMPT_TEMPLATE.format(task_id=task_id, title=safe_title, description=safe_description)
 
         # Create log file
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")

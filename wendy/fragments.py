@@ -137,6 +137,14 @@ def execute_select(code: str, messages: list[dict], authors: list[str],
                    channel_id: str, combined: str) -> bool:
     """Safely execute a select snippet and return its boolean result."""
     dedented = textwrap.dedent(code).strip()
+
+    # Reject dunder access -- legitimate select expressions never need to
+    # reach __class__, __bases__, __subclasses__, etc. and these are the
+    # primary vectors for escaping a restricted exec() sandbox.
+    if "__" in dedented:
+        _LOG.warning("Select snippet contains dunder access, refusing to execute")
+        return False
+
     lines = dedented.split("\n")
     indented = "\n".join("  " + line for line in lines)
     func_code = f"def _select(messages, authors, channel_id, combined):\n{indented}\n"
