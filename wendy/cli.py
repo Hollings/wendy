@@ -695,6 +695,21 @@ async def run_cli(
         if proc.returncode == 0 and not events:
             _LOG.warning("CLI exited 0 but produced no events")
 
+        # Check for overloaded error in result events (CLI exits 0 but
+        # the result contains the API error).
+        if proc.returncode == 0:
+            for ev in events:
+                if (
+                    ev.get("type") == "result"
+                    and ev.get("is_error")
+                    and "overloaded_error" in str(ev.get("result", ""))
+                ):
+                    _LOG.warning("CLI returned overloaded_error result for channel %d", channel_id)
+                    raise ClaudeCliError(
+                        "CLI succeeded but API returned overloaded_error",
+                        overloaded=True,
+                    )
+
         # Handle CLI failure.
         if proc.returncode != 0:
             error_detail = get_recent_cli_error() or "unknown error"
