@@ -146,13 +146,14 @@ def parse_channel_configs() -> dict[int, dict]:
     return configs
 
 
-def resolve_model(model_shorthand: str | None) -> str:
+def resolve_model(model_shorthand: str | None, *, allow_env_override: bool = True) -> str:
     """Resolve a model shorthand to a full model ID."""
     # Temporary override: force all channels to a specific model via env var.
     # Remove this once sonnet capacity recovers.
-    override = os.environ.get("WENDY_MODEL_OVERRIDE")
-    if override:
-        return MODEL_MAP.get(override, override)
+    if allow_env_override:
+        override = os.environ.get("WENDY_MODEL_OVERRIDE")
+        if override:
+            return MODEL_MAP.get(override, override)
     if not model_shorthand:
         return MODEL_MAP["sonnet"]
     return MODEL_MAP.get(model_shorthand, model_shorthand)

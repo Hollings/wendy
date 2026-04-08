@@ -94,6 +94,7 @@ class GenerationJob:
         self.enrichment_continuation_count: int = 0
         self.timed_out: bool = False
         self.continuation_count: int = 0
+        self.overload_retried: bool = False
 
 
 class WendyBot(commands.Bot):
@@ -759,13 +760,14 @@ class WendyBot(commands.Bot):
                     _LOG.warning("Model overloaded for channel %s, waiting 10s then retrying with opus", channel.id)
                     await asyncio.sleep(10)
                     return await self._generate_response(channel, job, model_override="opus")
-                # Opus also overloaded -- back off longer and retry opus once more.
-                if not getattr(job, "_overload_retried", False):
-                    job._overload_retried = True
+                elif not job.overload_retried:
+                    # Opus also overloaded -- back off longer and retry once more.
+                    job.overload_retried = True
                     _LOG.warning("Opus also overloaded for channel %s, waiting 60s then retrying", channel.id)
                     await asyncio.sleep(60)
                     return await self._generate_response(channel, job, model_override="opus")
-                _LOG.error("All models overloaded for channel %s, giving up", channel.id)
+                else:
+                    _LOG.error("All models overloaded for channel %s, giving up", channel.id)
             self._handle_cli_error(channel, e)
 
         except Exception:

@@ -562,6 +562,7 @@ async def _watch_session_for_overloaded(
                 new_data = f.read()
         except OSError:
             continue
+        initial_size = current_size
         if "overloaded_error" in new_data:
             _LOG.warning("Session JSONL contains overloaded_error, killing CLI")
             _kill_process(proc)
@@ -707,7 +708,10 @@ async def run_cli(
         channel_id, channel_config, session_cwd_folder, force_new_session,
     )
 
-    effective_model = resolve_model(model_override or channel_config.get("model"))
+    effective_model = resolve_model(
+        model_override or channel_config.get("model"),
+        allow_env_override=model_override is None,
+    )
 
     cmd = build_cli_command(
         cli_path, session_id, is_new_session, system_prompt,
