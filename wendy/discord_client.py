@@ -751,12 +751,21 @@ class WendyBot(commands.Bot):
         except ClaudeCliError as e:
             if "timed out" in str(e).lower():
                 job.timed_out = True
-            if e.overloaded and model_override != "opus":
-                # Restore the watermark so the opus retry sees the messages.
+            if e.overloaded:
+                # Restore the watermark so the retry sees the messages.
                 if saved_last_seen is not None:
                     state_manager.update_last_seen(channel.id, saved_last_seen)
-                _LOG.warning("Model overloaded for channel %s, retrying with opus", channel.id)
-                return await self._generate_response(channel, job, model_override="opus")
+                if model_override != "opus":
+                    _LOG.warning("Model overloaded for channel %s, waiting 10s then retrying with opus", channel.id)
+                    await asyncio.sleep(10)
+                    return await self._generate_response(channel, job, model_override="opus")
+                # Opus also overloaded -- back off longer and retry opus once more.
+                if not getattr(job, "_overload_retried", False):
+                    job._overload_retried = True
+                    _LOG.warning("Opus also overloaded for channel %s, waiting 60s then retrying", channel.id)
+                    await asyncio.sleep(60)
+                    return await self._generate_response(channel, job, model_override="opus")
+                _LOG.error("All models overloaded for channel %s, giving up", channel.id)
             self._handle_cli_error(channel, e)
 
         except Exception:
