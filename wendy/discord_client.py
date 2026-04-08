@@ -730,6 +730,12 @@ class WendyBot(commands.Bot):
                 enrichment_nudge = None
                 remaining = None
 
+            # Save the message watermark so we can restore it if the CLI
+            # gets killed due to an overloaded error (the CLI's
+            # check_messages call advances the watermark before we detect
+            # the error, so the retry would see no messages).
+            saved_last_seen = state_manager.get_last_seen(channel.id)
+
             await run_cli(
                 channel_id=channel.id,
                 channel_config=channel_config,
@@ -746,6 +752,9 @@ class WendyBot(commands.Bot):
             if "timed out" in str(e).lower():
                 job.timed_out = True
             if e.overloaded and model_override != "opus":
+                # Restore the watermark so the opus retry sees the messages.
+                if saved_last_seen is not None:
+                    state_manager.update_last_seen(channel.id, saved_last_seen)
                 _LOG.warning("Model overloaded for channel %s, retrying with opus", channel.id)
                 return await self._generate_response(channel, job, model_override="opus")
             self._handle_cli_error(channel, e)
