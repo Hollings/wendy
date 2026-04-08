@@ -528,11 +528,52 @@ def _is_session_resume_error(cmd: list[str], error_text: str) -> bool:
     return "session" in lower or "no conversation found" in lower
 
 
+async def _watch_session_for_overloaded(
+    session_jsonl: Path,
+    proc: asyncio.subprocess.Process,
+    poll_interval: float = 3.0,
+) -> None:
+    """Poll the session JSONL for overloaded_error entries.
+
+    The CLI swallows 529 overloaded errors internally and retries for
+    ~4 minutes without emitting anything on stdout.  This watcher reads
+    the tail of the session file every *poll_interval* seconds.  When it
+    spots ``overloaded_error``, it kills the subprocess so the caller
+    can retry with a different model.
+    """
+    # Record the file size at start so we only scan new bytes.
+    try:
+        initial_size = session_jsonl.stat().st_size
+    except OSError:
+        initial_size = 0
+
+    while proc.returncode is None:
+        await asyncio.sleep(poll_interval)
+        try:
+            current_size = session_jsonl.stat().st_size
+        except OSError:
+            continue
+        if current_size <= initial_size:
+            continue
+        # Read only the new tail.
+        try:
+            with open(session_jsonl, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(initial_size)
+                new_data = f.read()
+        except OSError:
+            continue
+        if "overloaded_error" in new_data:
+            _LOG.warning("Session JSONL contains overloaded_error, killing CLI")
+            _kill_process(proc)
+            return
+
+
 async def _stream_cli_output(
     proc: asyncio.subprocess.Process,
     channel_id: int,
     idle_timeout: int,
     max_runtime: int,
+    session_jsonl: Path | None = None,
 ) -> tuple[list[dict], dict[str, Any]]:
     """Read stream-json events from the CLI subprocess stdout.
 
@@ -540,57 +581,83 @@ async def _stream_cli_output(
     every time a line of output arrives.  A separate *max_runtime* acts as
     an absolute safety net for runaway sessions.
 
+    If *session_jsonl* is provided, a background watcher polls the file
+    for ``overloaded_error`` entries and kills the process immediately
+    so we don't wait for the CLI's ~4 min internal retry loop.
+
     Returns:
         (events, usage) where *usage* comes from the ``result`` event.
     """
+    # Start the overloaded watcher if we have a session file path.
+    watcher_task: asyncio.Task | None = None
+    if session_jsonl is not None:
+        watcher_task = asyncio.create_task(
+            _watch_session_for_overloaded(session_jsonl, proc)
+        )
+
     events: list[dict] = []
     usage: dict[str, Any] = {}
     start = time.monotonic()
+    overloaded_detected = False
 
-    while True:
-        elapsed = time.monotonic() - start
-        remaining = max_runtime - elapsed
-        if remaining <= 0:
-            _LOG.error("CLI hit max runtime of %ds", max_runtime)
-            raise TimeoutError(f"hit max runtime ({max_runtime}s)")
-
-        try:
-            raw = await asyncio.wait_for(
-                proc.stdout.readline(),
-                timeout=min(idle_timeout, remaining),
-            )
-        except TimeoutError:
+    try:
+        while True:
             elapsed = time.monotonic() - start
-            if elapsed >= max_runtime - 1:
-                msg = f"hit max runtime ({max_runtime}s)"
-            else:
-                msg = f"idle for {idle_timeout}s (total runtime {elapsed:.0f}s)"
-            _LOG.error("CLI %s", msg)
-            raise TimeoutError(msg) from None
+            remaining = max_runtime - elapsed
+            if remaining <= 0:
+                _LOG.error("CLI hit max runtime of %ds", max_runtime)
+                raise TimeoutError(f"hit max runtime ({max_runtime}s)")
 
-        if not raw:  # EOF -- process closed stdout
-            break
-
-        decoded = raw.decode("utf-8").strip()
-        if not decoded:
-            continue
-        try:
-            event = json.loads(decoded)
-            events.append(event)
-            append_to_stream_log(event, channel_id)
-            if event.get("type") == "result":
-                usage = event.get("usage", {})
-            # Detect overloaded errors immediately — don't wait for
-            # the CLI's internal retry loop to exhaust (~4 min).
-            if "overloaded_error" in decoded:
-                _LOG.warning("Detected overloaded_error in stream, killing CLI")
-                _kill_process(proc)
-                raise ClaudeCliError(
-                    "API returned overloaded_error",
-                    overloaded=True,
+            try:
+                raw = await asyncio.wait_for(
+                    proc.stdout.readline(),
+                    timeout=min(idle_timeout, remaining),
                 )
-        except json.JSONDecodeError:
-            continue
+            except TimeoutError:
+                elapsed = time.monotonic() - start
+                if elapsed >= max_runtime - 1:
+                    msg = f"hit max runtime ({max_runtime}s)"
+                else:
+                    msg = f"idle for {idle_timeout}s (total runtime {elapsed:.0f}s)"
+                _LOG.error("CLI %s", msg)
+                raise TimeoutError(msg) from None
+
+            if not raw:  # EOF -- process closed stdout
+                break
+
+            decoded = raw.decode("utf-8").strip()
+            if not decoded:
+                continue
+            try:
+                event = json.loads(decoded)
+                events.append(event)
+                append_to_stream_log(event, channel_id)
+                if event.get("type") == "result":
+                    usage = event.get("usage", {})
+                # Also check stdout in case the CLI does emit it here.
+                if "overloaded_error" in decoded:
+                    _LOG.warning("Detected overloaded_error in stream output")
+                    overloaded_detected = True
+                    _kill_process(proc)
+                    break
+            except json.JSONDecodeError:
+                continue
+    finally:
+        if watcher_task is not None:
+            watcher_task.cancel()
+            try:
+                await watcher_task
+            except asyncio.CancelledError:
+                pass
+
+    # If the watcher killed the process (EOF without overloaded in stream),
+    # check whether the watcher detected the error.
+    if not overloaded_detected and watcher_task is not None and watcher_task.done():
+        # Watcher finished naturally (found overloaded and killed proc).
+        overloaded_detected = True
+
+    if overloaded_detected:
+        raise ClaudeCliError("API returned overloaded_error", overloaded=True)
 
     return events, usage
 
@@ -697,7 +764,11 @@ async def run_cli(
         proc.stdin.close()
         await proc.stdin.wait_closed()
 
-        events, usage = await _stream_cli_output(proc, channel_id, idle_timeout, max_runtime)
+        session_jsonl = session_dir(session_cwd_folder) / f"{session_id}.jsonl"
+        events, usage = await _stream_cli_output(
+            proc, channel_id, idle_timeout, max_runtime,
+            session_jsonl=session_jsonl,
+        )
 
         await proc.wait()
 
