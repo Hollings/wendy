@@ -141,6 +141,10 @@ Key tables:
 class ClaudeCliError(Exception):
     """Base exception for Claude CLI errors."""
 
+    def __init__(self, message: str, *, overloaded: bool = False) -> None:
+        super().__init__(message)
+        self.overloaded = overloaded
+
 
 def find_cli_path() -> str:
     """Find the claude CLI executable."""
@@ -705,7 +709,11 @@ async def run_cli(
                     timeout_override=timeout_override,
                     max_turns=max_turns,
                 )
-            raise ClaudeCliError(f"CLI failed (code {proc.returncode}): {error_detail}")
+            is_overloaded = "overloaded" in error_detail.lower()
+            raise ClaudeCliError(
+                f"CLI failed (code {proc.returncode}): {error_detail}",
+                overloaded=is_overloaded,
+            )
 
         save_debug_log(events, channel_id)
         trim_stream_log()

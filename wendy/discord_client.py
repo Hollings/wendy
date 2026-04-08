@@ -745,6 +745,9 @@ class WendyBot(commands.Bot):
         except ClaudeCliError as e:
             if "timed out" in str(e).lower():
                 job.timed_out = True
+            if e.overloaded and model_override != "opus":
+                _LOG.warning("Model overloaded for channel %s, retrying with opus", channel.id)
+                return await self._generate_response(channel, job, model_override="opus")
             self._handle_cli_error(channel, e)
 
         except Exception:
