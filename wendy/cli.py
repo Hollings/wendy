@@ -580,6 +580,15 @@ async def _stream_cli_output(
             append_to_stream_log(event, channel_id)
             if event.get("type") == "result":
                 usage = event.get("usage", {})
+            # Detect overloaded errors immediately — don't wait for
+            # the CLI's internal retry loop to exhaust (~4 min).
+            if "overloaded_error" in decoded:
+                _LOG.warning("Detected overloaded_error in stream, killing CLI")
+                _kill_process(proc)
+                raise ClaudeCliError(
+                    "API returned overloaded_error",
+                    overloaded=True,
+                )
         except json.JSONDecodeError:
             continue
 
