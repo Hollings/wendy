@@ -26,7 +26,15 @@ def format_message(m: dict) -> str:
     content = m.get("content", "").strip()
     attachments = m.get("attachments", [])
 
-    lines = [f"[{time_str}] {author} (id:{msg_id}): {content}"]
+    reply = m.get("reply_to")
+    if reply:
+        reply_author = reply.get("author", "?")
+        reply_content = reply.get("content", "").strip()
+        if len(reply_content) > 80:
+            reply_content = reply_content[:77] + "..."
+        lines = [f"[{time_str}] {author} (id:{msg_id}) [replying to {reply_author}: {reply_content}]: {content}"]
+    else:
+        lines = [f"[{time_str}] {author} (id:{msg_id}): {content}"]
     for att in attachments:
         lines.append(f"  attachment: {att}")
     return "\n".join(lines)
