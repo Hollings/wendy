@@ -652,8 +652,16 @@ async def _stream_cli_output(
                 pass
 
     # If the watcher killed the process (EOF without overloaded in stream),
-    # check whether the watcher detected the error.
-    if not overloaded_detected and watcher_task is not None and watcher_task.done():
+    # check whether the watcher detected the error.  A cancelled task is
+    # also `done()`, so we must exclude that — cancellation means the CLI
+    # exited normally and the watcher was torn down, NOT that it found an
+    # overloaded error.
+    if (
+        not overloaded_detected
+        and watcher_task is not None
+        and watcher_task.done()
+        and not watcher_task.cancelled()
+    ):
         # Watcher finished naturally (found overloaded and killed proc).
         overloaded_detected = True
 
