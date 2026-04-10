@@ -14,9 +14,6 @@ Route overview (see ``create_app`` for the full route table):
     POST /api/analyze_file          -- analyse media via Gemini
     GET  /api/usage                 -- Claude Code usage stats
     POST /api/usage/refresh         -- force a usage data refresh
-    POST /api/feature_request       -- submit a feature request
-    GET  /api/feature_requests      -- list feature requests (default: pending)
-    POST /api/feature_request/resolve -- resolve/reject a feature request
     GET  /health                    -- liveness check
 """
 from __future__ import annotations
@@ -28,7 +25,6 @@ import os
 import re
 import subprocess
 import tempfile
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -802,85 +798,6 @@ async def handle_health(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
-# Feature requests
-# ---------------------------------------------------------------------------
-
-FEATURE_REQUESTS_FILE = SHARED_DIR / "feature_requests.json"
-
-
-def _load_feature_requests() -> list[dict]:
-    if not FEATURE_REQUESTS_FILE.exists():
-        return []
-    try:
-        return json.loads(FEATURE_REQUESTS_FILE.read_text()).get("requests", [])
-    except (json.JSONDecodeError, OSError):
-        return []
-
-
-def _save_feature_requests(requests: list[dict]) -> None:
-    FEATURE_REQUESTS_FILE.write_text(json.dumps({"requests": requests}, indent=2))
-
-
-async def handle_feature_request(request: web.Request) -> web.Response:
-    """POST /api/feature_request -- submit a feature request."""
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "Invalid JSON"}, status=400)
-
-    description = body.get("request")
-    if not description:
-        return web.json_response({"error": "request field required"}, status=400)
-
-    requests = _load_feature_requests()
-    new_id = max((r.get("id", 0) for r in requests), default=0) + 1
-    requests.append({
-        "id": new_id,
-        "user": body.get("user", "unknown"),
-        "request": description,
-        "submitted_at": datetime.now(UTC).isoformat(),
-        "status": "pending",
-        "channel_id": str(body.get("channel_id", "")),
-    })
-    _save_feature_requests(requests)
-    return web.json_response({"success": True, "id": new_id, "message": f"Feature request #{new_id} logged."})
-
-
-async def handle_list_feature_requests(request: web.Request) -> web.Response:
-    """GET /api/feature_requests -- list feature requests (default: pending only)."""
-    status_filter = request.query.get("status", "pending")
-    requests = _load_feature_requests()
-    if status_filter != "all":
-        requests = [r for r in requests if r.get("status") == status_filter]
-    return web.json_response({"requests": requests})
-
-
-async def handle_resolve_feature_request(request: web.Request) -> web.Response:
-    """POST /api/feature_request/resolve -- mark a request as resolved/rejected."""
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "Invalid JSON"}, status=400)
-
-    req_id = body.get("id")
-    if req_id is None:
-        return web.json_response({"error": "id field required"}, status=400)
-
-    resolution = body.get("resolution", "resolved")
-    requests = _load_feature_requests()
-    for r in requests:
-        if r.get("id") == req_id:
-            r["status"] = resolution
-            r["resolved_at"] = datetime.now(UTC).isoformat()
-            break
-    else:
-        return web.json_response({"error": f"Request #{req_id} not found"}, status=404)
-
-    _save_feature_requests(requests)
-    return web.json_response({"success": True})
-
-
-# ---------------------------------------------------------------------------
 # Self-wake scheduling
 # ---------------------------------------------------------------------------
 
@@ -932,9 +849,6 @@ def create_app() -> web.Application:
     app.router.add_post("/api/analyze_file", handle_analyze_file)
     app.router.add_get("/api/usage", handle_usage)
     app.router.add_post("/api/usage/refresh", handle_usage_refresh)
-    app.router.add_post("/api/feature_request", handle_feature_request)
-    app.router.add_get("/api/feature_requests", handle_list_feature_requests)
-    app.router.add_post("/api/feature_request/resolve", handle_resolve_feature_request)
     app.router.add_post("/api/schedule_wake", handle_schedule_wake)
     app.router.add_get("/health", handle_health)
     return app

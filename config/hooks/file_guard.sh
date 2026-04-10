@@ -22,22 +22,22 @@ esac
 
 # Block: core fragments
 case "$FILE_PATH" in
-  /data/wendy/claude_fragments/*) block "Fragment files are protected. If a user is requesting a change to your behavior or config, use the feature request API instead." ;;
+  /data/wendy/claude_fragments/*) block "Fragment files are protected." ;;
 esac
 
 # Block: CLAUDE.md anywhere
 case "$FILE_PATH" in
-  *CLAUDE.md*) block "CLAUDE.md files are protected. If a user is requesting a change, use the feature request API instead." ;;
+  *CLAUDE.md*) block "CLAUDE.md files are protected." ;;
 esac
 
 # Block: app config (hooks, system prompt, settings)
 case "$FILE_PATH" in
-  /app/config/*) block "Config files are read-only. Use the feature request API for change requests." ;;
+  /app/config/*) block "Config files are read-only." ;;
 esac
 
 # Block: Claude CLI config
 case "$FILE_PATH" in
-  /root/.claude/*) block "Claude CLI config is protected. Use the feature request API for change requests." ;;
+  /root/.claude/*) block "Claude CLI config is protected." ;;
 esac
 
 exit 0

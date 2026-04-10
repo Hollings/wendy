@@ -25,8 +25,6 @@ from .config import (
     ENRICHMENT_DURATION,
     ENRICHMENT_HOUR_UTC,
     ENRICHMENT_MINUTE_UTC,
-    FEATURE_DIGEST_CHANNEL,
-    FEATURE_DIGEST_HOUR_UTC,
     MESSAGE_LOGGER_GUILDS,
     PROXY_PORT,
     USAGE_BUDGET_FACTOR,
@@ -119,7 +117,6 @@ class WendyBot(commands.Bot):
         self._presence_updated_at: float = 0.0
         self._enrichment_last_run_date: dict[int, datetime.date] = {}
         self._enrichment_notified: set[int] = set()
-        self._feature_digest_last_date: datetime.date | None = None
         self._pending_wakes: dict[int, asyncio.TimerHandle] = {}
 
         ensure_shared_dirs()
@@ -273,7 +270,6 @@ class WendyBot(commands.Bot):
         if self.whitelist_channels:
             self.watch_notifications.start()
             self.check_enrichment_schedule.start()
-            self.send_feature_digest.start()
 
         self._cache_emojis_task = self.loop.create_task(self._cache_emojis())
         self._task_runner = TaskRunner()
@@ -938,48 +934,6 @@ class WendyBot(commands.Bot):
         for channel_id, config in self.channel_configs.items():
             if config.get("enrichment_enabled"):
                 yield channel_id, config
-
-    @tasks.loop(minutes=1)
-    async def send_feature_digest(self) -> None:
-        """Send daily feature request digest to the admin channel each morning."""
-        now = datetime.datetime.now(datetime.UTC)
-        if now.hour != FEATURE_DIGEST_HOUR_UTC or now.minute != 0:
-            return
-        today = now.date()
-        if self._feature_digest_last_date == today:
-            return
-        self._feature_digest_last_date = today
-
-        from .api_server import _load_feature_requests
-        pending = [r for r in _load_feature_requests() if r.get("status") == "pending"]
-        if not pending:
-            return
-
-        channel_id = FEATURE_DIGEST_CHANNEL
-        if not channel_id:
-            for cid, cfg in self.channel_configs.items():
-                if cfg.get("mode") == "full":
-                    channel_id = cid
-                    break
-        if not channel_id:
-            return
-
-        channel = self.get_channel(channel_id)
-        if not channel:
-            return
-
-        lines = [f"**Feature Requests** ({len(pending)} pending):"]
-        for r in pending:
-            lines.append(f"- **#{r['id']}** ({r['user']}): {r['request']}")
-
-        try:
-            await channel.send("\n".join(lines))
-        except Exception as e:
-            _LOG.error("Failed to send feature digest: %s", e)
-
-    @send_feature_digest.before_loop
-    async def before_send_feature_digest(self) -> None:
-        await self.wait_until_ready()
 
     def is_enrichment_active(self, channel_id: int) -> bool:
         """Return True if an enrichment session is currently running for channel_id."""
