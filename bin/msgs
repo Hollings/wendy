@@ -13,15 +13,21 @@ import os
 import sys
 import urllib.request
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 
 SYNTHETIC_THRESHOLD = 9_000_000_000_000_000_000  # synthetic/context messages
+
+# Display timestamps in Pacific time so Wendy matches her users' local clock
+# instead of reading raw UTC (the container's system TZ). DST-aware: %Z shows
+# PST in winter, PDT in summer.
+DISPLAY_TZ = ZoneInfo("America/Los_Angeles")
 
 
 def format_message(m: dict) -> str:
     msg_id = m.get("message_id", "")
     ts = int(m.get("timestamp", 0))
-    time_str = datetime.fromtimestamp(ts).strftime("%H:%M") if ts else "??:??"
+    time_str = datetime.fromtimestamp(ts, tz=DISPLAY_TZ).strftime("%H:%M %Z") if ts else "??:??"
     author = m.get("author", "?")
     content = m.get("content", "").strip()
     attachments = m.get("attachments", [])
