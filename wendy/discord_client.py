@@ -118,6 +118,7 @@ class WendyBot(commands.Bot):
         self._enrichment_last_run_date: dict[int, datetime.date] = {}
         self._enrichment_notified: set[int] = set()
         self._pending_wakes: dict[int, asyncio.TimerHandle] = {}
+        self._startup_catchup_done: bool = False
 
         ensure_shared_dirs()
         self._register_commands()
@@ -299,6 +300,38 @@ class WendyBot(commands.Bot):
             beads = cfg.get("beads_enabled", False)
             ensure_channel_dirs(folder, beads_enabled=beads)
             setup_channel_folder(folder, beads_enabled=beads)
+
+        # Catch up on messages that arrived (or were mid-generation) while the
+        # bot was offline -- e.g. after a deploy that killed an in-flight CLI.
+        # Discord's on_message won't fire for historical messages, so without
+        # this sweep users can wait indefinitely for a reply that will only
+        # come when someone else happens to type. Runs once per process.
+        if not self._startup_catchup_done:
+            self._startup_catchup_done = True
+            await self._startup_catchup()
+
+    async def _startup_catchup(self) -> None:
+        """Start a generation for each whitelisted channel with unread user messages."""
+        for channel_id in self.whitelist_channels:
+            try:
+                unread = api_server.check_for_new_messages(channel_id)
+            except Exception as e:
+                _LOG.warning("startup catchup: check failed for %s: %s", channel_id, e)
+                continue
+            if not unread:
+                continue
+
+            channel = self.get_channel(channel_id)
+            if channel is None:
+                _LOG.warning("startup catchup: channel %s not in cache, skipping", channel_id)
+                continue
+
+            _LOG.info(
+                "startup catchup: %d unread message(s) in channel %s, starting generation",
+                len(unread), channel_id,
+            )
+            channel_config = self.channel_configs.get(channel_id, {})
+            self._start_generation(channel, channel_config)
 
     async def on_message(self, message: discord.Message) -> None:
         """Route an incoming Discord message to caching, commands, or CLI generation."""
