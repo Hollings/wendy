@@ -1,11 +1,12 @@
 """Tests for the StateManager SQLite state module."""
 
-import json
 import tempfile
 from pathlib import Path
 
 import pytest
-from bot.state_manager import SessionInfo, StateManager
+
+from wendy.models import SessionInfo
+from wendy.state import StateManager
 
 
 @pytest.fixture
@@ -140,128 +141,6 @@ class TestLastSeen:
 
         result = state_manager.get_last_seen(channel_id)
         assert result == 200
-
-
-class TestTaskCompletions:
-    """Tests for task completion tracking."""
-
-    def test_add_and_get_completions(self, state_manager):
-        """add_task_completion stores, get_unseen_completions retrieves."""
-        state_manager.add_task_completion("task-1", "Test Task", "completed", "0:05:00")
-
-        unseen = state_manager.get_unseen_completions_for_wendy()
-        assert len(unseen) == 1
-        assert unseen[0].task_id == "task-1"
-        assert unseen[0].title == "Test Task"
-        assert unseen[0].status == "completed"
-        assert unseen[0].seen_by_wendy is False
-        assert unseen[0].seen_by_proxy is False
-
-    def test_mark_completions_seen_by_wendy(self, state_manager):
-        """mark_completions_seen_by_wendy updates flag."""
-        state_manager.add_task_completion("task-1", "Task 1", "completed")
-        state_manager.add_task_completion("task-2", "Task 2", "failed")
-
-        state_manager.mark_completions_seen_by_wendy(["task-1"])
-
-        unseen = state_manager.get_unseen_completions_for_wendy()
-        assert len(unseen) == 1
-        assert unseen[0].task_id == "task-2"
-
-    def test_mark_completions_seen_by_proxy(self, state_manager):
-        """mark_completions_seen_by_proxy updates flag."""
-        state_manager.add_task_completion("task-1", "Task 1", "completed")
-
-        state_manager.mark_completions_seen_by_proxy(["task-1"])
-
-        unseen = state_manager.get_unseen_completions_for_proxy()
-        assert len(unseen) == 0
-
-    def test_mark_completion_notified(self, state_manager):
-        """mark_completion_notified updates flag."""
-        state_manager.add_task_completion("task-1", "Task 1", "completed")
-
-        state_manager.mark_completion_notified("task-1")
-
-        # Verify via raw query
-        conn = state_manager._get_conn()
-        row = conn.execute(
-            "SELECT notified FROM task_completions WHERE task_id = ?",
-            ("task-1",)
-        ).fetchone()
-        assert row["notified"] == 1
-
-    def test_cleanup_old_completions(self, state_manager):
-        """cleanup_old_completions removes old entries."""
-        # Add 10 completions
-        for i in range(10):
-            state_manager.add_task_completion(f"task-{i}", f"Task {i}", "completed")
-
-        # Keep only 5
-        state_manager.cleanup_old_completions(keep_count=5)
-
-        conn = state_manager._get_conn()
-        count = conn.execute("SELECT COUNT(*) FROM task_completions").fetchone()[0]
-        assert count == 5
-
-    def test_mark_completions_seen_empty_list_is_noop(self, state_manager):
-        """mark_completions_seen_by_wendy with empty list is a no-op."""
-        state_manager.add_task_completion("task-1", "Task 1", "completed")
-        state_manager.mark_completions_seen_by_wendy([])
-        unseen = state_manager.get_unseen_completions_for_wendy()
-        assert len(unseen) == 1  # Still unseen
-
-    def test_add_task_completion_upsert(self, state_manager):
-        """add_task_completion with same task_id updates existing."""
-        state_manager.add_task_completion("task-1", "Task 1", "completed", "0:01:00")
-        state_manager.add_task_completion("task-1", "Task 1 Updated", "failed", "0:02:00")
-
-        unseen = state_manager.get_unseen_completions_for_wendy()
-        assert len(unseen) == 1
-        assert unseen[0].title == "Task 1 Updated"
-        assert unseen[0].status == "failed"
-
-
-class TestWebhookEvents:
-    """Tests for webhook event tracking (legacy API)."""
-
-    def test_add_and_get_webhook_events(self, state_manager):
-        """add_webhook_event stores, get_unprocessed retrieves."""
-        event_id = state_manager.add_webhook_event(
-            source="github",
-            channel_id=123456789,
-            summary="Push to main",
-            payload={"ref": "refs/heads/main"},
-        )
-
-        assert event_id > 0
-
-        events = state_manager.get_unprocessed_webhook_events()
-        assert len(events) == 1
-        assert events[0].source == "github"
-        assert events[0].channel_id == 123456789
-        assert events[0].summary == "Push to main"
-        assert events[0].processed is False
-
-    def test_mark_webhook_events_processed(self, state_manager):
-        """mark_webhook_events_processed updates flag."""
-        event_id = state_manager.add_webhook_event("github", 123, "Test event")
-
-        state_manager.mark_webhook_events_processed([event_id])
-
-        events = state_manager.get_unprocessed_webhook_events()
-        assert len(events) == 0
-
-    def test_cleanup_old_webhook_events(self, state_manager):
-        """cleanup_old_webhook_events removes old entries."""
-        for i in range(10):
-            state_manager.add_webhook_event("github", 123 + i, f"Event {i}")
-
-        state_manager.cleanup_old_webhook_events(keep_count=5)
-
-        conn = state_manager._get_conn()
-        count = conn.execute("SELECT COUNT(*) FROM webhook_events").fetchone()[0]
-        assert count == 5
 
 
 class TestNotifications:
@@ -409,71 +288,6 @@ class TestUsageState:
 
         result = state_manager.get_usage_threshold("key1")
         assert result == 20
-
-    def test_get_all_usage_state(self, state_manager):
-        """get_all_usage_state returns dict of all keys."""
-        state_manager.set_usage_threshold("key1", 10)
-        state_manager.set_usage_threshold("key2", 20)
-
-        result = state_manager.get_all_usage_state()
-        assert result == {"key1": 10, "key2": 20}
-
-
-class TestMigration:
-    """Tests for JSON migration helpers."""
-
-    def test_migrate_from_session_json(self, state_manager, tmp_path):
-        """migrate_from_session_json imports JSON data."""
-        json_path = tmp_path / "session_state.json"
-        json_path.write_text(json.dumps({
-            "123456789": {
-                "session_id": "old-session",
-                "folder": "coding",
-                "created_at": 1700000000,
-                "message_count": 5,
-                "total_input_tokens": 1000,
-                "total_output_tokens": 500,
-                "total_cache_read_tokens": 100,
-                "total_cache_create_tokens": 50,
-            }
-        }))
-
-        count = state_manager.migrate_from_session_json(json_path)
-        assert count == 1
-
-        # JSON file should be renamed
-        assert not json_path.exists()
-        assert (tmp_path / "session_state.json.migrated").exists()
-
-        # Session should be in SQLite
-        session = state_manager.get_session(123456789)
-        assert session is not None
-        assert session.session_id == "old-session"
-        assert session.message_count == 5
-
-    def test_migrate_from_session_json_nonexistent(self, state_manager, tmp_path):
-        """migrate_from_session_json handles missing file."""
-        count = state_manager.migrate_from_session_json(tmp_path / "nonexistent.json")
-        assert count == 0
-
-    def test_migrate_from_usage_json(self, state_manager, tmp_path):
-        """migrate_from_usage_json imports JSON data."""
-        json_path = tmp_path / "usage_state.json"
-        json_path.write_text(json.dumps({
-            "last_notified_week_all": 50,
-            "last_notified_week_sonnet": 30,
-        }))
-
-        result = state_manager.migrate_from_usage_json(json_path)
-        assert result is True
-
-        # JSON file should be renamed
-        assert not json_path.exists()
-
-        # Values should be in SQLite
-        assert state_manager.get_usage_threshold("last_notified_week_all") == 50
-        assert state_manager.get_usage_threshold("last_notified_week_sonnet") == 30
-
 
 class TestThreadSafety:
     """Tests for thread-safe operations."""

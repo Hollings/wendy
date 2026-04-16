@@ -4,7 +4,7 @@ Tests the actual _parse_channel_config method in WendyCog and the
 validate_channel_name function in paths.py.
 """
 
-from bot.paths import validate_channel_name
+from wendy.paths import validate_channel_name
 
 
 # We can't instantiate WendyCog directly (requires Discord bot),

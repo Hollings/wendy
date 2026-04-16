@@ -1,14 +1,13 @@
 """Tests for Discord thread support."""
 
-import json
 import tempfile
-import uuid
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-from bot.paths import validate_channel_name
-from bot.state_manager import StateManager
+
+from wendy.paths import validate_channel_name
+from wendy.state import StateManager
 
 
 @pytest.fixture
@@ -82,7 +81,7 @@ class TestResolveThreadConfig:
         mock_channel.name = "my-thread"
 
         # Make isinstance check work for discord.Thread
-        with patch("bot.wendy_cog.isinstance", side_effect=lambda obj, cls: True if obj is mock_channel else isinstance(obj, cls)):
+        with patch("wendy.discord_client.isinstance", side_effect=lambda obj, cls: True if obj is mock_channel else isinstance(obj, cls)):
             # We'll test the logic directly instead of via the cog
             parent_config = {
                 "id": "222",
@@ -138,9 +137,9 @@ class TestProxyThreadFallback:
         sm.register_thread(111, 222, "coding_t_111")
 
         # Simulate proxy's get_channel_name with empty _CHANNEL_CONFIG
-        with patch("proxy.main._CHANNEL_CONFIG", {}):
-            with patch("proxy.main.state_manager", sm):
-                from proxy.main import get_channel_name
+        with patch("wendy.api_server._channel_configs", {}):
+            with patch("wendy.api_server.state_manager", sm):
+                from wendy.api_server import get_channel_name
                 result = get_channel_name(111)
                 assert result == "coding_t_111"
 
@@ -149,214 +148,46 @@ class TestProxyThreadFallback:
         sm.register_thread(222, 333, "should_not_use_this")
 
         config = {222: {"name": "coding", "_folder": "coding"}}
-        with patch("proxy.main._CHANNEL_CONFIG", config):
-            from proxy.main import get_channel_name
+        with patch("wendy.api_server._channel_configs", config):
+            from wendy.api_server import get_channel_name
             result = get_channel_name(222)
             assert result == "coding"
 
 
-class TestSessionForking:
-    """Tests for native --fork-session in generate()."""
+class TestBuildCliCommandFork:
+    """Tests for fork-session CLI command building."""
 
-    def _make_generator(self):
-        """Create a ClaudeCliTextGenerator with mocked internals."""
-        from bot.claude_cli import ClaudeCliTextGenerator
+    def test_build_cli_command_includes_fork_flags(self):
+        """build_cli_command with fork_mode uses --resume and --fork-session."""
+        from wendy.cli import build_cli_command
 
-        gen = ClaudeCliTextGenerator.__new__(ClaudeCliTextGenerator)
-        gen.model = "claude-sonnet-4-5-20250929"
-        gen.cli_path = "/usr/bin/claude"
-        gen.timeout = 300
-        gen._temp_dir = None
-        gen._temp_files = []
-        return gen
+        cmd = build_cli_command(
+            cli_path="/usr/bin/claude",
+            session_id="parent-session-id",
+            is_new_session=True,
+            system_prompt="test prompt",
+            channel_config={"mode": "full", "_folder": "coding_t_111"},
+            model="claude-sonnet-4-5-20250929",
+            fork_mode=True,
+        )
+        assert "--resume" in cmd
+        assert "parent-session-id" in cmd
+        assert "--fork-session" in cmd
+        assert "--session-id" not in cmd
 
-    def test_generate_builds_fork_command_for_new_thread(self, sm):
-        """generate() uses --resume <parent> --fork-session for first thread invocation."""
-        parent_folder = "coding"
-        parent_session_id = str(uuid.uuid4())
-        sm.create_session(222, parent_session_id, parent_folder)
+    def test_build_cli_command_fresh_session_without_fork(self):
+        """build_cli_command without fork_mode uses --session-id."""
+        from wendy.cli import build_cli_command
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = Path(tmpdir)
-            # Create parent session file
-            sess_dir = tmpdir / "sessions"
-            sess_dir.mkdir()
-            parent_sess_file = sess_dir / f"{parent_session_id}.jsonl"
-            parent_sess_file.write_text('{"type":"user"}\n')
-
-            channel_dir_path = tmpdir / "channels" / parent_folder
-            channel_dir_path.mkdir(parents=True)
-
-            captured_cmd = []
-
-            async def fake_create_subprocess_exec(*args, **kwargs):
-                captured_cmd.extend(args)
-                proc = AsyncMock()
-                proc.returncode = 0
-                proc.stdin = AsyncMock()
-                proc.stdin.drain = AsyncMock()
-                proc.stdin.wait_closed = AsyncMock()
-                proc.stderr.read = AsyncMock(return_value=b"")
-                proc.wait = AsyncMock()
-
-                # Simulate stream output with result event containing forked session ID
-                forked_id = str(uuid.uuid4())
-                result_line = json.dumps({"type": "result", "result": "", "session_id": forked_id, "usage": {}})
-                proc.stdout.__aiter__ = lambda self: aiter([result_line.encode()])
-                return proc
-
-            async def aiter(items):
-                for item in items:
-                    yield item
-
-            with patch("bot.claude_cli.state_manager", sm), \
-                 patch("bot.claude_cli.session_dir", return_value=sess_dir), \
-                 patch("bot.claude_cli.channel_dir", return_value=channel_dir_path), \
-                 patch("bot.claude_cli.ensure_channel_dirs"), \
-                 patch("bot.claude_cli.ensure_shared_dirs"), \
-                 patch("bot.claude_cli.WENDY_BASE", tmpdir):
-
-                gen = self._make_generator()
-
-                thread_config = {
-                    "id": "111",
-                    "name": "my-thread",
-                    "mode": "full",
-                    "beads_enabled": False,
-                    "_folder": "coding_t_111",
-                    "_is_thread": True,
-                    "_parent_folder": parent_folder,
-                    "_parent_channel_id": 222,
-                    "_thread_name": "my-thread",
-                }
-
-                with patch("asyncio.create_subprocess_exec", side_effect=fake_create_subprocess_exec):
-                    import asyncio
-                    asyncio.get_event_loop().run_until_complete(
-                        gen.generate(channel_id=111, channel_config=thread_config)
-                    )
-
-            # Verify --resume <parent_session_id> --fork-session in command
-            assert "--resume" in captured_cmd
-            resume_idx = captured_cmd.index("--resume")
-            assert captured_cmd[resume_idx + 1] == parent_session_id
-            assert "--fork-session" in captured_cmd
-            # Should NOT have --session-id (that's for fresh sessions)
-            assert "--session-id" not in captured_cmd
-
-    def test_generate_fresh_session_when_no_parent(self, sm):
-        """generate() creates fresh session when parent has no session to fork."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = Path(tmpdir)
-            sess_dir = tmpdir / "sessions"
-            sess_dir.mkdir()
-
-            channel_dir_path = tmpdir / "channels" / "coding"
-            channel_dir_path.mkdir(parents=True)
-
-            captured_cmd = []
-
-            async def fake_create_subprocess_exec(*args, **kwargs):
-                captured_cmd.extend(args)
-                proc = AsyncMock()
-                proc.returncode = 0
-                proc.stdin = AsyncMock()
-                proc.stdin.drain = AsyncMock()
-                proc.stdin.wait_closed = AsyncMock()
-                proc.stderr.read = AsyncMock(return_value=b"")
-                proc.wait = AsyncMock()
-
-                result_line = json.dumps({"type": "result", "result": "", "usage": {}})
-                proc.stdout.__aiter__ = lambda self: aiter([result_line.encode()])
-                return proc
-
-            async def aiter(items):
-                for item in items:
-                    yield item
-
-            with patch("bot.claude_cli.state_manager", sm), \
-                 patch("bot.claude_cli.session_dir", return_value=sess_dir), \
-                 patch("bot.claude_cli.channel_dir", return_value=channel_dir_path), \
-                 patch("bot.claude_cli.ensure_channel_dirs"), \
-                 patch("bot.claude_cli.ensure_shared_dirs"), \
-                 patch("bot.claude_cli.WENDY_BASE", tmpdir):
-
-                gen = self._make_generator()
-
-                thread_config = {
-                    "id": "111",
-                    "name": "my-thread",
-                    "mode": "full",
-                    "beads_enabled": False,
-                    "_folder": "coding_t_111",
-                    "_is_thread": True,
-                    "_parent_folder": "coding",
-                    "_parent_channel_id": 222,
-                    "_thread_name": "my-thread",
-                }
-
-                with patch("asyncio.create_subprocess_exec", side_effect=fake_create_subprocess_exec):
-                    import asyncio
-                    asyncio.get_event_loop().run_until_complete(
-                        gen.generate(channel_id=111, channel_config=thread_config)
-                    )
-
-            # Should use --session-id (fresh), NOT --fork-session
-            assert "--session-id" in captured_cmd
-            assert "--fork-session" not in captured_cmd
-
-    def test_extract_forked_session_id_from_result(self):
-        """_extract_forked_session_id finds session_id in result event."""
-        gen = self._make_generator()
-        forked_id = str(uuid.uuid4())
-        events = [
-            {"type": "system", "session_id": "old-id"},
-            {"type": "assistant", "message": {"content": []}},
-            {"type": "result", "result": "", "session_id": forked_id},
-        ]
-        result = gen._extract_forked_session_id(events, "coding")
-        assert result == forked_id
-
-    def test_extract_forked_session_id_from_system(self):
-        """_extract_forked_session_id falls back to system event."""
-        gen = self._make_generator()
-        sys_id = str(uuid.uuid4())
-        events = [
-            {"type": "system", "session_id": sys_id},
-            {"type": "assistant", "message": {"content": []}},
-            {"type": "result", "result": ""},  # No session_id in result
-        ]
-        result = gen._extract_forked_session_id(events, "coding")
-        assert result == sys_id
-
-    def test_extract_forked_session_id_from_index(self):
-        """_extract_forked_session_id falls back to sessions-index.json."""
-        gen = self._make_generator()
-        newest_id = str(uuid.uuid4())
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = Path(tmpdir)
-            index_data = {
-                "version": 1,
-                "entries": [
-                    {"sessionId": "old-session", "modified": "2025-01-01T00:00:00Z"},
-                    {"sessionId": newest_id, "modified": "2026-02-12T00:00:00Z"},
-                ],
-            }
-            index_path = tmpdir / "sessions-index.json"
-            index_path.write_text(json.dumps(index_data))
-
-            events = [
-                {"type": "result", "result": ""},  # No session_id
-            ]
-            with patch("bot.claude_cli.session_dir", return_value=tmpdir):
-                result = gen._extract_forked_session_id(events, "coding")
-            assert result == newest_id
-
-    def test_extract_forked_session_id_returns_none(self):
-        """_extract_forked_session_id returns None when nothing found."""
-        gen = self._make_generator()
-        events = [{"type": "result", "result": ""}]
-        with patch("bot.claude_cli.session_dir", return_value=Path("/nonexistent")):
-            result = gen._extract_forked_session_id(events, "coding")
-        assert result is None
+        cmd = build_cli_command(
+            cli_path="/usr/bin/claude",
+            session_id="new-session-id",
+            is_new_session=True,
+            system_prompt="test prompt",
+            channel_config={"mode": "full", "_folder": "coding_t_111"},
+            model="claude-sonnet-4-5-20250929",
+            fork_mode=False,
+        )
+        assert "--session-id" in cmd
+        assert "new-session-id" in cmd
+        assert "--fork-session" not in cmd
