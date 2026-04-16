@@ -132,6 +132,7 @@ class TaskRunner:
         self.agents: dict[str, RunningAgent] = {}
         self.beads_channels: list[ChannelBeads] = []
         self._last_usage_check: float = 0.0
+        self._usage_disabled: bool = False
         LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     def _load_beads_channels(self) -> list[ChannelBeads]:
@@ -199,9 +200,7 @@ class TaskRunner:
 
                     self._cleanup_logs()
                     await self._write_beads_snapshot()
-                    # Disabled: server token lacks user:profile scope, so every
-                    # call fails and may still count toward account rate limit.
-                    # await self._check_usage()
+                    await self._check_usage()
                 except Exception:
                     _LOG.exception("Task runner loop error")
 
@@ -548,7 +547,14 @@ class TaskRunner:
             _LOG.debug("Failed to write beads snapshot", exc_info=True)
 
     async def _check_usage(self) -> None:
-        """Periodically check Claude Code usage via get_usage.sh."""
+        """Periodically check Claude Code usage via get_usage.sh.
+
+        Permanently disables itself for the session if the API returns an auth
+        or rate-limit error, to avoid hammering a broken endpoint.
+        """
+        if self._usage_disabled:
+            return
+
         usage_poll_interval = 3600  # 1 hour
         usage_script = Path("/app/scripts/get_usage.sh")
         usage_data_file = WENDY_BASE / "usage_data.json"
@@ -578,10 +584,32 @@ class TaskRunner:
                 cwd=WENDY_BASE,
             )
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+            output = stdout.decode()
+
             if proc.returncode != 0:
+                # Check if this is an auth/rate-limit error (non-transient)
+                try:
+                    err_data = json.loads(output)
+                    err_msg = str(err_data.get("error", "")).lower()
+                    if any(s in err_msg for s in ("auth", "token", "scope", "permission",
+                                                   "unauthorized", "forbidden", "429",
+                                                   "rate limit", "too many")):
+                        _LOG.warning("Usage check disabled for session: %s", err_data.get("error"))
+                        self._usage_disabled = True
+                except (json.JSONDecodeError, AttributeError):
+                    pass
                 return
 
-            usage = json.loads(stdout.decode())
+            usage = json.loads(output)
+            if usage.get("error"):
+                err_msg = str(usage["error"]).lower()
+                if any(s in err_msg for s in ("auth", "token", "scope", "permission",
+                                               "unauthorized", "forbidden", "429",
+                                               "rate limit", "too many")):
+                    _LOG.warning("Usage check disabled for session: %s", usage["error"])
+                    self._usage_disabled = True
+                return
+
             if USAGE_BUDGET_FACTOR < 1.0:
                 for key in ("week_all_percent", "week_sonnet_percent", "session_percent"):
                     if key in usage:

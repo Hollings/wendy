@@ -17,15 +17,33 @@ if [ -z "$ACCESS_TOKEN" ]; then
     exit 1
 fi
 
-# Call the usage API
-RESPONSE=$(curl -s "https://api.anthropic.com/api/oauth/usage" \
+# Call the usage API (capture HTTP status code alongside body)
+TMPFILE=$(mktemp /tmp/usage_response.XXXXXX)
+HTTP_CODE=$(curl -s -o "$TMPFILE" -w '%{http_code}' \
+    "https://api.anthropic.com/api/oauth/usage" \
     -H "Accept: application/json" \
     -H "Content-Type: application/json" \
     -H "User-Agent: claude-code/2.1.7" \
     -H "Authorization: Bearer $ACCESS_TOKEN" \
     -H "anthropic-beta: oauth-2025-04-20")
+RESPONSE=$(cat "$TMPFILE" 2>/dev/null)
+rm -f "$TMPFILE"
 
-# Check if we got an error
+# Check for HTTP-level auth/rate-limit errors
+if [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "403" ]; then
+    echo "{\"error\": \"Unauthorized ($HTTP_CODE) - token may lack required scope\"}"
+    exit 1
+fi
+if [ "$HTTP_CODE" = "429" ]; then
+    echo "{\"error\": \"Rate limited (429) - too many requests\"}"
+    exit 1
+fi
+if [ "$HTTP_CODE" != "200" ]; then
+    echo "{\"error\": \"HTTP $HTTP_CODE from usage API\"}"
+    exit 1
+fi
+
+# Check if we got an error in the response body
 if echo "$RESPONSE" | grep -q '"error"'; then
     echo "$RESPONSE"
     exit 1
