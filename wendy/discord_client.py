@@ -632,12 +632,12 @@ class WendyBot(commands.Bot):
         """Read cached usage data and return (week_pct_str, pace_str, resets_str).
 
         Reads from the usage_data.json file maintained by the TaskRunner's
-        ``_check_usage`` loop.  Falls back to running get_usage.sh directly
-        if the cached file is missing.
+        ``_check_usage`` loop.  Returns ``("N/A", "N/A", "")`` if the cached
+        file is missing or unreadable (does NOT call get_usage.sh directly,
+        since the API may be unavailable due to token scope issues).
 
         pace = floor(elapsed_week_pct) - week_all_percent: positive means budget
         ahead of pace, negative means deficit. Updates ``_cached_usage`` on success.
-        Returns ``("N/A", "N/A", "")`` on any failure.
         """
         global _cached_usage
 
@@ -652,20 +652,7 @@ class WendyBot(commands.Bot):
                 pass
 
         if data is None:
-            # Fallback: try running the script directly
-            proc = await asyncio.create_subprocess_exec(
-                "/app/scripts/get_usage.sh",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                _LOG.error("get_usage.sh failed: %s", stderr.decode("utf-8", errors="replace").strip())
-                return "N/A", "N/A", ""
-            try:
-                data = json.loads(stdout.decode())
-            except json.JSONDecodeError:
-                return "N/A", "N/A", ""
+            return "N/A", "N/A", ""
 
         if USAGE_BUDGET_FACTOR < 1.0:
             for key in ("week_all_percent", "week_sonnet_percent", "session_percent"):
