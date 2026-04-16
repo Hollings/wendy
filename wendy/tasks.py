@@ -199,7 +199,9 @@ class TaskRunner:
 
                     self._cleanup_logs()
                     await self._write_beads_snapshot()
-                    await self._check_usage()
+                    # Disabled: server token lacks user:profile scope, so every
+                    # call fails and may still count toward account rate limit.
+                    # await self._check_usage()
                 except Exception:
                     _LOG.exception("Task runner loop error")
 
