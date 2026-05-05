@@ -99,7 +99,7 @@ def main():
         real.pop(0)
 
     if not real and not task_updates:
-        print("(no new messages)")
+        print("(no new messages - nothing to respond to, your turn is complete)")
         return
 
     for m in real:
