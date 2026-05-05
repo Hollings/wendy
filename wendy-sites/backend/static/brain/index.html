@@ -49,6 +49,16 @@
         .auth-error { color: #f87171; margin-top: 12px; font-size: 13px; }
 
         /* Feed Screen */
+        .group-count-badge {
+            float: right;
+            background: #333;
+            color: #888;
+            border-radius: 10px;
+            padding: 1px 7px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-left: 6px;
+        }
         .feed-screen { display: none; }
         .feed-screen.active { display: flex; flex-direction: column; height: 100vh; }
 
@@ -1891,6 +1901,11 @@
         function getEventKey(data) {
             // Create a unique key for this event
             const ts = data.ts || 0;
+            return `${ts}-${getContentKey(data)}`;
+        }
+
+        function getContentKey(data) {
+            // Timestamp-less key for visual grouping of consecutive identical events
             const type = data.event?.type || '';
             const subtype = data.event?.subtype || '';
             const content = data.event?.message?.content;
@@ -1908,7 +1923,7 @@
                     contentKey = 'result-' + (typeof resultContent === 'string' ? resultContent.slice(0, 30) : '');
                 }
             }
-            return `${ts}-${type}-${subtype}-${contentKey}`;
+            return `${type}-${subtype}-${contentKey}`;
         }
 
         function addEvent(data) {
@@ -1930,8 +1945,27 @@
             const idle = feed.querySelector('.idle-notice');
             if (idle) idle.remove();
 
+            // Group consecutive identical events into a single entry with a count badge
+            const contentKey = getContentKey(data);
+            const lastEl = feed.lastElementChild;
+            if (lastEl && lastEl.dataset.contentKey === contentKey) {
+                const count = (parseInt(lastEl.dataset.groupCount || '1')) + 1;
+                lastEl.dataset.groupCount = count;
+                let badge = lastEl.querySelector('.group-count-badge');
+                if (!badge) {
+                    badge = document.createElement('span');
+                    badge.className = 'group-count-badge';
+                    lastEl.prepend(badge);
+                }
+                badge.textContent = '×' + count;
+                if (autoscroll && userAtBottom) scrollToBottom();
+                return true;
+            }
+
             const el = renderEvent(data);
             if (!el) return;
+
+            if (contentKey) el.dataset.contentKey = contentKey;
 
             // Add click handler for expanding
             el.addEventListener('click', () => toggleEventExpand(el));
