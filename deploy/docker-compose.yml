@@ -19,6 +19,7 @@ services:
       - /srv/secrets/wendy:/secrets:ro
       - /srv/wendy-v2/config:/app/config:ro
       - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/dbus:/var/run/dbus
     env_file:
       - /srv/secrets/wendy/bot.env
     environment:

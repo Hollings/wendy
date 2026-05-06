@@ -86,14 +86,4 @@ find /data/wendy/claude_fragments/ -maxdepth 1 -type f -exec chmod 644 {} + 2>/d
 # Subdirectories other than people/ are also root-owned
 find /data/wendy/claude_fragments/ -mindepth 1 -maxdepth 1 -type d ! -name people -exec chown -R root:root {} + 2>/dev/null || true
 
-# ---------------------------------------------------------------------------
-# Bluetooth: start an in-container dbus-daemon + bluetoothd so the host
-# doesn't need BlueZ. NET_ADMIN cap + network_mode: host give us access to
-# the HCI device directly.
-# ---------------------------------------------------------------------------
-mkdir -p /var/run/dbus
-dbus-daemon --system --nofork --nopidfile &
-sleep 0.5
-bluetoothd --nodetach &
-
 exec "$@"
