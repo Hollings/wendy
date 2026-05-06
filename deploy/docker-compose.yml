@@ -13,8 +13,6 @@ services:
     cap_add:
       - NET_ADMIN
       - NET_RAW
-    devices:
-      - /dev/hci0:/dev/hci0
     volumes:
       - wendy_data:/data/wendy
       - claude_config:/root/.claude
