@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import shutil
 import time
 from pathlib import Path
@@ -38,6 +39,18 @@ from .paths import (
 )
 
 _LOG = logging.getLogger(__name__)
+
+# Per-channel nudge_id of the currently-running CLI turn. Set by run_cli()
+# before the subprocess spawns and cleared in finally. The internal API server
+# reads this when persisting Wendy's outgoing messages so each row in
+# message_history is keyed back to the nudge that produced it.
+_active_nudges: dict[int, str] = {}
+
+
+def get_active_nudge_id(channel_id: int) -> str | None:
+    """Return the nudge_id for the in-flight CLI turn on *channel_id*, if any."""
+    return _active_nudges.get(channel_id)
+
 
 TOOL_INSTRUCTIONS_TEMPLATE = """
 ---
@@ -242,8 +255,15 @@ def build_nudge_prompt(
     journal_note: str = "",
     beads_note: str = "",
     was_compacted: bool = False,
+    nudge_id: str | None = None,
 ) -> str:
-    """Build the nudge prompt sent to Claude CLI via stdin."""
+    """Build the nudge prompt sent to Claude CLI via stdin.
+
+    When *nudge_id* is provided, an ``[nudge:{id}]`` tag is appended to the
+    prompt. The tag is system-noise the model can ignore; it lets us locate
+    the exact turn boundary in the session JSONL afterwards (used by the
+    !analysis fork-point lookup).
+    """
     if is_thread:
         base = (
             f'<you\'ve been forked into a Discord thread: "{thread_name}". '
@@ -264,7 +284,10 @@ def build_nudge_prompt(
         f"do not use -n unless you have a specific reason.>"
     ) if was_compacted else ""
     extras = "\n".join(x for x in [journal_note, beads_note, compacted_note] if x)
-    return base + ("\n" + extras if extras else "")
+    prompt = base + ("\n" + extras if extras else "")
+    if nudge_id:
+        prompt += f"\n[nudge:{nudge_id}]"
+    return prompt
 
 
 def setup_channel_folder(channel_name: str, beads_enabled: bool = False) -> None:
@@ -740,11 +763,16 @@ async def run_cli(
         from .fragments import reset_introductions
         reset_introductions(channel_name)
 
-    nudge_prompt = nudge_override or build_nudge_prompt(
-        channel_id, is_thread=is_thread, thread_name=thread_name,
-        journal_note=journal_note, beads_note=beads_note,
-        was_compacted=was_compacted,
-    )
+    if nudge_override:
+        nudge_prompt = nudge_override
+        nudge_id: str | None = None
+    else:
+        nudge_id = secrets.token_hex(4)
+        nudge_prompt = build_nudge_prompt(
+            channel_id, is_thread=is_thread, thread_name=thread_name,
+            journal_note=journal_note, beads_note=beads_note,
+            was_compacted=was_compacted, nudge_id=nudge_id,
+        )
 
     # Ensure filesystem prerequisites.
     WENDY_BASE.mkdir(parents=True, exist_ok=True)
@@ -756,6 +784,9 @@ async def run_cli(
 
     if beads_enabled:
         _write_current_session_file(channel_name, session_id)
+
+    if nudge_id:
+        _active_nudges[channel_id] = nudge_id
 
     proc = None
     idle_timeout = CLAUDE_CLI_IDLE_TIMEOUT
@@ -848,3 +879,7 @@ async def run_cli(
     except asyncio.CancelledError:
         _kill_process(proc)
         raise
+
+    finally:
+        if nudge_id:
+            _active_nudges.pop(channel_id, None)

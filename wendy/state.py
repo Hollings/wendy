@@ -83,6 +83,7 @@ class StateManager:
                 timestamp INTEGER,
                 attachment_urls TEXT,
                 reply_to_id INTEGER,
+                nudge_id TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -157,6 +158,22 @@ class StateManager:
             conn.commit()
         except Exception:
             pass  # column already exists
+        try:
+            conn.execute("ALTER TABLE message_history ADD COLUMN nudge_id TEXT")
+            conn.commit()
+        except Exception:
+            pass  # column already exists
+        # Index creation runs unconditionally so it's still created on fresh DBs
+        # (where ALTER TABLE failed because the column was already present from
+        # the CREATE TABLE statement above).
+        try:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_message_history_nudge "
+                "ON message_history(nudge_id) WHERE nudge_id IS NOT NULL"
+            )
+            conn.commit()
+        except Exception:
+            pass
         _LOG.info("Schema initialized at %s", self.db_path)
 
     # =========================================================================
@@ -306,17 +323,18 @@ class StateManager:
         attachment_urls: str | None = None,
         reply_to_id: int | None = None,
         is_webhook: bool = False,
+        nudge_id: str | None = None,
     ) -> None:
         conn = self._get_conn()
         conn.execute(
             """
             INSERT OR IGNORE INTO message_history
                 (message_id, channel_id, guild_id, author_id, author_nickname,
-                 is_bot, is_webhook, content, timestamp, attachment_urls, reply_to_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 is_bot, is_webhook, content, timestamp, attachment_urls, reply_to_id, nudge_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (message_id, channel_id, guild_id, author_id, author_nickname,
-             int(is_bot), int(is_webhook), content, timestamp, attachment_urls, reply_to_id)
+             int(is_bot), int(is_webhook), content, timestamp, attachment_urls, reply_to_id, nudge_id)
         )
         conn.commit()
 

@@ -56,6 +56,12 @@ WENDY_WEB_URL: str = os.getenv("WENDY_WEB_URL", "wendy.monster")
 SYNTHETIC_ID_THRESHOLD: int = 9_000_000_000_000_000_000
 MAX_MESSAGE_LIMIT: int = 200
 DEV_MODE: bool = os.getenv("WENDY_DEV_MODE", "") == "1"
+
+# Knobs for the `!analysis` opinion-stability probe (see wendy/analysis.py).
+ANALYSIS_FORK_TIMEOUT: int = int(os.getenv("ANALYSIS_FORK_TIMEOUT", "75"))
+ANALYSIS_MAX_FORKS: int = int(os.getenv("ANALYSIS_MAX_FORKS", "5"))
+ANALYSIS_RATE_LIMIT_SECONDS: int = int(os.getenv("ANALYSIS_RATE_LIMIT_SECONDS", "60"))
+ANALYSIS_RUNS_DIR: str = os.getenv("ANALYSIS_RUNS_DIR", "/data/wendy/analysis_runs")
 MESSAGE_LOGGER_GUILDS: set[int] = set()
 _raw_guilds = os.getenv("MESSAGE_LOGGER_GUILDS", "")
 for _part in _raw_guilds.split(","):

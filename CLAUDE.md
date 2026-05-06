@@ -41,6 +41,21 @@ The source directory is live-mounted into the container — code changes take ef
 ./dev-rebuild.sh --build all
 ```
 
+### Brain dashboard (`services/web/brain-ui/`)
+
+React + Vite SPA. The wendy-web Dockerfile builds it as stage 1 and copies the output into `services/web/static/brain/`, so any production deploy rebuilds it automatically. For local iteration:
+
+```bash
+cd services/web/brain-ui
+npm install               # first time
+node node_modules/vite/bin/vite.js build   # produces services/web/static/brain/{index.html,assets/}
+node node_modules/vite/bin/vite.js dev     # hot-reload dev server (proxies /api and /ws/brain)
+```
+
+If the build fails with `Cannot find module @rollup/rollup-win32-x64-msvc`, delete `node_modules` + `package-lock.json` and re-run `npm install` (npm optional-deps bug).
+
+See `services/web/BRAIN_DASHBOARD_SPEC.md` for the WebSocket envelope shapes and REST contract that the SPA depends on.
+
 ---
 
 ## Architecture: Core Request Flow
@@ -138,6 +153,8 @@ The `wendy-web` service (port 8910) hosts static sites, game containers, and the
 | `!clear` | Reset the current Claude session (archives old, starts fresh UUID) |
 | `!resume <id>` | Resume a previous session by ID prefix |
 | `!session` | Show current session ID, start time, turn count, and token usage |
+| `!beads` | List running bead agents in the current channel |
+| `!cancel <id>` | Kill a running bead agent and close its bead |
 | `!version` | Show the running git commit |
 | `!system` | Upload the assembled system prompt as a text file (useful for debugging) |
 
@@ -241,6 +258,8 @@ A local copy with actual values is in `.env` (gitignored). See `.env.example` fo
 
 ## Deployment
 
+**CRITICAL: ALWAYS use `./deploy.sh`. NEVER scp individual files, NEVER run `docker compose` commands manually on the server, NEVER assemble ad-hoc deploys.** The script uses `tar + scp` and works on every platform including Windows (no rsync required). It also handles DB backup, rebuild, restart, and health checks in one shot. Manual deploys skip the backup, risk leaving the server in a half-broken state, and have already caused problems — just run the script.
+
 ```bash
 ./deploy.sh               # Deploy bot (most common)
 ./deploy.sh web            # Deploy web service only
@@ -248,8 +267,6 @@ A local copy with actual values is in `.env` (gitignored). See `.env.example` fo
 ./deploy.sh --restart-only # Restart without uploading/rebuilding
 ./deploy.sh --logs         # Tail production logs
 ```
-
-The script rsyncs the repo to `$DEPLOY_HOST` and runs `docker compose up -d --build`. Requires `rsync` (Linux/macOS). On Windows, manually `scp` changed files to `/srv/wendy-v2/` on the server, then `ssh $DEPLOY_HOST "cd /srv/wendy-v2/deploy && docker compose up -d --build wendy"`.
 
 **Fragment sync**: after deploying code, run `scripts/sync-fragments.sh` to diff repo fragments against the server's live copies and resolve conflicts interactively. Wendy edits fragments at runtime, so repo and server can diverge.
 
@@ -334,6 +351,12 @@ To rotate the token: update `CLAUDE_CODE_OAUTH_TOKEN` in `/srv/secrets/wendy/bot
 
 Note: `CLAUDE_CODE_OAUTH_TOKEN` is in `SENSITIVE_ENV_VARS` (stripped from the CLI subprocess env for security), then explicitly re-added by `_build_cli_env()` in `cli.py`. If the token isn't reaching the CLI, check that code path.
 
+### Brain watcher missing live events (force_polling required)
+
+`services/web/brain.py` watches `stream.jsonl` and `orchestrator_logs/` via `watchfiles.awatch`. Inotify events do **not** propagate across container boundaries on shared Docker volumes — wendy-web cannot see writes made by the wendy bot. Both `awatch` calls pass `force_polling=True` to fall back to stat-based polling. If you copy this watcher pattern elsewhere, keep that flag, or watchers will look healthy in logs but never broadcast cross-container writes.
+
+Module-level loggers (`_LOG = logging.getLogger(__name__)`) only surface in docker logs because `main.py` calls `logging.basicConfig(level=logging.INFO, ...)` at import time. Removing that call silently re-hides every watcher INFO log.
+
 ### Reset a session
 
 ```bash
@@ -386,6 +409,7 @@ docker exec wendy ls -lt /root/.claude/projects/-data-wendy-channels-coding/ | h
 | `CLAUDE_CLI_TIMEOUT` | Max CLI runtime (seconds) | `300` |
 | `ORCHESTRATOR_CONCURRENCY` | Max concurrent beads agents | `3` |
 | `ORCHESTRATOR_POLL_INTERVAL` | Seconds between beads task polls | `30` |
+| `ORCHESTRATOR_CLOSED_CHECK_INTERVAL` | Seconds between externally-closed-task sweeps (controls cancel latency) | `3` |
 | `ORCHESTRATOR_AGENT_TIMEOUT` | Max beads agent runtime (seconds) | `1800` |
 | `JOURNAL_NUDGE_INTERVAL` | Invocations between journal nudges | `10` |
 | `WENDY_WEB_URL` | URL of wendy-web service | `https://wendy.monster` |
@@ -410,7 +434,7 @@ docker exec wendy ls -lt /root/.claude/projects/-data-wendy-channels-coding/ | h
 | `GAMES_DIR` | Game files directory | `/data/games` |
 | `HOST_GAMES_DIR` | Host path for game volume mounts | (set in compose) |
 | `BASE_PORT` | First port for game containers | `8921` |
-| `MAX_GAMES` | Max simultaneous games | `20` |
+| `MAX_GAMES` | Max simultaneous games | `100` |
 | `DOCKER_NETWORK` | Network game containers join | `wendy_web` |
 | `BASE_URL` | Public URL base | `https://wendy.monster` |
 | `WEBHOOK_SECRET` | HMAC secret for GitHub webhooks | — |

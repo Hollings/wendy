@@ -43,6 +43,8 @@ from .state import state as state_manager
 if TYPE_CHECKING:
     import discord
 
+    from .tasks import TaskRunner
+
 _LOG = logging.getLogger(__name__)
 
 # Channel config loaded from discord_client at startup
@@ -51,11 +53,21 @@ _channel_configs: dict[int, dict] = {}
 # Discord bot reference (set by discord_client at startup)
 _discord_bot: discord.Client | None = None
 
+# TaskRunner reference (set by discord_client at startup) -- powers the bead
+# control endpoints (list_active, cancel).
+_task_runner: TaskRunner | None = None
+
 
 def set_discord_bot(bot: discord.Client) -> None:
     """Store a reference to the Discord bot so route handlers can send messages."""
     global _discord_bot
     _discord_bot = bot
+
+
+def set_task_runner(runner: TaskRunner) -> None:
+    """Store a reference to the TaskRunner so bead endpoints can control agents."""
+    global _task_runner
+    _task_runner = runner
 
 
 def set_channel_configs(configs: dict[int, dict]) -> None:
@@ -98,6 +110,7 @@ def _save_bot_message(msg: discord.Message | None, channel_id: int) -> None:
     if not msg:
         return
     try:
+        from . import cli
         state_manager.insert_message(
             message_id=msg.id,
             channel_id=channel_id,
@@ -107,6 +120,7 @@ def _save_bot_message(msg: discord.Message | None, channel_id: int) -> None:
             is_bot=True,
             content=msg.content or "",
             timestamp=int(msg.created_at.timestamp()),
+            nudge_id=cli.get_active_nudge_id(channel_id),
         )
     except Exception as e:
         _LOG.warning("Failed to save bot message %s: %s", msg.id, e)
@@ -833,6 +847,55 @@ async def handle_schedule_wake(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# Bead agent control
+# ---------------------------------------------------------------------------
+
+
+async def handle_active_beads(request: web.Request) -> web.Response:
+    """GET /api/active_beads -- list currently running bead agents.
+
+    Query parameters:
+        channel -- workspace folder name to filter on (optional)
+    """
+    if _task_runner is None:
+        return web.json_response({"error": "task runner not ready"}, status=503)
+    channel = request.query.get("channel") or None
+    return web.json_response({"agents": _task_runner.list_active(channel_name=channel)})
+
+
+async def handle_cancel_bead(request: web.Request) -> web.Response:
+    """POST /api/cancel_bead -- kill a running bead agent and close its bead.
+
+    Body: ``{"task_id": "bd-xxx", "reason": "...", "channel": "folder"}``
+    Either ``channel`` (workspace folder name) or ``channel_id`` (Discord
+    channel id, resolved to a folder via the channel config) may be supplied
+    to scope the cancel; if both are absent, no scope check is enforced.
+    """
+    if _task_runner is None:
+        return web.json_response({"error": "task runner not ready"}, status=503)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+
+    task_id = (body.get("task_id") or "").strip()
+    if not task_id:
+        return web.json_response({"error": "task_id required"}, status=400)
+    reason = body.get("reason") or "cancelled by operator"
+
+    channel = body.get("channel") or None
+    if channel is None and body.get("channel_id"):
+        try:
+            channel = get_channel_name(int(body["channel_id"]))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "channel_id must be an int"}, status=400)
+
+    result = await _task_runner.cancel(task_id, reason=reason, channel_name=channel)
+    status = 200 if result["success"] else 404
+    return web.json_response(result, status=status)
+
+
+# ---------------------------------------------------------------------------
 # Application factory and server startup
 # ---------------------------------------------------------------------------
 
@@ -850,6 +913,8 @@ def create_app() -> web.Application:
     app.router.add_get("/api/usage", handle_usage)
     app.router.add_post("/api/usage/refresh", handle_usage_refresh)
     app.router.add_post("/api/schedule_wake", handle_schedule_wake)
+    app.router.add_get("/api/active_beads", handle_active_beads)
+    app.router.add_post("/api/cancel_bead", handle_cancel_bead)
     app.router.add_get("/health", handle_health)
     return app
 

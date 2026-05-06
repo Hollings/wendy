@@ -194,7 +194,10 @@ async def tail_stream() -> None:
             pos = STREAM_FILE.stat().st_size
             _LOG.info("Stream file found, starting from position %d", pos)
 
-            async for changes in awatch(STREAM_FILE):
+            # force_polling=True: inotify events from writes in other
+            # containers (wendy bot) don't propagate to wendy-web on shared
+            # volumes, so fall back to stat-based polling.
+            async for changes in awatch(STREAM_FILE, force_polling=True):
                 for change_type, _ in changes:
                     if change_type == Change.deleted:
                         _LOG.warning("Stream file deleted, waiting for recreation...")
@@ -635,7 +638,7 @@ async def tail_beads() -> None:
                 await asyncio.sleep(10)
                 continue
 
-            async for changes in awatch(*watch_dirs):
+            async for changes in awatch(*watch_dirs, force_polling=True):
                 for change_type, path_str in changes:
                     path = Path(path_str)
 
@@ -668,6 +671,7 @@ async def tail_beads() -> None:
                                 log_positions[path_str] = f.tell()
                             import time as _time
                             ts = int(_time.time() * 1000)
+                            broadcast_count = 0
                             for line in new_lines:
                                 line = line.strip()
                                 if not line:
@@ -683,10 +687,16 @@ async def tail_beads() -> None:
                                         "event": event_data.get("event", event_data),
                                     }
                                     await broadcast(json.dumps(envelope))
+                                    broadcast_count += 1
                                 except json.JSONDecodeError:
                                     pass  # skip non-JSON log lines
-                        except (FileNotFoundError, OSError):
-                            pass
+                            if broadcast_count:
+                                _LOG.info(
+                                    "bead %s: broadcast %d events to %d clients",
+                                    task_id, broadcast_count, len(connected_clients),
+                                )
+                        except (FileNotFoundError, OSError) as e:
+                            _LOG.warning("could not tail %s: %s", path, e)
 
         except Exception as e:
             _LOG.exception("Beads watcher error: %s", e)

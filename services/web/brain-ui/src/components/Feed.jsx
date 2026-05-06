@@ -1,79 +1,79 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import EventCard from './EventCard'
+import { ThinkingBubble, ToolBubble, ResultBubble, SystemLine } from './bubbles'
+import { channelColor } from '../channelColors'
+import Icon from './Icon'
 
-export default function Feed({ events, wsStatus, focusedBead, onBack }) {
+export default function Feed({
+  events,
+  visibleEvents,
+  channelsMap,
+  focusedBead,
+  onClearFocus,
+}) {
   const scrollRef = useRef(null)
-  const isLiveRef = useRef(true)
-  const [isLive, setIsLive] = useState(true)
+  const [atBottom, setAtBottom] = useState(true)
 
-  // Scroll to bottom on new events if we're in live mode.
-  // Reads isLiveRef (not state) to avoid stale-closure / re-render race.
   useEffect(() => {
-    if (isLiveRef.current && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    const s = scrollRef.current
+    if (!s) return
+    const onScroll = () => {
+      setAtBottom(s.scrollHeight - s.scrollTop - s.clientHeight < 80)
     }
-  }, [events.length])
-
-  // Initial scroll to bottom on mount.
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-    }
+    s.addEventListener('scroll', onScroll)
+    return () => s.removeEventListener('scroll', onScroll)
   }, [])
 
-  const handleScroll = useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-    isLiveRef.current = atBottom
-    setIsLive(atBottom)
-  }, [])
+  useEffect(() => {
+    const s = scrollRef.current
+    if (!s || !atBottom) return
+    s.scrollTop = s.scrollHeight
+  }, [visibleEvents, atBottom])
 
   const jumpToLive = useCallback(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-    }
-    isLiveRef.current = true
-    setIsLive(true)
+    const s = scrollRef.current
+    if (!s) return
+    s.scrollTop = s.scrollHeight
+    setAtBottom(true)
   }, [])
 
-  const statusLabel = {
-    connecting: 'Connecting...',
-    connected: 'Live',
-    disconnected: 'Reconnecting...',
-    full: 'Server full',
-  }[wsStatus] ?? wsStatus
-
   return (
-    <div className="feed-col">
+    <section className="feed-col">
       <div className="feed-header">
-        <span className={`ws-status ws-status--${wsStatus}`}>
-          {statusLabel}
-        </span>
-      </div>
-
-      {focusedBead && (
-        <div className="bead-focus-bar">
-          <span className="bead-focus-label">Bead</span>
-          <span className="bead-focus-title">{focusedBead.title}</span>
-          <button className="bead-focus-back" onClick={onBack}>
-            &larr; Back to feed
-          </button>
+        <div className="feed-title">
+          <span>Live feed</span>
+          <span className="count">{visibleEvents.length} / {events.length} events</span>
+          {focusedBead && (
+            <button className="filter-chip" aria-pressed="true" onClick={onClearFocus}>
+              bead #{String(focusedBead.id).slice(0, 7)} · clear
+            </button>
+          )}
         </div>
-      )}
-
-      <div className="feed-scroll" ref={scrollRef} onScroll={handleScroll}>
-        {events.length === 0 && (
-          <div className="feed-empty">Waiting for activity...</div>
-        )}
-        {events.map(ev => <EventCard key={ev.id} event={ev} />)}
       </div>
 
-      {!isLive && (
-        <button className="jump-live" onClick={jumpToLive}>
-          &darr; live
+      <div className="feed-scroll" ref={scrollRef}>
+        {visibleEvents.length === 0 && (
+          <div className="feed-empty">waiting for activity…</div>
+        )}
+        <div className="feed-rail">
+          {visibleEvents.map(ev => {
+            const channel = ev.channel_id && channelsMap[ev.channel_id]
+              ? { name: channelsMap[ev.channel_id], color: channelColor(ev.channel_id) }
+              : null
+            if (ev.kind === 'thinking') return <ThinkingBubble key={ev.id} event={ev} channel={channel} />
+            if (ev.kind === 'tool')     return <ToolBubble     key={ev.id} event={ev} channel={channel} />
+            if (ev.kind === 'result')   return <ResultBubble   key={ev.id} event={ev} channel={channel} />
+            if (ev.kind === 'session_end' || ev.kind === 'system') return <SystemLine key={ev.id} event={ev} />
+            return null
+          })}
+        </div>
+      </div>
+
+      <div className="feed-footer">
+        <span>stream.jsonl · tail -f · {events.length} / 200 buffered</span>
+        <button className={'jump-live ' + (atBottom ? 'hidden' : '')} onClick={jumpToLive}>
+          <Icon name="Live" size={12} /> jump to live
         </button>
-      )}
-    </div>
+      </div>
+    </section>
   )
 }

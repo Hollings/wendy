@@ -10,12 +10,18 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "wendy"]
     network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/hci0:/dev/hci0
     volumes:
       - wendy_data:/data/wendy
       - claude_config:/root/.claude
       - /srv/secrets/wendy:/secrets:ro
       - /srv/wendy-v2/config:/app/config:ro
       - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/dbus:/var/run/dbus
     env_file:
       - /srv/secrets/wendy/bot.env
     environment:
@@ -51,7 +57,7 @@ services:
       - GAMES_DIR=/data/games
       - HOST_GAMES_DIR=/srv/wendy-games/data
       - BASE_PORT=8921
-      - MAX_GAMES=20
+      - MAX_GAMES=100
       - BASE_URL=https://wendy.monster
       - DOCKER_NETWORK=wendy_web
 

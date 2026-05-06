@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from wendy.cli import (
+    _active_nudges,
     build_cli_command,
     build_nudge_prompt,
     extract_forked_session_id,
+    get_active_nudge_id,
     get_permissions_for_channel,
 )
 
@@ -118,6 +120,43 @@ def test_build_nudge_prompt_thread():
     assert "msgs" in prompt
     assert "cool-thread" in prompt
     assert "thread" in prompt.lower()
+
+
+def test_build_nudge_prompt_omits_tag_when_no_id():
+    prompt = build_nudge_prompt(123)
+    assert "[nudge:" not in prompt
+
+
+def test_build_nudge_prompt_appends_nudge_tag():
+    prompt = build_nudge_prompt(123, nudge_id="abc12345")
+    assert prompt.endswith("[nudge:abc12345]")
+
+
+def test_build_nudge_prompt_tag_with_extras():
+    prompt = build_nudge_prompt(
+        123, journal_note="<journal>", beads_note="<beads>", nudge_id="deadbeef"
+    )
+    assert "<journal>" in prompt
+    assert "<beads>" in prompt
+    assert prompt.endswith("[nudge:deadbeef]")
+
+
+# =========================================================================
+# Active nudge tracking
+# =========================================================================
+
+
+def test_get_active_nudge_id_returns_none_when_unset():
+    _active_nudges.pop(99999, None)
+    assert get_active_nudge_id(99999) is None
+
+
+def test_get_active_nudge_id_returns_set_value():
+    _active_nudges[99999] = "feedface"
+    try:
+        assert get_active_nudge_id(99999) == "feedface"
+    finally:
+        _active_nudges.pop(99999, None)
 
 
 # =========================================================================

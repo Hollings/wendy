@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import discord
 from discord.ext import commands, tasks
@@ -119,6 +120,9 @@ class WendyBot(commands.Bot):
         self._enrichment_notified: set[int] = set()
         self._pending_wakes: dict[int, asyncio.TimerHandle] = {}
         self._startup_catchup_done: bool = False
+        # !analysis support: one in-flight run per channel; global rate limit.
+        self._active_analyses: dict[int, asyncio.Task] = {}
+        self._analysis_last_run_at: float = 0.0
 
         ensure_shared_dirs()
         self._register_commands()
@@ -229,6 +233,132 @@ class WendyBot(commands.Bot):
             existing_job.task.cancel()
             await ctx.send("lunch break ended")
 
+        @self.command(name="beads")
+        async def cmd_beads(ctx: commands.Context) -> None:
+            """!beads -- list running bead agents in this channel."""
+            runner = getattr(self, "_task_runner", None)
+            if runner is None:
+                await ctx.send("task runner not running")
+                return
+            channel_config = self.channel_configs.get(ctx.channel.id)
+            folder = _folder_for_config(channel_config) if channel_config else None
+            agents = runner.list_active(channel_name=folder)
+            if not agents:
+                await ctx.send("no active beads")
+                return
+            lines = ["**active beads:**"]
+            for a in agents:
+                mins, secs = divmod(a["elapsed_seconds"], 60)
+                title = (a["title"] or "(no title)").replace("`", "'")
+                if len(title) > 60:
+                    title = title[:57] + "..."
+                lines.append(f"`{a['task_id']}` · {mins}m{secs:02d}s · {title}")
+            await ctx.send("\n".join(lines))
+
+        @self.command(name="cancel")
+        async def cmd_cancel(ctx: commands.Context, task_id: str = "") -> None:
+            """!cancel <bead-id> -- kill a running bead agent and close its bead."""
+            runner = getattr(self, "_task_runner", None)
+            if runner is None:
+                await ctx.send("task runner not running")
+                return
+            task_id = task_id.strip()
+            if not task_id:
+                await ctx.send("usage: `!cancel <bead-id>` -- see `!beads` for IDs")
+                return
+            channel_config = self.channel_configs.get(ctx.channel.id)
+            folder = _folder_for_config(channel_config) if channel_config else None
+            result = await runner.cancel(
+                task_id,
+                reason=f"!cancel by {ctx.author.display_name}",
+                channel_name=folder,
+            )
+            prefix = "killed" if result["success"] else "error"
+            await ctx.send(f"{prefix}: {result['message']}")
+
+        @self.command(name="analysis")
+        async def cmd_analysis(ctx: commands.Context) -> None:
+            """!analysis -- reply to one of my messages to probe how stable that opinion is."""
+            from . import config as _config
+            from . import analysis as analysis_mod
+
+            if not ctx.message.reference or not ctx.message.reference.message_id:
+                await ctx.send(
+                    "reply to one of my messages with `!analysis` to probe it"
+                )
+                return
+
+            channel_config = self.channel_configs.get(ctx.channel.id)
+            if channel_config is None:
+                await ctx.send("not a configured channel")
+                return
+
+            now = time.monotonic()
+            if now - self._analysis_last_run_at < _config.ANALYSIS_RATE_LIMIT_SECONDS:
+                wait = int(
+                    _config.ANALYSIS_RATE_LIMIT_SECONDS
+                    - (now - self._analysis_last_run_at)
+                )
+                await ctx.send(f"analysis is rate-limited globally; try again in {wait}s")
+                return
+
+            existing = self._active_analyses.get(ctx.channel.id)
+            if existing and not existing.done():
+                await ctx.send("an analysis is already running in this channel")
+                return
+
+            self._analysis_last_run_at = now
+            target_msg_id = ctx.message.reference.message_id
+            channel_name = _folder_for_config(channel_config)
+            target_link = (
+                f"https://discord.com/channels/"
+                f"{ctx.guild.id if ctx.guild else '@me'}/"
+                f"{ctx.channel.id}/{target_msg_id}"
+            )
+
+            async def _runner() -> None:
+                progress_msg: discord.Message | None = None
+
+                async def _on_progress(text: str) -> None:
+                    nonlocal progress_msg
+                    try:
+                        if progress_msg is None:
+                            progress_msg = await ctx.send(f"-# analysis: {text}")
+                        else:
+                            await progress_msg.edit(content=f"-# analysis: {text}")
+                    except Exception as e:
+                        _LOG.warning("analysis progress update failed: %s", e)
+
+                try:
+                    output = await analysis_mod.run_analysis(
+                        ctx.channel.id,
+                        channel_name,
+                        target_msg_id,
+                        target_msg_link=target_link,
+                        on_progress=_on_progress,
+                    )
+                    await ctx.send(output[: _config.DISCORD_MAX_MESSAGE_LENGTH])
+                except analysis_mod.AnalysisError as e:
+                    await ctx.send(f"can't analyze: {e}")
+                except asyncio.CancelledError:
+                    try:
+                        await ctx.send("analysis cancelled")
+                    except Exception:
+                        pass
+                    raise
+                except Exception as e:
+                    _LOG.exception("analysis failed: %s", e)
+                    await ctx.send(f"analysis crashed: `{type(e).__name__}: {e}`")
+                finally:
+                    if progress_msg is not None:
+                        try:
+                            await progress_msg.delete()
+                        except Exception:
+                            pass
+
+            task = asyncio.create_task(_runner())
+            self._active_analyses[ctx.channel.id] = task
+
         @self.command(name="session")
         async def cmd_session(ctx: commands.Context) -> None:
             """!session -- show current session info."""
@@ -274,10 +404,14 @@ class WendyBot(commands.Bot):
 
         self._cache_emojis_task = self.loop.create_task(self._cache_emojis())
         self._task_runner = TaskRunner()
+        api_server.set_task_runner(self._task_runner)
         self._task_runner_task = self.loop.create_task(self._task_runner.run())
 
     async def close(self) -> None:
         """Cleanup on shutdown: cancel the task runner so agents are killed cleanly."""
+        for task in list(self._active_analyses.values()):
+            if not task.done():
+                task.cancel()
         if hasattr(self, "_task_runner_task") and not self._task_runner_task.done():
             self._task_runner_task.cancel()
             try:
@@ -370,11 +504,19 @@ class WendyBot(commands.Bot):
 
         _LOG.info("Processing message from %s: %s...", message.author.display_name, message.content[:50])
 
-        # Interrupt: "WENDY" in all caps cancels the running generation.
+        # Interrupt: "WENDY" in all caps cancels the running generation,
+        # and also kills any in-flight !analysis run on this channel.
         existing_job = self._active_generations.get(message.channel.id)
-        if message.content.strip() == "WENDY" and self._job_is_running(existing_job):
-            self._interrupt_channel(message, existing_job, channel_config)
-            return
+        existing_analysis = self._active_analyses.get(message.channel.id)
+        if message.content.strip() == "WENDY":
+            if existing_analysis and not existing_analysis.done():
+                existing_analysis.cancel()
+            if self._job_is_running(existing_job):
+                self._interrupt_channel(message, existing_job, channel_config)
+                return
+            if existing_analysis and not existing_analysis.done():
+                # No CLI generation to interrupt -- the cancel above is enough.
+                return
 
         # If a generation is already running: enrich sessions suppress new messages,
         # normal sessions flag pending so a follow-up runs when the CLI finishes.
@@ -382,10 +524,14 @@ class WendyBot(commands.Bot):
             if existing_job.is_enrichment:
                 if message.channel.id not in self._enrichment_notified:
                     self._enrichment_notified.add(message.channel.id)
-                    end_time = existing_job.enrichment_end_time
+                    end_dt = datetime.datetime.fromtimestamp(
+                        existing_job.enrichment_end_timestamp,
+                        tz=ZoneInfo("America/Los_Angeles"),
+                    )
+                    end_time = end_dt.strftime("%-I:%M %p %Z")
                     asyncio.ensure_future(
                         message.channel.send(
-                            f"<@{message.author.id}> Wendy's on her lunch break until {end_time} UTC! She'll be back soon."
+                            f"<@{message.author.id}> Wendy's on her lunch break until {end_time}! She'll be back soon."
                         )
                     )
                 return

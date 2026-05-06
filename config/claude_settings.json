@@ -58,6 +58,14 @@
             "command": "/app/config/hooks/prompt_bookkeeping.sh"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/app/config/hooks/msg_reminder.sh"
+          }
+        ]
       }
     ]
   }

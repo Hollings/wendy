@@ -65,7 +65,7 @@ services:
       - GAMES_DIR=/data/games
       - HOST_GAMES_DIR=/tmp/wendy-games-dev   # must match the bind mount source above
       - BASE_PORT=8921
-      - MAX_GAMES=20
+      - MAX_GAMES=100
       - BASE_URL=https://wendy.monster
       - DOCKER_NETWORK=deploy_web
 

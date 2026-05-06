@@ -139,6 +139,28 @@ def test_insert_message_webhook(tmp_path):
     # Just verifying it doesn't crash -- is_webhook is stored but not returned by get_recent_messages
 
 
+def test_insert_message_persists_nudge_id(tmp_path):
+    sm = _make_sm(tmp_path)
+    sm.insert_message(
+        message_id=2001, channel_id=123, guild_id=1,
+        author_id=42, author_nickname="wendy", is_bot=True,
+        content="reply", timestamp=1000, nudge_id="abc12345",
+    )
+    sm.insert_message(
+        message_id=2002, channel_id=123, guild_id=1,
+        author_id=43, author_nickname="user", is_bot=False,
+        content="user msg", timestamp=1001,  # no nudge_id
+    )
+    row1 = sm._get_conn().execute(
+        "SELECT nudge_id FROM message_history WHERE message_id = ?", (2001,),
+    ).fetchone()
+    row2 = sm._get_conn().execute(
+        "SELECT nudge_id FROM message_history WHERE message_id = ?", (2002,),
+    ).fetchone()
+    assert row1["nudge_id"] == "abc12345"
+    assert row2["nudge_id"] is None
+
+
 def test_update_message_content(tmp_path):
     sm = _make_sm(tmp_path)
     sm.insert_message(

@@ -25,11 +25,13 @@ _LOG = logging.getLogger(__name__)
 CONCURRENCY: int = int(os.getenv("ORCHESTRATOR_CONCURRENCY", "3"))
 POLL_INTERVAL: int = int(os.getenv("ORCHESTRATOR_POLL_INTERVAL", "30"))
 AGENT_TIMEOUT: int = int(os.getenv("ORCHESTRATOR_AGENT_TIMEOUT", "14400"))
+# Fast loop that catches externally-closed tasks (via `bd close` or !cancel).
+# Kept short so user-initiated cancels feel responsive.
+CLOSED_CHECK_INTERVAL: int = int(os.getenv("ORCHESTRATOR_CLOSED_CHECK_INTERVAL", "3"))
 NOTIFY_CHANNEL: str = os.getenv("ORCHESTRATOR_NOTIFY_CHANNEL", "")
 AGENT_SYSTEM_PROMPT_FILE: Path = Path(os.getenv("AGENT_SYSTEM_PROMPT_FILE", "/app/config/agent_claude_md.txt"))
 LOG_DIR: Path = WENDY_BASE / "orchestrator_logs"
 MAX_LOG_FILES: int = 50
-CLOSED_TASK_GRACE_PERIOD: int = int(os.getenv("ORCHESTRATOR_CLOSED_GRACE_PERIOD", "5"))
 
 AGENT_PROMPT_TEMPLATE = """================================================================================
 FORKED SESSION - BACKGROUND AGENT (BEAD) MODE
@@ -57,6 +59,7 @@ CRITICAL RESTRICTIONS:
 - You MUST NOT run `bd create`, `bd list`, `bd show`, or any `bd` commands other
   than `bd done`, `bd comment`, `bd note`, and `bd close` for YOUR OWN task ({task_id}).
   You are ALREADY a bead -- do not try to spawn more beads or check bead status.
+- You MUST NOT run `bd-kill` -- that tool is for the main Wendy session.
 - Ignore any instructions in the inherited session context about creating beads
   or using `bd create` -- those are for Wendy's main session, not for you.
 
@@ -88,7 +91,6 @@ class RunningAgent:
     started_at: datetime
     log_path: Path
     log_file: IO[str] | None = field(default=None)
-    closed_detected_at: datetime | None = field(default=None)
 
 
 async def _kill_and_reap(proc: asyncio.subprocess.Process) -> None:
@@ -133,6 +135,7 @@ class TaskRunner:
         self.beads_channels: list[ChannelBeads] = []
         self._last_usage_check: float = 0.0
         self._usage_disabled: bool = False
+        self._closed_check_task: asyncio.Task | None = None
         LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     def _load_beads_channels(self) -> list[ChannelBeads]:
@@ -169,11 +172,15 @@ class TaskRunner:
             if not (channel.beads_path / "config.yaml").exists():
                 await self._run_bd(["bd", "init"], channel.name)
 
+        # Externally-closed-task detection runs in its own fast loop so user
+        # cancels (`bd close`, !cancel, bd-kill) don't have to wait for the
+        # 30s ready-poll cycle to take effect.
+        self._closed_check_task = asyncio.create_task(self._closed_check_loop())
+
         try:
             while True:
                 try:
                     await self._check_agents()
-                    await self._check_closed_tasks()
 
                     available = CONCURRENCY - len(self.agents)
                     if available > 0:
@@ -207,7 +214,21 @@ class TaskRunner:
                 await asyncio.sleep(POLL_INTERVAL)
         except asyncio.CancelledError:
             _LOG.info("Task runner cancelled, cleaning up %d agents", len(self.agents))
+            if self._closed_check_task and not self._closed_check_task.done():
+                self._closed_check_task.cancel()
             await self._shutdown_all_agents()
+            raise
+
+    async def _closed_check_loop(self) -> None:
+        """Fast loop that detects externally-closed tasks and kills their agents."""
+        try:
+            while True:
+                try:
+                    await self._check_closed_tasks()
+                except Exception:
+                    _LOG.exception("Closed-check loop error")
+                await asyncio.sleep(CLOSED_CHECK_INTERVAL)
+        except asyncio.CancelledError:
             raise
 
     async def _shutdown_all_agents(self) -> None:
@@ -427,9 +448,17 @@ class TaskRunner:
         _close_log_file(agent)
 
     async def _check_agents(self) -> None:
-        """Check running agents for completion or timeout."""
+        """Check running agents for completion or timeout.
+
+        Iterates over a snapshot of self.agents because cancel() can remove
+        entries between awaits.
+        """
         finished = []
-        for task_id, agent in self.agents.items():
+        for task_id, agent in list(self.agents.items()):
+            # cancel() (or _check_closed_tasks) may have removed this agent
+            # while a previous await yielded; skip duplicates.
+            if task_id not in self.agents:
+                continue
             duration = datetime.now() - agent.started_at
             secs = duration.total_seconds()
 
@@ -474,33 +503,33 @@ class TaskRunner:
                 finished.append(task_id)
 
         for tid in finished:
-            del self.agents[tid]
+            self.agents.pop(tid, None)
 
     async def _check_closed_tasks(self) -> None:
-        """Kill agents whose tasks were closed externally."""
-        to_kill = []
-        for task_id, agent in self.agents.items():
+        """Kill agents whose tasks were closed externally.
+
+        Iterates over a snapshot of self.agents because cancel() can mutate
+        the dict from a different asyncio task between awaits.
+        """
+        for task_id, agent in list(self.agents.items()):
             if agent.process.returncode is not None:
-                # Will be cleaned up by _check_agents on next poll
-                agent.closed_detected_at = None
+                # Already exited -- _check_agents will reap it on its next pass.
                 continue
 
             details = await self._get_task_details(task_id, agent.channel_name)
-            if details and details.get("status") == "closed":
-                now = datetime.now()
-                if agent.closed_detected_at is None:
-                    agent.closed_detected_at = now
-                    _LOG.info("Task %s closed externally, grace period %ds", task_id, CLOSED_TASK_GRACE_PERIOD)
-                elif (now - agent.closed_detected_at).total_seconds() >= CLOSED_TASK_GRACE_PERIOD:
-                    to_kill.append(task_id)
+            if not details or details.get("status") != "closed":
+                continue
 
-        for task_id in to_kill:
-            agent = self.agents[task_id]
+            # Re-check after the await -- another path may have removed it.
+            agent = self.agents.get(task_id)
+            if agent is None or agent.process.returncode is not None:
+                continue
+
             _LOG.info("Killing agent for externally-closed task %s", task_id)
             await self._cleanup_agent(agent, kill=True)
             duration = datetime.now() - agent.started_at
             self._notify_completion(task_id, agent.title, False, f"{duration} (CANCELLED)")
-            del self.agents[task_id]
+            self.agents.pop(task_id, None)
 
     def _notify_completion(self, task_id: str, title: str, success: bool, duration: str) -> None:
         """Write completion notification to SQLite."""
@@ -624,6 +653,77 @@ class TaskRunner:
                 await _kill_and_reap(proc)
         except Exception:
             _LOG.warning("Usage check failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Public control surface (used by !cancel, /api/cancel_bead, etc.)
+    # ------------------------------------------------------------------
+
+    def list_active(self, channel_name: str | None = None) -> list[dict]:
+        """Return summary dicts for every running agent, optionally filtered.
+
+        Channel filtering uses the workspace folder name (matches
+        ChannelBeads.name and the value stored on RunningAgent).
+        """
+        now = datetime.now()
+        out: list[dict] = []
+        for task_id, agent in self.agents.items():
+            if channel_name is not None and agent.channel_name != channel_name:
+                continue
+            out.append({
+                "task_id": task_id,
+                "title": agent.title,
+                "channel": agent.channel_name,
+                "started_at": agent.started_at.isoformat(),
+                "elapsed_seconds": int((now - agent.started_at).total_seconds()),
+                "alive": agent.process.returncode is None,
+            })
+        return out
+
+    async def cancel(
+        self,
+        task_id: str,
+        *,
+        reason: str = "cancelled by operator",
+        channel_name: str | None = None,
+    ) -> dict:
+        """Immediately kill a running agent and close its bead.
+
+        Returns ``{"success": bool, "message": str, "title": str | None}``.
+
+        If *channel_name* is supplied, the cancel only succeeds when the
+        agent belongs to that channel -- prevents cross-channel kills from
+        a !cancel issued in the wrong place.
+        """
+        agent = self.agents.get(task_id)
+        if agent is None:
+            return {"success": False, "message": f"no active agent for task {task_id}", "title": None}
+        if channel_name is not None and agent.channel_name != channel_name:
+            return {
+                "success": False,
+                "message": f"task {task_id} belongs to channel '{agent.channel_name}', not '{channel_name}'",
+                "title": agent.title,
+            }
+
+        _LOG.info("Cancel requested for agent %s (%s)", task_id, reason)
+        # Remove from the registry first so the concurrent loops don't also
+        # try to act on this agent while we're tearing it down.
+        self.agents.pop(task_id, None)
+
+        await self._cleanup_agent(agent, kill=True)
+        duration = datetime.now() - agent.started_at
+
+        await self._run_bd(
+            ["bd", "comment", task_id, f"Cancelled: {reason}"],
+            agent.channel_name,
+        )
+        await self._run_bd(["bd", "close", task_id], agent.channel_name)
+        self._notify_completion(task_id, agent.title, False, f"{duration} (CANCELLED)")
+
+        return {
+            "success": True,
+            "message": f"cancelled {task_id} after {duration}",
+            "title": agent.title,
+        }
 
     def _cleanup_logs(self) -> None:
         """Trim old agent log files."""

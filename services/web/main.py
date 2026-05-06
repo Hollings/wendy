@@ -45,6 +45,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import shutil
@@ -54,6 +55,14 @@ import tarfile
 import time
 import uuid
 from pathlib import Path
+
+# Surface module INFO logs (brain watcher, etc.) in docker logs. Without this,
+# `_LOG = logging.getLogger(__name__)` in brain.py silently drops everything
+# because uvicorn only configures its own loggers.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 import auth
 import brain
