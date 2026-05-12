@@ -207,31 +207,13 @@ class WendyBot(commands.Bot):
 
         @self.command(name="lunchtime")
         async def cmd_lunchtime(ctx: commands.Context) -> None:
-            """!lunchtime -- start Wendy's personal free-time session."""
-            channel_config = self.channel_configs.get(ctx.channel.id)
-            if channel_config is None:
-                await ctx.send("not a configured channel")
-                return
-            existing_job = self._active_generations.get(ctx.channel.id)
-            if self._job_is_running(existing_job) and existing_job.is_enrichment:
-                await ctx.send("already on lunch break!")
-                return
-            if self._job_is_running(existing_job):
-                existing_job.task.cancel()
-            self._start_enrichment(ctx.channel, channel_config, manual=True)
+            """!lunchtime -- disabled."""
+            await ctx.send("lunchtime feature is disabled")
 
         @self.command(name="endlunch")
         async def cmd_endlunch(ctx: commands.Context) -> None:
-            """!endlunch -- end Wendy's lunch break early."""
-            existing_job = self._active_generations.get(ctx.channel.id)
-            if not (self._job_is_running(existing_job) and existing_job.is_enrichment):
-                await ctx.send("no lunch break active")
-                return
-            # Set end timestamp to past so _finalize_generation doesn't re-invoke.
-            existing_job.enrichment_end_timestamp = 0.0
-            self._enrichment_notified.discard(ctx.channel.id)
-            existing_job.task.cancel()
-            await ctx.send("lunch break ended")
+            """!endlunch -- disabled."""
+            await ctx.send("lunchtime feature is disabled")
 
         @self.command(name="beads")
         async def cmd_beads(ctx: commands.Context) -> None:
@@ -400,7 +382,8 @@ class WendyBot(commands.Bot):
 
         if self.whitelist_channels:
             self.watch_notifications.start()
-            self.check_enrichment_schedule.start()
+            # Lunchtime/enrichment feature disabled for now.
+            # self.check_enrichment_schedule.start()
 
         self._cache_emojis_task = self.loop.create_task(self._cache_emojis())
         self._task_runner = TaskRunner()
