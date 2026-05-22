@@ -252,7 +252,6 @@ def build_nudge_prompt(
     channel_id: int,
     is_thread: bool = False,
     thread_name: str | None = None,
-    journal_note: str = "",
     beads_note: str = "",
     was_compacted: bool = False,
     nudge_id: str | None = None,
@@ -283,7 +282,7 @@ def build_nudge_prompt(
         f"After this, go back to plain `msgs` with no flags -- "
         f"do not use -n unless you have a specific reason.>"
     ) if was_compacted else ""
-    extras = "\n".join(x for x in [journal_note, beads_note, compacted_note] if x)
+    extras = "\n".join(x for x in [beads_note, compacted_note] if x)
     prompt = base + ("\n" + extras if extras else "")
     if nudge_id:
         prompt += f"\n[nudge:{nudge_id}]"
@@ -752,8 +751,7 @@ async def run_cli(
         effort_args=effort_args, max_turns=max_turns,
     )
 
-    from .prompt import get_beads_warning_for_nudge, get_journal_listing_for_nudge
-    journal_note = get_journal_listing_for_nudge(channel_name)
+    from .prompt import get_beads_warning_for_nudge
     beads_note = get_beads_warning_for_nudge(channel_name) if beads_enabled else ""
 
     compacted_flag = channel_dir(channel_name) / ".compacted"
@@ -770,7 +768,7 @@ async def run_cli(
         nudge_id = secrets.token_hex(4)
         nudge_prompt = build_nudge_prompt(
             channel_id, is_thread=is_thread, thread_name=thread_name,
-            journal_note=journal_note, beads_note=beads_note,
+            beads_note=beads_note,
             was_compacted=was_compacted, nudge_id=nudge_id,
         )
 

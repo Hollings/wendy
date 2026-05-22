@@ -134,9 +134,8 @@ def test_build_nudge_prompt_appends_nudge_tag():
 
 def test_build_nudge_prompt_tag_with_extras():
     prompt = build_nudge_prompt(
-        123, journal_note="<journal>", beads_note="<beads>", nudge_id="deadbeef"
+        123, beads_note="<beads>", nudge_id="deadbeef"
     )
-    assert "<journal>" in prompt
     assert "<beads>" in prompt
     assert prompt.endswith("[nudge:deadbeef]")
 

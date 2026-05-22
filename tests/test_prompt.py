@@ -9,7 +9,6 @@ from wendy.prompt import (
     _get_journal_section,
     build_system_prompt,
     get_beads_warning_for_nudge,
-    get_journal_listing_for_nudge,
 )
 
 
@@ -57,31 +56,6 @@ def test_get_journal_section(tmp_path):
     # Static section always contains journal header and path
     assert "JOURNAL" in result
     assert str(j_dir) in result
-
-
-def test_get_journal_listing_for_nudge(tmp_path):
-    j_dir = tmp_path / "journal"
-    j_dir.mkdir()
-
-    (j_dir / "2026-01-01_test.md").write_text("entry 1")
-    (j_dir / "2026-01-02_test2.md").write_text("entry 2")
-
-    with mock.patch("wendy.prompt.journal_dir", return_value=j_dir):
-        result = get_journal_listing_for_nudge("general")
-
-    assert "2026-01-01_test.md" in result
-    assert "2026-01-02_test2.md" in result
-    assert "2 files" in result
-
-
-def test_get_journal_listing_for_nudge_empty(tmp_path):
-    j_dir = tmp_path / "journal"
-    j_dir.mkdir()
-
-    with mock.patch("wendy.prompt.journal_dir", return_value=j_dir):
-        result = get_journal_listing_for_nudge("general")
-
-    assert result == ""
 
 
 def test_get_beads_warning_for_nudge_no_beads(tmp_path):
