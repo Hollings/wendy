@@ -271,16 +271,16 @@ def build_nudge_prompt(
         )
     else:
         base = (
-            f"<new messages - you MUST run `msgs` "
-            f"before any other action. Do not assume what the messages contain. "
-            f"If `msgs` returns '(no new messages - nothing to respond to, your turn is complete)', "
-            f"do NOT call `msgs` again — just end your turn silently.>"
+            "<new messages - you MUST run `msgs` "
+            "before any other action. Do not assume what the messages contain. "
+            "If `msgs` returns '(no new messages - nothing to respond to, your turn is complete)', "
+            "do NOT call `msgs` again — just end your turn silently.>"
         )
     compacted_note = (
-        f"<your session was auto-compacted since your last turn. "
-        f"Use `msgs -n 20` THIS TIME to restore context. "
-        f"After this, go back to plain `msgs` with no flags -- "
-        f"do not use -n unless you have a specific reason.>"
+        "<your session was auto-compacted since your last turn. "
+        "Use `msgs -n 20` THIS TIME to restore context. "
+        "After this, go back to plain `msgs` with no flags -- "
+        "do not use -n unless you have a specific reason.>"
     ) if was_compacted else ""
     extras = "\n".join(x for x in [beads_note, compacted_note] if x)
     prompt = base + ("\n" + extras if extras else "")
@@ -581,7 +581,7 @@ async def _watch_session_for_overloaded(
             continue
         # Read only the new tail.
         try:
-            with open(session_jsonl, "r", encoding="utf-8", errors="replace") as f:
+            with open(session_jsonl, encoding="utf-8", errors="replace") as f:
                 f.seek(initial_size)
                 new_data = f.read()
         except OSError:

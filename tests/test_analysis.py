@@ -10,17 +10,12 @@ The end-to-end fork execution path is exercised by the smoke test in
 """
 from __future__ import annotations
 
-import asyncio
 import json
-import os
-from pathlib import Path
 
 import pytest
-from aiohttp import web
 
 from wendy import analysis, analysis_mock_api
 from wendy.state import StateManager
-
 
 # =========================================================================
 # Fixtures
@@ -201,7 +196,7 @@ async def test_mock_api_check_messages_returns_canned():
             # Repeated msgs calls before any msg send all return the variant
             # (so models that loop on msgs don't bypass the helper for raw curl).
             for _ in range(3):
-                async with session.get(f"/api/check_messages/123") as resp:
+                async with session.get("/api/check_messages/123") as resp:
                     assert resp.status == 200
                     assert (await resp.json()) == {"messages": fake, "task_updates": []}
             # After a send_message, subsequent msgs calls return empty.
@@ -210,7 +205,7 @@ async def test_mock_api_check_messages_returns_canned():
                 json={"channel_id": "123", "content": "ok"},
             ) as resp:
                 assert resp.status == 200
-            async with session.get(f"/api/check_messages/123") as resp:
+            async with session.get("/api/check_messages/123") as resp:
                 assert (await resp.json()) == {"messages": [], "task_updates": []}
     finally:
         await handle.stop()

@@ -49,6 +49,18 @@ class StateManager:
 
         return self._local.conn
 
+    def close(self) -> None:
+        """Close the calling thread's SQLite connection, if open.
+
+        A new connection is lazily reopened on the next ``_get_conn`` call.
+        Mainly useful in tests so the DB file can be deleted afterwards
+        (Windows refuses to unlink a file held open by SQLite).
+        """
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
+
     def _init_schema(self, conn: sqlite3.Connection) -> None:
         """Initialize database schema. THIS IS THE ONLY SCHEMA DEFINITION."""
         conn.executescript("""

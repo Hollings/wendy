@@ -24,11 +24,9 @@ import json
 import logging
 import secrets
 import shutil
-import sqlite3
 import tempfile
 import time
-import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -43,10 +41,6 @@ from .config import (
     resolve_model,
 )
 from .paths import (
-    CLAUDE_PROJECTS_DIR,
-    SHARED_DIR,
-    _encode_path_for_claude,
-    beads_dir,
     channel_dir,
     session_dir,
 )

@@ -16,14 +16,22 @@ def temp_db():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = Path(f.name)
     yield db_path
-    if db_path.exists():
-        db_path.unlink()
+    # Cleanup: also remove WAL sidecar files. Tolerate Windows refusing to
+    # unlink a file still held open by SQLite (best-effort temp cleanup).
+    for p in (db_path, db_path.with_name(db_path.name + "-wal"),
+              db_path.with_name(db_path.name + "-shm")):
+        try:
+            p.unlink(missing_ok=True)
+        except PermissionError:
+            pass
 
 
 @pytest.fixture
 def sm(temp_db):
     """Create a StateManager with a temporary database."""
-    return StateManager(db_path=temp_db)
+    sm = StateManager(db_path=temp_db)
+    yield sm
+    sm.close()
 
 
 class TestThreadRegistry:

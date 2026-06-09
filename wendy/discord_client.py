@@ -53,6 +53,13 @@ _cached_usage: dict = {}
 # Minimum seconds between presence updates (15 minutes).
 _PRESENCE_INTERVAL = 900
 
+# Minimum seconds between user-visible failure notices per channel (5 minutes).
+_FAILURE_NOTICE_COOLDOWN = 300
+
+# Seconds between re-triggers of the Discord typing indicator (each trigger
+# lasts ~10s, so 8s keeps it continuous without hammering the API).
+_TYPING_REFRESH_INTERVAL = 8.0
+
 
 def _folder_for_config(config: dict) -> str:
     """Return the workspace folder name for a channel or thread config."""
@@ -123,6 +130,9 @@ class WendyBot(commands.Bot):
         # !analysis support: one in-flight run per channel; global rate limit.
         self._active_analyses: dict[int, asyncio.Task] = {}
         self._analysis_last_run_at: float = 0.0
+        # Per-channel timestamp of the last user-visible failure notice,
+        # so repeated errors don't spam the channel.
+        self._last_failure_notice: dict[int, float] = {}
 
         ensure_shared_dirs()
         self._register_commands()
@@ -185,7 +195,7 @@ class WendyBot(commands.Bot):
         async def cmd_resume(ctx: commands.Context, *, session_id_prefix: str = "") -> None:
             """!resume <session_id> -- resume a previous session by ID or prefix."""
             if not session_id_prefix:
-                await ctx.send("usage: `!resume <session_id>`")
+                await ctx.send("usage: `!resume <session_id>` -- see `!sessions` for recent IDs")
                 return
             channel_config = self.channel_configs.get(ctx.channel.id)
             if channel_config is None:
@@ -261,8 +271,8 @@ class WendyBot(commands.Bot):
         @self.command(name="analysis")
         async def cmd_analysis(ctx: commands.Context) -> None:
             """!analysis -- reply to one of my messages to probe how stable that opinion is."""
-            from . import config as _config
             from . import analysis as analysis_mod
+            from . import config as _config
 
             if not ctx.message.reference or not ctx.message.reference.message_id:
                 await ctx.send(
@@ -340,6 +350,41 @@ class WendyBot(commands.Bot):
 
             task = asyncio.create_task(_runner())
             self._active_analyses[ctx.channel.id] = task
+
+        @self.command(name="sessions")
+        async def cmd_sessions(ctx: commands.Context, limit: int = 5) -> None:
+            """!sessions [n] -- list recent sessions for this channel (for !resume)."""
+            channel_config = self.channel_configs.get(ctx.channel.id)
+            if channel_config is None:
+                await ctx.send("not a configured channel")
+                return
+            limit = max(1, min(limit, 15))
+            current = sessions.get_session(ctx.channel.id)
+            history = state_manager.get_session_history(ctx.channel.id, limit=limit)
+
+            if not current and not history:
+                await ctx.send("no sessions recorded for this channel")
+                return
+
+            def _fmt(ts: int) -> str:
+                return datetime.datetime.fromtimestamp(ts, tz=datetime.UTC).strftime("%b %d %H:%M")
+
+            lines = []
+            if current:
+                lines.append(
+                    f"`{current.session_id[:8]}` · {_fmt(current.created_at)} UTC"
+                    f" · {current.message_count} turns · **current**"
+                )
+            seen = {current.session_id} if current else set()
+            for row in history:
+                sid = row["session_id"]
+                if sid in seen:
+                    continue
+                seen.add(sid)
+                turns = row.get("message_count") or 0
+                lines.append(f"`{sid[:8]}` · {_fmt(row['started_at'])} UTC · {turns} turns")
+            lines.append("-# `!resume <id>` switches back to one, `!clear` starts fresh")
+            await ctx.send("\n".join(lines))
 
         @self.command(name="session")
         async def cmd_session(ctx: commands.Context) -> None:
@@ -842,6 +887,15 @@ class WendyBot(commands.Bot):
 
         await self._maybe_update_presence()
 
+        # Show "is typing..." while the CLI works so users get immediate
+        # feedback that their message was seen. Discord clears the indicator
+        # whenever a message is sent; the loop re-triggers it until the
+        # generation finishes. Skipped for enrichment (she's on break, not
+        # composing a reply).
+        typing_task: asyncio.Task | None = None
+        if not job.is_enrichment:
+            typing_task = self.loop.create_task(self._typing_loop(channel))
+
         try:
             from .config import resolve_model
             from .prompt import build_system_prompt
@@ -913,25 +967,100 @@ class WendyBot(commands.Bot):
                     return await self._generate_response(channel, job, model_override="opus")
                 else:
                     _LOG.error("All models overloaded for channel %s, giving up", channel.id)
-            self._handle_cli_error(channel, e)
+            self._handle_cli_error(channel, e, job)
 
         except Exception:
             _LOG.exception("Generation failed")
+            asyncio.ensure_future(self._send_failure_notice(
+                channel,
+                "something broke on my end while writing a reply -- send that again in a bit",
+            ))
 
         finally:
+            if typing_task is not None:
+                typing_task.cancel()
             self._finalize_generation(channel, job)
+
+    async def _typing_loop(self, channel: discord.TextChannel | discord.Thread) -> None:
+        """Keep the typing indicator alive until cancelled.
+
+        Each ``channel.typing()`` trigger lasts ~10 seconds, so this
+        re-triggers on an 8 second interval. Exits quietly if the trigger
+        fails (e.g. missing permissions) rather than retrying forever.
+        """
+        try:
+            while True:
+                try:
+                    await channel.typing()
+                except Exception as e:
+                    _LOG.debug("Typing trigger failed for channel %s: %s", channel.id, e)
+                    return
+                await asyncio.sleep(_TYPING_REFRESH_INTERVAL)
+        except asyncio.CancelledError:
+            pass
+
+    async def _send_failure_notice(
+        self,
+        channel: discord.TextChannel | discord.Thread,
+        text: str,
+    ) -> None:
+        """Send a short user-visible failure notice, rate-limited per channel.
+
+        Without this, terminal failures (overload give-up, exhausted timeout
+        continuations, CLI crashes) are only logged and users wait on a reply
+        that will never come.
+        """
+        now = time.monotonic()
+        if now - self._last_failure_notice.get(channel.id, 0.0) < _FAILURE_NOTICE_COOLDOWN:
+            return
+        self._last_failure_notice[channel.id] = now
+        try:
+            await channel.send(f"-# {text}")
+        except Exception:
+            _LOG.exception("Failed to send failure notice to channel %s", channel.id)
 
     def _handle_cli_error(
         self,
         channel: discord.TextChannel | discord.Thread,
         error: ClaudeCliError,
+        job: GenerationJob,
     ) -> None:
-        """Log or report a CLI error; notify the channel on OAuth expiry."""
+        """Log a CLI error and, for terminal failures, tell the channel.
+
+        Timeouts that will be auto-continued by ``_finalize_generation`` stay
+        silent; everything else gets a short notice so users aren't left
+        waiting on a reply that will never arrive.
+        """
         error_str = str(error).lower()
         if "oauth" in error_str and "expired" in error_str:
             asyncio.ensure_future(self._send_oauth_notice(channel))
-        else:
-            _LOG.error("Claude CLI error: %s", error)
+            return
+
+        _LOG.error("Claude CLI error: %s", error)
+
+        if job.timed_out:
+            if job.continuation_count >= _MAX_TIMEOUT_CONTINUATIONS:
+                asyncio.ensure_future(self._send_failure_notice(
+                    channel,
+                    "i kept hitting the time limit on that and had to give up -- "
+                    "try breaking the request into smaller pieces",
+                ))
+            # else: _finalize_generation auto-continues; stay quiet.
+            return
+
+        if error.overloaded:
+            # Only reached after the opus fallback and the long-backoff retry
+            # have both failed (earlier attempts return before this point).
+            asyncio.ensure_future(self._send_failure_notice(
+                channel,
+                "claude's api is overloaded right now -- ping me again in a few minutes",
+            ))
+            return
+
+        asyncio.ensure_future(self._send_failure_notice(
+            channel,
+            "something broke on my end while writing a reply -- send that again in a bit",
+        ))
 
     async def _send_oauth_notice(self, channel: discord.TextChannel | discord.Thread) -> None:
         """Send an OAuth-expiration message to the channel, swallowing errors."""

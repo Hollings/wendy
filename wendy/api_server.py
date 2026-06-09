@@ -144,41 +144,125 @@ def _validate_attachment_path(path_str: str) -> str | None:
     return None
 
 
-def _build_discord_send_kwargs(
+MAX_SPLIT_CHUNKS = 6
+"""Max Discord messages a single over-long send may be split into."""
+
+_FENCE_RE = re.compile(r"^(`{3,})([^`\n]*)$", re.MULTILINE)
+
+
+def _fence_state_after(text: str, open_fence: tuple[str, str] | None) -> tuple[str, str] | None:
+    """Track Markdown code-fence state across *text*.
+
+    *open_fence* is the ``(ticks, lang)`` of a fence open at the start of
+    *text* (or ``None``).  Returns the fence still open at the end, if any.
+    """
+    fence = open_fence
+    for m in _FENCE_RE.finditer(text):
+        if fence is None:
+            fence = (m.group(1), m.group(2).strip())
+        elif len(m.group(1)) >= len(fence[0]):
+            fence = None
+    return fence
+
+
+def split_message_text(text: str, limit: int = DISCORD_MAX_MESSAGE_LENGTH) -> list[str]:
+    """Split *text* into chunks of at most *limit* characters.
+
+    Prefers paragraph, then line, then word boundaries.  Markdown code
+    fences that straddle a split are closed at the end of the chunk and
+    reopened (with their language tag) at the start of the next, so each
+    Discord message renders correctly on its own.
+    """
+    if len(text) <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    open_fence: tuple[str, str] | None = None
+    remaining = text
+
+    while remaining:
+        prefix = f"{open_fence[0]}{open_fence[1]}\n" if open_fence else ""
+        if len(prefix) + len(remaining) <= limit:
+            chunks.append(prefix + remaining)
+            break
+
+        # Reserve room for a closing fence we may need to append.
+        closer_len = len(open_fence[0]) + 1 if open_fence else 4
+        budget = limit - len(prefix) - closer_len
+        window = remaining[:budget]
+
+        # Prefer paragraph > line > word boundaries; never split in the
+        # first half of the window (avoids degenerate tiny chunks).
+        cut = window.rfind("\n\n")
+        if cut < budget // 2:
+            cut = window.rfind("\n")
+        if cut < budget // 2:
+            cut = window.rfind(" ")
+        if cut < budget // 2:
+            cut = budget
+
+        piece = remaining[:cut]
+        remaining = remaining[cut:].lstrip(" \n")
+
+        next_fence = _fence_state_after(piece, open_fence)
+        if next_fence and remaining:
+            piece += f"\n{next_fence[0]}"
+        chunks.append(prefix + piece)
+        open_fence = next_fence
+
+    return chunks
+
+
+async def _send_split_message(
+    channel: discord.abc.Messageable,
     body: dict,
     channel_id: int,
-) -> tuple[dict, str | None]:
-    """Build ``channel.send()`` keyword arguments from a request body.
+) -> tuple[list, str | None]:
+    """Send a message described by *body*, auto-splitting over-long content.
 
-    Handles content, attachment validation, and reply references.  Shared by
-    both single-message and batch-action ``send_message`` paths.
+    The reply reference (if any) goes on the first chunk; the attachment
+    (if any) goes on the last, so it appears after the text that mentions it.
+    Every sent message is persisted to SQLite.
 
-    Returns ``(kwargs_dict, error_string)``.  *error_string* is ``None`` when
-    the input is valid.
+    Returns ``(sent_messages, error_string)``.  *error_string* is ``None``
+    on success.
     """
     import discord as _discord
 
     text = body.get("content") or body.get("message") or ""
-    if len(text) > DISCORD_MAX_MESSAGE_LENGTH:
-        return {}, f"Message too long ({len(text)} chars). Discord limit is {DISCORD_MAX_MESSAGE_LENGTH}."
 
     att_path = body.get("file_path") or body.get("attachment")
     if att_path:
         err = _validate_attachment_path(att_path)
         if err:
-            return {}, err
+            return [], err
 
-    kwargs: dict = {"content": text or None}
-    if att_path:
-        kwargs["file"] = _discord.File(att_path)
+    chunks = split_message_text(text) if text else [""]
+    if len(chunks) > MAX_SPLIT_CHUNKS:
+        return [], (
+            f"Message too long ({len(text)} chars, would need {len(chunks)} Discord messages; "
+            f"max {MAX_SPLIT_CHUNKS}). Trim it, or save it to a file and send with an attachment."
+        )
 
+    reference = None
     reply_to = body.get("reply_to")
     if reply_to:
-        kwargs["reference"] = _discord.MessageReference(
+        reference = _discord.MessageReference(
             message_id=int(reply_to), channel_id=channel_id,
         )
 
-    return kwargs, None
+    sent: list = []
+    for i, chunk in enumerate(chunks):
+        kwargs: dict = {"content": chunk or None}
+        if i == 0 and reference is not None:
+            kwargs["reference"] = reference
+        if i == len(chunks) - 1 and att_path:
+            kwargs["file"] = _discord.File(att_path)
+        msg = await channel.send(**kwargs)
+        _save_bot_message(msg, channel_id)
+        sent.append(msg)
+
+    return sent, None
 
 
 # ---------------------------------------------------------------------------
@@ -215,15 +299,17 @@ async def _execute_batch_actions(
         action_type = action.get("type")
 
         if action_type == "send_message":
-            kwargs, err = _build_discord_send_kwargs(action, channel_id)
+            sent_msgs, err = await _send_split_message(channel, action, channel_id)
             if err:
                 return web.json_response({"error": f"Action {i}: {err}"}, status=400)
-            sent_msg = await channel.send(**kwargs)
-            _save_bot_message(sent_msg, channel_id)
-            results.append({
+            result_entry = {
                 "action": i, "type": "send_message", "success": True,
-                "message_id": sent_msg.id, "content": sent_msg.content or "",
-            })
+                "message_id": sent_msgs[0].id,
+                "content": "\n".join(m.content or "" for m in sent_msgs),
+            }
+            if len(sent_msgs) > 1:
+                result_entry["split_into"] = len(sent_msgs)
+            results.append(result_entry)
 
         elif action_type == "add_reaction":
             msg_id = action.get("message_id")
@@ -294,24 +380,26 @@ async def handle_send_message(request: web.Request) -> web.Response:
         return await _execute_batch_actions(actions, channel, channel_id)
 
     # Single message mode
-    kwargs, err = _build_discord_send_kwargs(body, channel_id)
+    sent_msgs, err = await _send_split_message(channel, body, channel_id)
     if err:
         return web.json_response({"error": err}, status=400)
 
-    sent_msg = await channel.send(**kwargs)
-    _save_bot_message(sent_msg, channel_id)
+    last_msg = sent_msgs[-1]
     new_messages = check_for_new_messages(channel_id)
     resp_body: dict = {
         "success": True,
         "message": "Message sent",
-        "message_id": sent_msg.id,
-        "content": sent_msg.content or "",
+        "message_id": sent_msgs[0].id,
+        "content": "\n".join(m.content or "" for m in sent_msgs),
         "new_messages": new_messages,
     }
-    if sent_msg.attachments:
+    if len(sent_msgs) > 1:
+        resp_body["split_into"] = len(sent_msgs)
+        resp_body["message"] = f"Message sent (split into {len(sent_msgs)} parts to fit Discord's limit)"
+    if last_msg.attachments:
         resp_body["attachments"] = [
             {"filename": a.filename, "size": a.size, "url": a.url}
-            for a in sent_msg.attachments
+            for a in last_msg.attachments
         ]
     return web.json_response(resp_body)
 

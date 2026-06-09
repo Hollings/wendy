@@ -175,6 +175,7 @@ Full reference: /app/config/docs/bd_usage.md
 def get_beads_warning_for_nudge(channel_name: str) -> str:
     """Return a compact beads warning for the nudge prompt, or empty string if none active."""
     import subprocess
+
     from .config import CLI_SUBPROCESS_UID, SENSITIVE_ENV_VARS
     from .paths import channel_dir
 
