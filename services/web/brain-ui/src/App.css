@@ -251,6 +251,17 @@ button {
 .clamp-1 { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
 .clamp-4 { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 
+/* Expanded large tool inputs/results scroll internally instead of
+   pushing the rest of the feed off-screen. */
+.expanded-body {
+  max-height: 50vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: var(--bg);
+}
+
 .expand-hint {
   display: inline-block;
   margin-top: 2px;

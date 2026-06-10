@@ -129,12 +129,16 @@ function RowBody({ ev }) {
     return (
       <div className="row-body mono clickable" onClick={() => setExpanded(e => !e)}>
         {!expanded && <div className="clamp-1">{preview || '(no input)'}</div>}
-        {expanded && entries.map(([k, v]) => (
-          <div key={k} className="kv">
-            <span className="k">{k}</span>
-            <span className="v">{typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v)}</span>
+        {expanded && (
+          <div className="expanded-body">
+            {entries.map(([k, v]) => (
+              <div key={k} className="kv">
+                <span className="k">{k}</span>
+                <span className="v">{typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v)}</span>
+              </div>
+            ))}
           </div>
-        ))}
+        )}
       </div>
     )
   }
@@ -146,7 +150,7 @@ function RowBody({ ev }) {
       className={'row-body' + (ev.kind === 'result' ? ' mono' : '') + (long ? ' clickable' : '')}
       onClick={() => long && setExpanded(e => !e)}
     >
-      <div className={expanded || !long ? '' : 'clamp-4'}>{text}</div>
+      <div className={expanded ? 'expanded-body' : long ? 'clamp-4' : ''}>{text}</div>
       {long && <span className="expand-hint">{expanded ? 'collapse' : 'expand'}</span>}
     </div>
   )
