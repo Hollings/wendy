@@ -6,7 +6,6 @@ const MAX_EVENTS = 300
 const MAX_SEEN = 4000
 const CHANNELS_POLL_MS = 30_000
 const STATS_POLL_MS = 60_000
-const USAGE_POLL_MS = 300_000
 const RECONNECT_MS = 3000
 
 /**
@@ -20,7 +19,6 @@ const RECONNECT_MS = 3000
  *   channelStats {channel_id: {tokens, lastTs, count}} derived from the stream
  *   beads        bead list (REST on connect, WS beads_list pushes after)
  *   beadSnippets {bead_id: {text, ts}} most recent activity per bead
- *   usage        weekly/session quota from /api/brain/usage (or null)
  *   wsStatus     connecting | connected | disconnected | full | auth_error
  *   viewers      connected dashboard count (from /api/brain/stats)
  */
@@ -30,7 +28,6 @@ export function useBrainStore({ onAuthError }) {
   const [channelStats, setChannelStats] = useState({})
   const [beads, setBeads] = useState([])
   const [beadSnippets, setBeadSnippets] = useState({})
-  const [usage, setUsage] = useState(null)
   const [wsStatus, setWsStatus] = useState('connecting')
   const [viewers, setViewers] = useState(null)
 
@@ -53,11 +50,6 @@ export function useBrainStore({ onAuthError }) {
   const refreshChannels = useCallback(async () => {
     const data = await fetchJson('/api/brain/channels')
     if (data?.channels) setChannelsMap(data.channels)
-  }, [fetchJson])
-
-  const refreshUsage = useCallback(async () => {
-    const data = await fetchJson('/api/brain/usage')
-    if (data) setUsage(data)
   }, [fetchJson])
 
   const refreshStats = useCallback(async () => {
@@ -190,12 +182,10 @@ export function useBrainStore({ onAuthError }) {
 
   useEffect(() => {
     refreshChannels()
-    refreshUsage()
     const a = setInterval(refreshChannels, CHANNELS_POLL_MS)
-    const b = setInterval(refreshUsage, USAGE_POLL_MS)
-    const c = setInterval(refreshStats, STATS_POLL_MS)
-    return () => { clearInterval(a); clearInterval(b); clearInterval(c) }
-  }, [refreshChannels, refreshUsage, refreshStats])
+    const b = setInterval(refreshStats, STATS_POLL_MS)
+    return () => { clearInterval(a); clearInterval(b) }
+  }, [refreshChannels, refreshStats])
 
-  return { events, channelsMap, channelStats, beads, beadSnippets, usage, wsStatus, viewers }
+  return { events, channelsMap, channelStats, beads, beadSnippets, wsStatus, viewers }
 }

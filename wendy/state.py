@@ -127,12 +127,6 @@ class StateManager:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
 
-            CREATE TABLE IF NOT EXISTS usage_state (
-                key TEXT PRIMARY KEY,
-                value INTEGER NOT NULL,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-            );
-
             CREATE TABLE IF NOT EXISTS bash_tool_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT,
@@ -713,28 +707,6 @@ class StateManager:
             (thread_id,)
         ).fetchone()
         return row["parent_channel_id"] if row else None
-
-    # =========================================================================
-    # Usage State
-    # =========================================================================
-
-    def get_usage_threshold(self, key: str) -> int:
-        conn = self._get_conn()
-        row = conn.execute(
-            "SELECT value FROM usage_state WHERE key = ?", (key,)
-        ).fetchone()
-        return row["value"] if row else 0
-
-    def set_usage_threshold(self, key: str, value: int) -> None:
-        conn = self._get_conn()
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO usage_state (key, value, updated_at)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
-            """,
-            (key, value)
-        )
-        conn.commit()
 
     # =========================================================================
     # Session History

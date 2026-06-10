@@ -256,7 +256,7 @@ def archive_duplicate_channel_scripts():
     chat_scripts = [
         "deploy.sh",          # duplicate of repo scripts/deploy.sh (with bug fix we're merging)
         "game_logs.sh",       # duplicate of repo scripts/game_logs.sh
-        "get_usage.sh",       # duplicate of repo scripts/get_usage.sh
+        "get_usage.sh",       # usage-check feature removed (API endpoint never worked)
         "restart.sh",         # minecraft bot restart - legacy
         "send.sh",            # minecraft dual-send - legacy
         "reminder_seahorse.sh",    # one-shot reminder (already fired or stale)
@@ -271,7 +271,7 @@ def archive_duplicate_channel_scripts():
     coding_scripts = [
         "deploy.sh",          # duplicate of repo scripts/deploy.sh
         "game_logs.sh",       # duplicate of repo scripts/game_logs.sh
-        "get_usage.sh",       # duplicate of repo scripts/get_usage.sh
+        "get_usage.sh",       # usage-check feature removed (API endpoint never worked)
         "cut.sh",             # ffmpeg utility
     ]
 

@@ -273,29 +273,6 @@ class TestNotifications:
         assert unseen[2].id == id3
 
 
-class TestUsageState:
-    """Tests for usage threshold tracking."""
-
-    def test_get_usage_threshold_default(self, state_manager):
-        """get_usage_threshold returns 0 for unset key."""
-        result = state_manager.get_usage_threshold("nonexistent")
-        assert result == 0
-
-    def test_set_and_get_usage_threshold(self, state_manager):
-        """set_usage_threshold stores, get_usage_threshold retrieves."""
-        state_manager.set_usage_threshold("last_notified_week_all", 50)
-
-        result = state_manager.get_usage_threshold("last_notified_week_all")
-        assert result == 50
-
-    def test_set_usage_threshold_updates(self, state_manager):
-        """set_usage_threshold updates existing value."""
-        state_manager.set_usage_threshold("key1", 10)
-        state_manager.set_usage_threshold("key1", 20)
-
-        result = state_manager.get_usage_threshold("key1")
-        assert result == 20
-
 class TestThreadSafety:
     """Tests for thread-safe operations."""
 

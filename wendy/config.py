@@ -45,7 +45,6 @@ CLAUDE_CLI_TIMEOUT: int = int(os.getenv("CLAUDE_CLI_TIMEOUT", "600"))  # legacy,
 CLAUDE_CLI_IDLE_TIMEOUT: int = int(os.getenv("CLAUDE_CLI_IDLE_TIMEOUT", "600"))
 CLAUDE_CLI_MAX_RUNTIME: int = int(os.getenv("CLAUDE_CLI_MAX_RUNTIME", "3600"))
 JOURNAL_NUDGE_INTERVAL: int = int(os.getenv("JOURNAL_NUDGE_INTERVAL", "10"))
-USAGE_BUDGET_FACTOR: float = float(os.getenv("USAGE_BUDGET_FACTOR", "0.8"))
 ENRICHMENT_HOUR_UTC: int = int(os.getenv("ENRICHMENT_HOUR_UTC", "21"))   # 1pm PST default
 ENRICHMENT_MINUTE_UTC: int = int(os.getenv("ENRICHMENT_MINUTE_UTC", "0"))
 ENRICHMENT_DURATION: int = int(os.getenv("ENRICHMENT_DURATION", "900"))  # 15 min

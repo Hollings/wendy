@@ -14,7 +14,6 @@ The Brain dashboard is a real-time, single-page observability surface for Wendy'
   - `/data/wendy/shared/beads_snapshot.json` — JSON array of beads written by Wendy's `TaskRunner` each poll cycle. Source of truth for bead list on the dashboard.
   - `/data/wendy/orchestrator_logs/agent_{task_id}_{ts}.log` — stream-json logs from beads agents. Tailed line-by-line, each line is wrapped into an envelope and broadcast over the same WS.
   - `/data/claude/projects/-data-wendy-channels-*/{session_id}/subagents/agent-*.jsonl` — per-`Task`-tool subagent logs. Read on demand via REST.
-  - `/data/wendy/usage_data.json` — Anthropic quota numbers (session %, weekly %, reset timestamps) produced by a helper on the bot side.
 
 ---
 
@@ -202,33 +201,6 @@ Note: the frontend currently does **not** poll this. Most of these numbers can b
 
 Same payload as the `channels_map` WS envelope. Frontend polls this every 30s to keep thread names fresh, and immediately when a new `channel_id` appears in the stream.
 
-### `GET /api/brain/usage`
-
-Weekly + session API quota, written by a helper outside this service.
-
-When available:
-
-```json
-{
-  "available": true,
-  "session_percent": 42,
-  "session_resets": "2026-04-25T00:00:00Z",
-  "week_all_percent": 30,
-  "week_all_resets": "2026-04-28T00:00:00Z",
-  "week_sonnet_percent": 12,
-  "week_sonnet_resets": "2026-04-28T00:00:00Z",
-  "updated_at": "2026-04-24T17:50:00Z"
-}
-```
-
-When the file is missing or unreadable:
-
-```json
-{ "available": false, "message": "Usage data not available yet" }
-```
-
-Polled every 5 minutes by the frontend.
-
 ### `GET /api/brain/beads`
 
 Full list of beads (server-side sorted and trimmed). Fetched on WS connect to populate the sidebar before the first `beads_list` push arrives.
@@ -338,10 +310,9 @@ Deduplication: the frontend keeps a bounded set of synthetic event IDs (`${ts}-$
 The current layout is a two-column SPA:
 
 - **Left (feed column)**: chronological wall of event cards. Connection status pill at top. Auto-scrolls to bottom when the user is within ~80px of bottom; shows a "jump to live" button otherwise. Can be filtered to a single bead (click a bead card) or to a subset of channels (toggle channel chips). Capped at 200 events in memory.
-- **Right (sidebar)**: three sections, top-to-bottom:
-  1. **Channels**: one chip per channel that has produced events this session. Chip shows channel name (from `channels_map`), time since last activity, and a fill bar for that channel's context-%%. Clicking toggles the channel on/off in the feed filter. Channels hidden for >10 minutes collapse behind a "N inactive" button.
-  2. **Weekly usage**: three bars from `/api/brain/usage` — session, week-all, week-sonnet — each showing percent used and reset time.
-  3. **Beads**: card grid of active + recent-closed beads. Each card shows title, status, and the most recent event snippet seen for that bead on the WS. Clicking a card focuses the feed onto that bead's events.
+- **Right (sidebar)**: two sections, top-to-bottom:
+  1. **Sessions**: one row per channel that has produced events this session, showing channel name (from `channels_map`), time since last activity, and a context-%% fill bar. Clicking toggles the channel on/off in the feed filter.
+  2. **Beads**: card grid of active + recent-closed beads. Each card shows title, status, and the most recent event snippet seen for that bead on the WS. Clicking a card focuses the feed onto that bead's events.
 
 Auth flow: unauthenticated users see a passphrase prompt that POSTs to `/api/brain/auth`. The token and the passphrase itself are persisted to `localStorage` — the passphrase is used for silent re-auth when the WS closes with an auth-ish code.
 

@@ -5,11 +5,10 @@ import TopBar from './TopBar'
 import Feed from './Feed'
 import SessionsPanel from './SessionsPanel'
 import BeadsPanel from './BeadsPanel'
-import UsagePanel from './UsagePanel'
 
 export default function Dashboard({ onLogout }) {
   const store = useBrainStore({ onAuthError: onLogout })
-  const { events, channelsMap, channelStats, beads, beadSnippets, usage, wsStatus, viewers } = store
+  const { events, channelsMap, channelStats, beads, beadSnippets, wsStatus, viewers } = store
 
   const [hiddenChannels, setHiddenChannels] = useState(new Set())
   const [hiddenKinds, setHiddenKinds] = useState(new Set())
@@ -91,7 +90,6 @@ export default function Dashboard({ onLogout }) {
             focusedBeadId={focusedBead?.id ?? null}
             onBeadClick={toggleBead}
           />
-          <UsagePanel usage={usage} />
         </aside>
       </div>
       <button

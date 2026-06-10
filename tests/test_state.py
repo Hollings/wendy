@@ -329,17 +329,3 @@ def test_get_session_by_id_not_found(tmp_path):
     assert sm.get_session_by_id("nonexistent") is None
 
 
-# =========================================================================
-# Usage state
-# =========================================================================
-
-
-def test_usage_state(tmp_path):
-    sm = _make_sm(tmp_path)
-    assert sm.get_usage_threshold("test_key") == 0
-
-    sm.set_usage_threshold("test_key", 42)
-    assert sm.get_usage_threshold("test_key") == 42
-
-    sm.set_usage_threshold("test_key", 100)
-    assert sm.get_usage_threshold("test_key") == 100

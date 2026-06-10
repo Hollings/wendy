@@ -28,7 +28,6 @@ from .config import (
     ENRICHMENT_MINUTE_UTC,
     MESSAGE_LOGGER_GUILDS,
     PROXY_PORT,
-    USAGE_BUDGET_FACTOR,
     parse_channel_configs,
 )
 from .enrichment import build_enrichment_continue_nudge, build_enrichment_end_nudge, build_enrichment_nudge
@@ -47,12 +46,6 @@ _LOG = logging.getLogger(__name__)
 _synthetic_counter = 0
 """Counter for unique synthetic message IDs."""
 
-_cached_usage: dict = {}
-"""Latest parsed usage data from get_usage.sh (updated by _maybe_update_presence)."""
-
-# Minimum seconds between presence updates (15 minutes).
-_PRESENCE_INTERVAL = 900
-
 # Minimum seconds between user-visible failure notices per channel (5 minutes).
 _FAILURE_NOTICE_COOLDOWN = 300
 
@@ -64,20 +57,6 @@ _TYPING_REFRESH_INTERVAL = 8.0
 def _folder_for_config(config: dict) -> str:
     """Return the workspace folder name for a channel or thread config."""
     return config.get("_folder") or config.get("name", "default")
-
-
-def _get_current_effort(model: str) -> list[str]:
-    """Return ``["--effort", "low"]`` for Opus when weekly usage >= 85%, else ``[]``.
-
-    The ``--effort`` flag only affects Opus; Sonnet/Haiku ignore it, so we
-    return an empty list for non-Opus models unconditionally.
-    """
-    if "opus" not in model:
-        return []
-    week_pct = _cached_usage.get("week_all_percent", 0)
-    if week_pct >= 85:
-        return ["--effort", "low"]
-    return []
 
 
 _MAX_TIMEOUT_CONTINUATIONS = 2
@@ -122,7 +101,6 @@ class WendyBot(commands.Bot):
         self.whitelist_channels: set[int] = set(self.channel_configs.keys())
         self._active_generations: dict[int, GenerationJob] = {}
         self._api_runner = None
-        self._presence_updated_at: float = 0.0
         self._enrichment_last_run_date: dict[int, datetime.date] = {}
         self._enrichment_notified: set[int] = set()
         self._pending_wakes: dict[int, asyncio.TimerHandle] = {}
@@ -784,95 +762,6 @@ class WendyBot(commands.Bot):
         )
         new_job.task = new_task
 
-    async def _maybe_update_presence(self) -> None:
-        """Refresh the bot's Discord status with usage percentages (at most every 15 min)."""
-        if time.monotonic() - self._presence_updated_at < _PRESENCE_INTERVAL:
-            return
-        try:
-            week_pct_str, pace_str, resets_str = await self._fetch_usage_stats()
-            status = f"{week_pct_str} wk | {pace_str}"
-            if resets_str:
-                status += f" | {resets_str}"
-            await self.change_presence(
-                activity=discord.Activity(
-                    type=discord.ActivityType.watching,
-                    name=status,
-                )
-            )
-            self._presence_updated_at = time.monotonic()
-        except Exception as e:
-            _LOG.error("Failed to update presence: %s", e)
-
-    async def _fetch_usage_stats(self) -> tuple[str, str, str]:
-        """Read cached usage data and return (week_pct_str, pace_str, resets_str).
-
-        Reads from the usage_data.json file maintained by the TaskRunner's
-        ``_check_usage`` loop.  Returns ``("N/A", "N/A", "")`` if the cached
-        file is missing or unreadable (does NOT call get_usage.sh directly,
-        since the API may be unavailable due to token scope issues).
-
-        pace = floor(elapsed_week_pct) - week_all_percent: positive means budget
-        ahead of pace, negative means deficit. Updates ``_cached_usage`` on success.
-        """
-        global _cached_usage
-
-        from .paths import WENDY_BASE
-        usage_file = WENDY_BASE / "usage_data.json"
-
-        data = None
-        if usage_file.exists():
-            try:
-                data = json.loads(usage_file.read_text())
-            except (json.JSONDecodeError, OSError):
-                pass
-
-        if data is None:
-            return "N/A", "N/A", ""
-
-        if USAGE_BUDGET_FACTOR < 1.0:
-            for key in ("week_all_percent", "week_sonnet_percent", "session_percent"):
-                if key in data:
-                    data[key] = min(100, int(data[key] / USAGE_BUDGET_FACTOR))
-        _cached_usage = data
-        week_pct = data.get("week_all_percent")
-        week_resets_str = data.get("week_all_resets", "")
-
-        week_pct_str = f"{week_pct}%" if week_pct is not None else "N/A"
-        pace_str = "N/A"
-        resets_str = ""
-
-        if week_pct is not None and week_resets_str:
-            try:
-                resets_at = datetime.datetime.fromisoformat(
-                    week_resets_str.replace("Z", "+00:00")
-                )
-                now = datetime.datetime.now(datetime.UTC)
-                # If resets_at is in the past, the cached percentage is from a
-                # previous billing week.  Project the date forward and treat
-                # usage as 0% for the new week.
-                week_secs = 7 * 24 * 3600
-                week_rolled = False
-                while resets_at <= now:
-                    resets_at += datetime.timedelta(seconds=week_secs)
-                    week_rolled = True
-                if week_rolled:
-                    week_pct = 0
-                    week_pct_str = "0%"
-                    _cached_usage["week_all_percent"] = 0
-                secs_remaining = (resets_at - now).total_seconds()
-                elapsed_pct = int((1 - secs_remaining / week_secs) * 100)
-                elapsed_pct = max(0, min(100, elapsed_pct))
-                surplus = elapsed_pct - week_pct
-                if surplus >= 0:
-                    pace_str = f"+{surplus}% surplus"
-                else:
-                    pace_str = f"{abs(surplus)}% deficit"
-                resets_str = resets_at.strftime("%b %-d")
-            except Exception as e:
-                _LOG.warning("Failed to compute surplus: %s", e)
-
-        return week_pct_str, pace_str, resets_str
-
     async def _generate_response(
         self,
         channel: discord.TextChannel | discord.Thread,
@@ -886,8 +775,6 @@ class WendyBot(commands.Bot):
         """
         channel_config = self.channel_configs.get(channel.id, {})
 
-        await self._maybe_update_presence()
-
         # Show "is typing..." while the CLI works so users get immediate
         # feedback that their message was seen. Discord clears the indicator
         # whenever a message is sent; the loop re-triggers it until the
@@ -898,12 +785,9 @@ class WendyBot(commands.Bot):
             typing_task = self.loop.create_task(self._typing_loop(channel))
 
         try:
-            from .config import resolve_model
             from .prompt import build_system_prompt
 
             system_prompt = build_system_prompt(channel.id, channel_config)
-            resolved_model = resolve_model(channel_config.get("model") or "sonnet")
-            effort_args = _get_current_effort(resolved_model)
 
             # Inject context introductions for newly relevant persons/topics.
             channel_name = _folder_for_config(channel_config)
@@ -942,7 +826,6 @@ class WendyBot(commands.Bot):
                 channel_config=channel_config,
                 system_prompt=system_prompt,
                 model_override=model_override,
-                effort_args=effort_args,
                 nudge_override=enrichment_nudge,
                 timeout_override=int(remaining) + 60 if remaining is not None else None,
                 max_turns=100 if job.is_enrichment else None,

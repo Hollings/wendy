@@ -12,8 +12,6 @@ Route overview (see ``create_app`` for the full route table):
     POST /api/deploy_game           -- proxy a game deploy to wendy-web
     GET  /api/game_logs/:name       -- fetch game server logs
     POST /api/analyze_file          -- analyse media via Gemini
-    GET  /api/usage                 -- Claude Code usage stats
-    POST /api/usage/refresh         -- force a usage data refresh
     GET  /health                    -- liveness check
 """
 from __future__ import annotations
@@ -874,40 +872,6 @@ async def handle_analyze_file(request: web.Request) -> web.Response:
 # Usage tracking
 # ---------------------------------------------------------------------------
 
-USAGE_DATA_FILE = WENDY_BASE / "usage_data.json"
-USAGE_FORCE_CHECK_FILE = WENDY_BASE / "usage_force_check"
-
-
-async def handle_usage(request: web.Request) -> web.Response:
-    """GET /api/usage -- return Claude Code usage stats from the cached JSON file."""
-    if not USAGE_DATA_FILE.exists():
-        return web.json_response({"error": "Usage data not available yet"}, status=404)
-    try:
-        data = json.loads(USAGE_DATA_FILE.read_text())
-        week_all = data.get("week_all_percent", 0)
-        week_sonnet = data.get("week_sonnet_percent", 0)
-        updated = data.get("updated_at", "unknown")
-        data["message"] = (
-            f"Claude Code Usage (as of {updated}):\n"
-            f"- Weekly (all models): {week_all}%\n"
-            f"- Weekly (Sonnet only): {week_sonnet}%"
-        )
-        return web.json_response(data)
-    except Exception as e:
-        _LOG.error("usage error: %s", e)
-        return web.json_response({"error": "Failed to read usage data"}, status=500)
-
-
-async def handle_usage_refresh(request: web.Request) -> web.Response:
-    """POST /api/usage/refresh -- create a marker file to trigger an immediate usage check."""
-    try:
-        USAGE_FORCE_CHECK_FILE.touch()
-        return web.json_response({"success": True, "message": "Usage refresh requested. Check back in ~30s."})
-    except Exception as e:
-        _LOG.error("usage refresh error: %s", e)
-        return web.json_response({"error": "Internal server error"}, status=500)
-
-
 async def handle_health(request: web.Request) -> web.Response:
     """GET /health -- simple liveness probe."""
     return web.json_response({"status": "ok"})
@@ -1012,8 +976,6 @@ def create_app() -> web.Application:
     app.router.add_post("/api/deploy_game", handle_deploy_game)
     app.router.add_get("/api/game_logs/{name}", handle_game_logs)
     app.router.add_post("/api/analyze_file", handle_analyze_file)
-    app.router.add_get("/api/usage", handle_usage)
-    app.router.add_post("/api/usage/refresh", handle_usage_refresh)
     app.router.add_post("/api/schedule_wake", handle_schedule_wake)
     app.router.add_get("/api/active_beads", handle_active_beads)
     app.router.add_post("/api/cancel_bead", handle_cancel_bead)

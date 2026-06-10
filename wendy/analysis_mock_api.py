@@ -108,8 +108,6 @@ def _make_app(
         "/api/analyze_file",
         "/api/active_beads",
         "/api/cancel_bead",
-        "/api/usage",
-        "/api/usage/refresh",
         "/api/schedule_wake",
     ):
         app.router.add_route("*", path, stub_503)

@@ -25,7 +25,6 @@ Endpoints:
         POST /api/brain/auth
         WS   /ws/brain
         GET  /api/brain/stats
-        GET  /api/brain/usage
         GET  /api/brain/agents
         GET  /api/brain/agents/{id}
         GET  /api/brain/beads
@@ -121,7 +120,6 @@ WEBHOOKS_FILE: Path = WENDY_DATA_DIR / "secrets" / "webhooks.json"
 WEBHOOK_SECRET: str = os.getenv("WEBHOOK_SECRET", "")
 WEBHOOK_MAX_PAYLOAD: int = 1024 * 1024
 WEBHOOK_RATE_LIMIT: int = 10
-USAGE_DATA_FILE: Path = Path("/data/wendy/usage_data.json")
 
 _webhook_rate_limits: dict[str, list[float]] = {}
 _ports_lock = asyncio.Lock()
@@ -573,26 +571,6 @@ async def brain_stats(_auth: None = Depends(_require_brain_auth)) -> dict:
 async def brain_channels(_auth: None = Depends(_require_brain_auth)) -> dict:
     """Return {channel_id: folder_name} mapping for channel chip labels."""
     return {"channels": brain.get_channels_map()}
-
-
-@app.get("/api/brain/usage")
-async def brain_usage(_auth: None = Depends(_require_brain_auth)) -> dict:
-    if not USAGE_DATA_FILE.exists():
-        return {"available": False, "message": "Usage data not available yet"}
-    try:
-        data = json.loads(USAGE_DATA_FILE.read_text())
-        return {
-            "available": True,
-            "session_percent": data.get("session_percent", 0),
-            "session_resets": data.get("session_resets", ""),
-            "week_all_percent": data.get("week_all_percent", 0),
-            "week_all_resets": data.get("week_all_resets", ""),
-            "week_sonnet_percent": data.get("week_sonnet_percent", 0),
-            "week_sonnet_resets": data.get("week_sonnet_resets", ""),
-            "updated_at": data.get("updated_at", ""),
-        }
-    except Exception as e:
-        return {"available": False, "message": f"Error reading usage data: {e}"}
 
 
 @app.get("/api/brain/agents")

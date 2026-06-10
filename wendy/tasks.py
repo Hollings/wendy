@@ -9,13 +9,12 @@ import asyncio
 import json
 import logging
 import os
-import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import IO
 
-from .config import CLI_SUBPROCESS_UID, SENSITIVE_ENV_VARS, USAGE_BUDGET_FACTOR, parse_channel_configs, resolve_model
+from .config import CLI_SUBPROCESS_UID, SENSITIVE_ENV_VARS, parse_channel_configs, resolve_model
 from .paths import WENDY_BASE, beads_dir, channel_dir, current_session_file, session_dir
 from .state import state as state_manager
 
@@ -133,8 +132,6 @@ class TaskRunner:
     def __init__(self) -> None:
         self.agents: dict[str, RunningAgent] = {}
         self.beads_channels: list[ChannelBeads] = []
-        self._last_usage_check: float = 0.0
-        self._usage_disabled: bool = False
         self._closed_check_task: asyncio.Task | None = None
         LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -207,7 +204,6 @@ class TaskRunner:
 
                     self._cleanup_logs()
                     await self._write_beads_snapshot()
-                    await self._check_usage()
                 except Exception:
                     _LOG.exception("Task runner loop error")
 
@@ -579,85 +575,6 @@ class TaskRunner:
             tmp_path.replace(snapshot_path)
         except Exception:
             _LOG.debug("Failed to write beads snapshot", exc_info=True)
-
-    async def _check_usage(self) -> None:
-        """Periodically check Claude Code usage via get_usage.sh.
-
-        Permanently disables itself for the session if the API returns an auth
-        or rate-limit error, to avoid hammering a broken endpoint.
-        """
-        if self._usage_disabled:
-            return
-
-        usage_poll_interval = 3600  # 1 hour
-        usage_script = Path("/app/scripts/get_usage.sh")
-        usage_data_file = WENDY_BASE / "usage_data.json"
-        force_check_file = WENDY_BASE / "usage_force_check"
-
-        now = time.time()
-        force = force_check_file.exists()
-        if force:
-            try:
-                force_check_file.unlink()
-            except Exception:
-                pass
-
-        if not force and now - self._last_usage_check < usage_poll_interval:
-            return
-        self._last_usage_check = now
-
-        if not usage_script.exists():
-            return
-
-        proc = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "bash", str(usage_script),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=WENDY_BASE,
-            )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
-            output = stdout.decode()
-
-            if proc.returncode != 0:
-                # Check if this is an auth/rate-limit error (non-transient)
-                try:
-                    err_data = json.loads(output)
-                    err_msg = str(err_data.get("error", "")).lower()
-                    if any(s in err_msg for s in ("auth", "token", "scope", "permission",
-                                                   "unauthorized", "forbidden", "429",
-                                                   "rate limit", "too many")):
-                        _LOG.warning("Usage check disabled for session: %s", err_data.get("error"))
-                        self._usage_disabled = True
-                except (json.JSONDecodeError, AttributeError):
-                    pass
-                return
-
-            usage = json.loads(output)
-            if usage.get("error"):
-                err_msg = str(usage["error"]).lower()
-                if any(s in err_msg for s in ("auth", "token", "scope", "permission",
-                                               "unauthorized", "forbidden", "429",
-                                               "rate limit", "too many")):
-                    _LOG.warning("Usage check disabled for session: %s", usage["error"])
-                    self._usage_disabled = True
-                return
-
-            if USAGE_BUDGET_FACTOR < 1.0:
-                for key in ("week_all_percent", "week_sonnet_percent", "session_percent"):
-                    if key in usage:
-                        usage[key] = min(100, int(usage[key] / USAGE_BUDGET_FACTOR))
-            usage["updated_at"] = datetime.now().isoformat()
-            usage_data_file.write_text(json.dumps(usage, indent=2))
-            _LOG.info("Usage: week_all=%s%%, week_sonnet=%s%%",
-                      usage.get("week_all_percent", 0), usage.get("week_sonnet_percent", 0))
-        except TimeoutError:
-            _LOG.warning("Usage check timed out")
-            if proc is not None:
-                await _kill_and_reap(proc)
-        except Exception:
-            _LOG.warning("Usage check failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # Public control surface (used by !cancel, /api/cancel_bead, etc.)

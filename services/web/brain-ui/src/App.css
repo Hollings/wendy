@@ -468,17 +468,6 @@ button {
   color: var(--text-faint);
 }
 
-/* usage */
-
-.usage-row { display: flex; flex-direction: column; gap: 4px; }
-.usage-top {
-  display: flex;
-  justify-content: space-between;
-  font-size: 12px;
-  color: var(--text-dim);
-}
-.usage-reset { font-size: 10.5px; font-family: var(--mono); }
-
 /* ---- auth ---- */
 
 .auth-screen {
