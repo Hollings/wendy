@@ -699,6 +699,7 @@ class WendyBot(commands.Bot):
             "mode": parent_config.get("mode", "chat"),
             "model": parent_config.get("model"),
             "beads_enabled": parent_config.get("beads_enabled", False),
+            "ignore_user_ids": parent_config.get("ignore_user_ids", set()),
             "_folder": folder_name,
             "_is_thread": True,
             "_parent_folder": parent_folder,
@@ -1145,8 +1146,17 @@ class WendyBot(commands.Bot):
             self._active_generations.pop(channel.id, None)
 
     def _has_pending_messages(self, channel_id: int) -> bool:
-        """Return True if the channel has user messages newer than last_seen."""
-        return state_manager.has_pending_messages(channel_id, self.user.id)
+        """Return True if the channel has wake-worthy messages newer than last_seen.
+
+        Uses the same criteria as on_message: the bot's own messages and
+        messages from the channel's ignore_user_ids never count.
+        """
+        channel_config = self.channel_configs.get(channel_id, {})
+        return state_manager.has_pending_messages(
+            channel_id,
+            self.user.id,
+            ignored_author_ids=channel_config.get("ignore_user_ids", set()),
+        )
 
     # ------------------------------------------------------------------
     # Notification polling

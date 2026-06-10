@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import config as _config
 from . import sessions
 from .config import (
     CLAUDE_CLI_IDLE_TIMEOUT,
@@ -536,9 +537,15 @@ def _build_cli_env(channel_name: str, channel_id: int, beads_enabled: bool) -> d
     cli_env = {k: v for k, v in os.environ.items() if k not in SENSITIVE_ENV_VARS}
     if beads_enabled:
         cli_env["BEADS_DIR"] = str(beads_dir(channel_name))
-    # Channel context for helper scripts (msg, react)
+    # Channel context for helper scripts (msg, react, msgs)
     cli_env["WENDY_CHANNEL_ID"] = str(channel_id)
     cli_env["WENDY_PROXY_PORT"] = str(PROXY_PORT)
+    # The msgs helper strips Wendy's own messages by author_id. Use the
+    # runtime bot ID (set in on_ready) rather than relying on the env file:
+    # if this is 0/unset, msgs shows her her own replies on every wake.
+    # Accessed via the module so we pick up the on_ready mutation.
+    if _config.WENDY_BOT_ID:
+        cli_env["WENDY_BOT_USER_ID"] = str(_config.WENDY_BOT_ID)
     # Pass auth and sync tokens explicitly so the CLI can authenticate even though
     # they're stripped from the general env (to keep them out of `env` output).
     if oauth_token := os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):

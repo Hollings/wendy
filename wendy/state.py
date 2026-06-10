@@ -405,12 +405,20 @@ class StateManager:
         r.content as reply_content
     """
 
+    # The content filter mirrors on_message's command routing: messages
+    # starting with !, -, or / are dispatched as bot commands and never
+    # wake or reach the CLI, so they're excluded everywhere for consistency.
+    _COMMAND_CONTENT_FILTER = (
+        "(content IS NULL OR (content NOT LIKE '!%'"
+        " AND content NOT LIKE '-%' AND content NOT LIKE '/%'))"
+    )
+
     _MESSAGE_QUERY_BASE = f"""
         SELECT {_MESSAGE_QUERY_COLUMNS}
         FROM message_history m
         LEFT JOIN message_history r ON m.reply_to_id = r.message_id
         WHERE m.channel_id = ?
-        AND (m.content IS NULL OR (m.content NOT LIKE '!%' AND m.content NOT LIKE '-%'))
+        AND (m.content IS NULL OR (m.content NOT LIKE '!%' AND m.content NOT LIKE '-%' AND m.content NOT LIKE '/%'))
     """
 
     @staticmethod
@@ -476,36 +484,59 @@ class StateManager:
         combined = list(synth_rows)[::-1] + list(real_rows)
         return combined
 
+    @staticmethod
+    def _ignored_authors_clause(
+        ignored_author_ids,
+        params: list,
+        column: str = "author_id",
+    ) -> str:
+        """Build an ``AND <column> NOT IN (...)`` clause, appending to *params*.
+
+        Returns an empty string when there are no ignored authors. Used so
+        wake/pending detection matches on_message, which stores messages from
+        ``ignore_user_ids`` but never wakes for them.
+        """
+        ids = sorted(ignored_author_ids or ())
+        if not ids:
+            return ""
+        params.extend(ids)
+        placeholders = ",".join("?" * len(ids))
+        return f" AND {column} NOT IN ({placeholders})"
+
     def check_for_new_messages(
         self,
         channel_id: int,
         bot_user_id: int,
         synthetic_id_threshold: int,
         max_limit: int,
+        ignored_author_ids=(),
     ) -> list[dict]:
         """Return new *real* messages since the last ``check_messages`` call.
 
-        This powers the interrupt system: if the caller detects unseen messages
-        it forces Claude to re-read before sending.
+        This powers the interrupt system and startup catchup: if the caller
+        detects unseen messages it forces Claude to re-read before sending.
 
-        Only non-bot messages are returned.  The ``last_seen`` watermark is
-        **not** advanced here -- only ``handle_check_messages`` should advance
-        it.  This prevents a race where the interrupt consumes the watermark
-        before ``check_messages`` can return the same messages.
+        Messages from the bot itself and from *ignored_author_ids* are
+        excluded -- on_message never wakes for those, so counting them here
+        would produce wakes with nothing actionable.  The ``last_seen``
+        watermark is **not** advanced here -- only ``handle_check_messages``
+        should advance it.  This prevents a race where the interrupt consumes
+        the watermark before ``check_messages`` can return the same messages.
         """
         last_seen = self.get_last_seen(channel_id)
         if last_seen is None:
             return []
 
+        params: list = [channel_id, last_seen, bot_user_id]
         query = (
             self._MESSAGE_QUERY_BASE
             + " AND m.message_id > ?"
             + " AND m.author_id != ?"
+            + self._ignored_authors_clause(ignored_author_ids, params, "m.author_id")
             + " ORDER BY m.message_id DESC LIMIT ?"
         )
-        rows = self._get_conn().execute(
-            query, (channel_id, last_seen, bot_user_id, max_limit)
-        ).fetchall()
+        params.append(max_limit)
+        rows = self._get_conn().execute(query, params).fetchall()
         if not rows:
             return []
 
@@ -515,39 +546,37 @@ class StateManager:
         self,
         channel_id: int,
         bot_user_id: int,
+        ignored_author_ids=(),
     ) -> bool:
         """Return True if the channel has messages newer than last_seen.
 
-        Counts both real and synthetic messages (webhooks, notifications)
-        from non-bot authors.  Fails open (returns True) on any error so
-        messages are never silently dropped.
+        Counts both real and synthetic messages (webhooks, notifications),
+        excluding the bot's own messages and *ignored_author_ids* -- the same
+        criteria on_message uses to decide whether a message wakes the bot.
+        Fails open (returns True) on any error so messages are never
+        silently dropped.
         """
         try:
             conn = self._get_conn()
             last_seen = self.get_last_seen(channel_id)
 
+            params: list = [channel_id]
+            watermark_clause = ""
             if last_seen:
-                query = """
-                    SELECT EXISTS(
-                        SELECT 1 FROM message_history
-                        WHERE channel_id = ? AND message_id > ?
-                          AND author_id != ?
-                          AND (content IS NULL OR (content NOT LIKE '!%' AND content NOT LIKE '-%'))
-                        LIMIT 1
-                    )
-                """
-                params: tuple = (channel_id, last_seen, bot_user_id)
-            else:
-                query = """
-                    SELECT EXISTS(
-                        SELECT 1 FROM message_history
-                        WHERE channel_id = ?
-                          AND author_id != ?
-                          AND (content IS NULL OR (content NOT LIKE '!%' AND content NOT LIKE '-%'))
-                        LIMIT 1
-                    )
-                """
-                params = (channel_id, bot_user_id)
+                watermark_clause = " AND message_id > ?"
+                params.append(last_seen)
+            params.append(bot_user_id)
+            ignored_clause = self._ignored_authors_clause(ignored_author_ids, params)
+
+            query = f"""
+                SELECT EXISTS(
+                    SELECT 1 FROM message_history
+                    WHERE channel_id = ?{watermark_clause}
+                      AND author_id != ?{ignored_clause}
+                      AND {self._COMMAND_CONTENT_FILTER}
+                    LIMIT 1
+                )
+            """
             return bool(conn.execute(query, params).fetchone()[0])
         except Exception as e:
             _LOG.error("Error checking pending messages: %s", e)
