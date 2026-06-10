@@ -1,50 +1,28 @@
 import { clearToken, clearPassphrase } from '../auth'
+import { agoShort } from '../events'
 
-function agoShort(ts) {
-  if (!ts) return '—'
-  const ms = Date.now() - new Date(ts).getTime()
-  const s = Math.max(0, Math.floor(ms / 1000))
-  if (s < 60) return s + 's'
-  const m = Math.floor(s / 60)
-  if (m < 60) return m + 'm'
-  return Math.floor(m / 60) + 'h'
+const STATUS = {
+  connecting:   { text: 'connecting', cls: 'warn' },
+  connected:    { text: 'live', cls: 'ok' },
+  disconnected: { text: 'reconnecting', cls: 'warn' },
+  full:         { text: 'server full', cls: 'down' },
+  auth_error:   { text: 'auth failed', cls: 'down' },
 }
 
-const STATUS_TEXT = {
-  connecting: 'connecting · /ws/brain',
-  connected: 'live · /ws/brain',
-  disconnected: 'reconnecting · /ws/brain',
-  full: 'server full · /ws/brain',
-  auth_error: 'auth failed · /ws/brain',
-}
-
-export default function TopBar({ sessionId, viewers, lastActivity, wsStatus, onLogout }) {
-  const pillClass = wsStatus === 'connected' ? '' : wsStatus === 'full' || wsStatus === 'auth_error' ? 'down' : 'warn'
+export default function TopBar({ wsStatus, viewers, lastActivity, onLogout }) {
+  const st = STATUS[wsStatus] ?? STATUS.connecting
   return (
     <header className="topbar">
-      <div className="brand">
-        <div className="brand-mark" aria-hidden />
-        <div className="brand-wordmark">wendy<em>.brain</em></div>
-        <span className="brand-tag">obs · v2</span>
-      </div>
+      <div className="brand">wendy<em>.brain</em></div>
       <div className="topbar-meta">
-        {sessionId && (
-          <span><span className="m-key">session</span><span className="m-val mono">{sessionId}</span></span>
-        )}
-        {viewers != null && (
-          <span><span className="m-key">viewers</span><span className="m-val mono">{viewers}</span></span>
-        )}
-        <span><span className="m-key">last event</span><span className="m-val mono accent">{agoShort(lastActivity)} ago</span></span>
+        {viewers != null && <span>{viewers} watching</span>}
+        <span>last event <strong className="mono">{agoShort(lastActivity)}</strong> ago</span>
       </div>
-      <div style={{ display: 'flex', alignItems: 'center' }}>
-        <span className={`conn-pill ${pillClass}`}>
-          <span className="dot" />
-          <span>{STATUS_TEXT[wsStatus] ?? 'live · /ws/brain'}</span>
-        </span>
+      <div className="topbar-right">
+        <span className={`conn ${st.cls}`}><span className="dot" />{st.text}</span>
         <button
-          className="topbar-logout"
-          onClick={() => { clearToken(); clearPassphrase(); onLogout?.(); }}
-          title="Clear auth and reload"
+          className="logout"
+          onClick={() => { clearToken(); clearPassphrase(); onLogout?.() }}
         >logout</button>
       </div>
     </header>
