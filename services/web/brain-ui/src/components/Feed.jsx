@@ -120,16 +120,43 @@ function SourceTag({ ev, channelsMap }) {
   )
 }
 
+// Tool-specific expanded views; anything not listed falls back to key/value.
+const TOOL_DETAIL = {
+  Edit: EditDiff,
+  Write: WriteDetail,
+}
+
+function EditDiff({ input }) {
+  return (
+    <div className="expanded-body">
+      <div className="diff-file">{input.file_path}</div>
+      <div className="diff-block old">{input.old_string ?? ''}</div>
+      <div className="diff-block new">{input.new_string ?? ''}</div>
+    </div>
+  )
+}
+
+function WriteDetail({ input }) {
+  return (
+    <div className="expanded-body">
+      <div className="diff-file">{input.file_path}</div>
+      <div className="diff-block new">{input.content ?? ''}</div>
+    </div>
+  )
+}
+
 function RowBody({ ev }) {
   const [expanded, setExpanded] = useState(false)
 
   if (ev.kind === 'tool') {
     const preview = toolPreview(ev.tool, ev.input)
     const entries = Object.entries(ev.input ?? {})
+    const Detail = TOOL_DETAIL[ev.tool]
     return (
       <div className="row-body mono clickable" onClick={() => setExpanded(e => !e)}>
         {!expanded && <div className="clamp-1">{preview || '(no input)'}</div>}
-        {expanded && (
+        {expanded && Detail && <Detail input={ev.input ?? {}} />}
+        {expanded && !Detail && (
           <div className="expanded-body">
             {entries.map(([k, v]) => (
               <div key={k} className="kv">

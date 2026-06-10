@@ -275,6 +275,31 @@ button {
 .kv .k { color: var(--accent-dim); margin-right: 8px; }
 .kv .v { white-space: pre-wrap; }
 
+/* Edit/Write expanded view: diff-style blocks */
+.diff-file {
+  color: var(--text-dim);
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 6px;
+}
+.diff-block {
+  white-space: pre-wrap;
+  padding: 4px 8px;
+  border-radius: 4px;
+  margin: 3px 0;
+  border-left: 2px solid;
+}
+.diff-block.old {
+  background: color-mix(in oklab, var(--rose) 8%, transparent);
+  border-left-color: var(--rose);
+  color: color-mix(in oklab, var(--rose) 55%, var(--text));
+}
+.diff-block.new {
+  background: color-mix(in oklab, var(--accent) 7%, transparent);
+  border-left-color: var(--accent);
+  color: color-mix(in oklab, var(--accent) 40%, var(--text));
+}
+
 .divider {
   display: flex;
   align-items: center;
