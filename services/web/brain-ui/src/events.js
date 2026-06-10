@@ -10,6 +10,10 @@
 
 export const CONTEXT_WINDOW = 200_000
 
+// system-event subtypes the CLI emits mid-turn (incremental token counters)
+// that carry no feed value. Dropped before they become rows.
+const NOISE_SYSTEM_SUBTYPES = new Set(['thinking_tokens'])
+
 // ---------------------------------------------------------------------------
 // Dedup key: content-based hash of the raw frame.
 // The same event can arrive twice (once in the 50-event replay on connect,
@@ -127,6 +131,8 @@ export function parseFrame(raw, key) {
   }
 
   if (event.type === 'system') {
+    // Mid-turn token counters are noise, not feed-worthy session events.
+    if (NOISE_SYSTEM_SUBTYPES.has(event.subtype)) return []
     return [{ ...base(0), kind: 'system', subtype: event.subtype }]
   }
 

@@ -331,8 +331,19 @@ def setup_wendy_scripts() -> None:
     secrets_dir.mkdir(exist_ok=True, mode=0o700)
 
 
+# Stream-json event subtypes that are pure noise for the brain dashboard
+# (incremental token counters the CLI emits mid-turn). Skipped from the log so
+# they don't clutter the feed or churn the trim window.
+_NOISE_SYSTEM_SUBTYPES = frozenset({"thinking_tokens"})
+
+
 def append_to_stream_log(event: dict, channel_id: int | None) -> None:
     """Append a single event to the rolling stream log file."""
+    if (
+        event.get("type") == "system"
+        and event.get("subtype") in _NOISE_SYSTEM_SUBTYPES
+    ):
+        return
     try:
         STREAM_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         enriched = {
