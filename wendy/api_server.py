@@ -447,8 +447,6 @@ async def handle_check_messages(request: web.Request) -> web.Response:
         limit         -- max messages to return (default 10, capped by MAX_MESSAGE_LIMIT)
         all_messages  -- ``true`` to ignore the last-seen watermark
         count         -- override *limit* and ignore last-seen (fetch latest N)
-        peek          -- ``true`` to fetch without advancing the watermark or
-                         consuming synthetic messages
     """
     try:
         channel_id = int(request.match_info["channel_id"])
@@ -463,7 +461,6 @@ async def handle_check_messages(request: web.Request) -> web.Response:
 
     limit = min(int(request.query.get("limit", "10")), MAX_MESSAGE_LIMIT)
     all_messages = request.query.get("all_messages", "").lower() == "true"
-    peek = request.query.get("peek", "").lower() == "true"
     count_param = request.query.get("count")
     count = min(int(count_param), MAX_MESSAGE_LIMIT) if count_param else None
 
@@ -493,16 +490,15 @@ async def handle_check_messages(request: web.Request) -> web.Response:
         # Rows come back DESC; reverse to chronological order.
         messages.reverse()
 
-        # Advance the watermark for real messages; clean up consumed
-        # synthetics. Skipped for peek: peek is documented as not advancing
-        # the watermark, and silently consuming it here caused later wakes
-        # to find an empty message list.
-        if not peek:
-            synthetic_ids = [m["message_id"] for m in messages if m["message_id"] >= SYNTHETIC_ID_THRESHOLD]
-            real_messages = [m for m in messages if m["message_id"] < SYNTHETIC_ID_THRESHOLD]
-            if real_messages:
-                state_manager.update_last_seen(channel_id, max(m["message_id"] for m in real_messages))
-            _delete_synthetic_messages(synthetic_ids)
+        # Advance the watermark for real messages; clean up consumed synthetics.
+        # Every fetch claims what it returns -- a no-side-effect variant
+        # (the old --peek) returned the same "new" messages forever, which
+        # the model could lock onto and loop on.
+        synthetic_ids = [m["message_id"] for m in messages if m["message_id"] >= SYNTHETIC_ID_THRESHOLD]
+        real_messages = [m for m in messages if m["message_id"] < SYNTHETIC_ID_THRESHOLD]
+        if real_messages:
+            state_manager.update_last_seen(channel_id, max(m["message_id"] for m in real_messages))
+        _delete_synthetic_messages(synthetic_ids)
 
     except Exception as e:
         _LOG.error("Error reading messages: %s", e)

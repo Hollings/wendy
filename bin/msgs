@@ -51,7 +51,6 @@ def main():
     p.add_argument("-n", "--count", type=int, help="Fetch last N messages (ignores watermark)")
     p.add_argument("--all", action="store_true", help="Fetch all messages (ignores watermark)")
     p.add_argument("--raw", action="store_true", help="Dump raw JSON")
-    p.add_argument("--peek", action="store_true", help="Fetch without advancing the watermark")
     args = p.parse_args()
 
     channel_id = os.environ.get("WENDY_CHANNEL_ID")
@@ -66,8 +65,6 @@ def main():
         params.append(f"count={args.count}")
     if args.all:
         params.append("all_messages=true")
-    if args.peek:
-        params.append("peek=true")
 
     query = ("?" + "&".join(params)) if params else ""
     url = f"http://localhost:{port}/api/check_messages/{channel_id}{query}"

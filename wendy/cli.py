@@ -115,7 +115,6 @@ REAL-TIME CHANNEL TOOLS (Channel ID: {channel_id})
    msgs                 # fetch new messages since last check
    msgs -n 10           # fetch last 10 messages
    msgs --all           # fetch all messages (ignores watermark)
-   msgs --peek          # fetch without advancing the read watermark
    msgs --raw           # dump raw JSON (for debugging/parsing)
 
    This is what you MUST call at the start of every turn. Equivalent to the
