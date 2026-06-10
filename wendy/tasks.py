@@ -571,7 +571,12 @@ class TaskRunner:
                     all_beads.extend(issues)
                 except json.JSONDecodeError:
                     continue
-            snapshot_path.write_text(json.dumps(all_beads))
+            # Atomic replace: wendy-web polls this file and a plain
+            # write_text() lets it read a half-written snapshot, which
+            # broadcasts an empty beads list to every dashboard.
+            tmp_path = snapshot_path.with_suffix(".json.tmp")
+            tmp_path.write_text(json.dumps(all_beads))
+            tmp_path.replace(snapshot_path)
         except Exception:
             _LOG.debug("Failed to write beads snapshot", exc_info=True)
 

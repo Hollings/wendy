@@ -533,14 +533,17 @@ async def brain_authenticate(request: BrainAuthRequest) -> BrainAuthResponse:
 
 @app.websocket("/ws/brain")
 async def brain_websocket(websocket: WebSocket, token: str = Query("")) -> None:
+    # Accept before anything else: close codes (4001/4002) only reach the
+    # browser on an accepted socket, and registering an un-accepted socket
+    # for broadcasts gets it evicted on the first send failure -- the client
+    # would receive the replay but never another live event.
+    await websocket.accept()
     if not auth.verify_token(token):
-        await websocket.accept()
         await websocket.close(code=4001, reason="Invalid or expired token")
         return
-    if not await brain.add_client(websocket):
+    if not brain.add_client(websocket):
         await websocket.close(code=4002, reason="Server at capacity")
         return
-    await websocket.accept()
     try:
         # Send channel names so the UI can label channel chips immediately
         channels_map = brain.get_channels_map()

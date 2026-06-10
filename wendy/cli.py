@@ -347,15 +347,22 @@ def append_to_stream_log(event: dict, channel_id: int | None) -> None:
 
 
 def trim_stream_log() -> None:
-    """Trim stream log to MAX_STREAM_LOG_LINES."""
+    """Trim stream log to MAX_STREAM_LOG_LINES.
+
+    Uses an atomic replace: the brain watcher in wendy-web tails this file
+    by polling, and an in-place truncate-and-rewrite lets it read partial
+    content mid-rewrite.
+    """
     try:
         if not STREAM_LOG_FILE.exists():
             return
         with open(STREAM_LOG_FILE) as f:
             lines = f.readlines()
         if len(lines) > MAX_STREAM_LOG_LINES:
-            with open(STREAM_LOG_FILE, "w") as f:
+            tmp_path = STREAM_LOG_FILE.with_suffix(".jsonl.tmp")
+            with open(tmp_path, "w") as f:
                 f.writelines(lines[-MAX_STREAM_LOG_LINES:])
+            tmp_path.replace(STREAM_LOG_FILE)
     except Exception as e:
         _LOG.error("Failed to trim stream log: %s", e)
 
