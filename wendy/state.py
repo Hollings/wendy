@@ -518,7 +518,11 @@ class StateManager:
 
         Messages from the bot itself and from *ignored_author_ids* are
         excluded -- on_message never wakes for those, so counting them here
-        would produce wakes with nothing actionable.  The ``last_seen``
+        would produce wakes with nothing actionable.  Synthetic messages
+        (IDs >= *synthetic_id_threshold*) are excluded too: notifications
+        have their own wake path, and Context intros leaked by a generation
+        that died before its check_messages call used to wake the bot for
+        messages the msgs helper never even displays.  The ``last_seen``
         watermark is **not** advanced here -- only ``handle_check_messages``
         should advance it.  This prevents a race where the interrupt consumes
         the watermark before ``check_messages`` can return the same messages.
@@ -527,10 +531,11 @@ class StateManager:
         if last_seen is None:
             return []
 
-        params: list = [channel_id, last_seen, bot_user_id]
+        params: list = [channel_id, last_seen, synthetic_id_threshold, bot_user_id]
         query = (
             self._MESSAGE_QUERY_BASE
             + " AND m.message_id > ?"
+            + " AND m.message_id < ?"
             + " AND m.author_id != ?"
             + self._ignored_authors_clause(ignored_author_ids, params, "m.author_id")
             + " ORDER BY m.message_id DESC LIMIT ?"
@@ -547,12 +552,16 @@ class StateManager:
         channel_id: int,
         bot_user_id: int,
         ignored_author_ids=(),
+        synthetic_id_threshold: int = 9_000_000_000_000_000_000,
     ) -> bool:
         """Return True if the channel has messages newer than last_seen.
 
         Counts both real and synthetic messages (webhooks, notifications),
         excluding the bot's own messages and *ignored_author_ids* -- the same
         criteria on_message uses to decide whether a message wakes the bot.
+        Synthetic "Context" intro rows are excluded: they are auto-injected
+        decoration inserted at generation start, and ones leaked by a killed
+        generation must not drive a wake (the msgs helper hides them anyway).
         Fails open (returns True) on any error so messages are never
         silently dropped.
         """
@@ -567,12 +576,14 @@ class StateManager:
                 params.append(last_seen)
             params.append(bot_user_id)
             ignored_clause = self._ignored_authors_clause(ignored_author_ids, params)
+            params.append(synthetic_id_threshold)
 
             query = f"""
                 SELECT EXISTS(
                     SELECT 1 FROM message_history
                     WHERE channel_id = ?{watermark_clause}
                       AND author_id != ?{ignored_clause}
+                      AND NOT (message_id >= ? AND author_nickname = 'Context')
                       AND {self._COMMAND_CONTENT_FILTER}
                     LIMIT 1
                 )

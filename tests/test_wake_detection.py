@@ -93,6 +93,16 @@ def test_pending_counts_synthetic_messages(tmp_path):
     assert sm.has_pending_messages(123, BOT_ID) is True
 
 
+def test_pending_excludes_leaked_context_intros(tmp_path):
+    # Context intros are injected at generation start; ones leaked by a
+    # killed generation must not wake the bot (msgs hides them anyway).
+    sm = _make_sm(tmp_path)
+    sm.update_last_seen(123, 1000)
+    _msg(sm, SYNTH_THRESHOLD + 5, author_id=0, author="Context",
+         content="<introduction: alice is a person who...>")
+    assert sm.has_pending_messages(123, BOT_ID) is False
+
+
 def test_pending_no_watermark_excludes_ignored(tmp_path):
     sm = _make_sm(tmp_path)
     _msg(sm, 1001, author_id=777, author="oracle")
@@ -138,4 +148,17 @@ def test_check_new_excludes_slash_commands(tmp_path):
     sm = _make_sm(tmp_path)
     sm.update_last_seen(123, 1000)
     _msg(sm, 1001, content="/somecommand")
+    assert _check_new(sm) == []
+
+
+def test_check_new_excludes_synthetic_messages(tmp_path):
+    # Catchup and the send interrupt are about real messages only --
+    # notifications wake via their own path, and leaked Context intros
+    # must not produce wakes where msgs then shows nothing.
+    sm = _make_sm(tmp_path)
+    sm.update_last_seen(123, 1000)
+    _msg(sm, SYNTH_THRESHOLD + 5, author_id=0, author="Context",
+         content="<introduction>")
+    _msg(sm, SYNTH_THRESHOLD + 6, author_id=0, author="Task System",
+         content="[Task System] task done")
     assert _check_new(sm) == []
