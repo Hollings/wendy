@@ -49,10 +49,6 @@ _synthetic_counter = 0
 # Minimum seconds between user-visible failure notices per channel (5 minutes).
 _FAILURE_NOTICE_COOLDOWN = 300
 
-# Seconds between re-triggers of the Discord typing indicator (each trigger
-# lasts ~10s, so 8s keeps it continuous without hammering the API).
-_TYPING_REFRESH_INTERVAL = 8.0
-
 
 def _folder_for_config(config: dict) -> str:
     """Return the workspace folder name for a channel or thread config."""
@@ -775,15 +771,6 @@ class WendyBot(commands.Bot):
         """
         channel_config = self.channel_configs.get(channel.id, {})
 
-        # Show "is typing..." while the CLI works so users get immediate
-        # feedback that their message was seen. Discord clears the indicator
-        # whenever a message is sent; the loop re-triggers it until the
-        # generation finishes. Skipped for enrichment (she's on break, not
-        # composing a reply).
-        typing_task: asyncio.Task | None = None
-        if not job.is_enrichment:
-            typing_task = self.loop.create_task(self._typing_loop(channel))
-
         try:
             from .prompt import build_system_prompt
 
@@ -861,27 +848,7 @@ class WendyBot(commands.Bot):
             ))
 
         finally:
-            if typing_task is not None:
-                typing_task.cancel()
             self._finalize_generation(channel, job)
-
-    async def _typing_loop(self, channel: discord.TextChannel | discord.Thread) -> None:
-        """Keep the typing indicator alive until cancelled.
-
-        Each ``channel.typing()`` trigger lasts ~10 seconds, so this
-        re-triggers on an 8 second interval. Exits quietly if the trigger
-        fails (e.g. missing permissions) rather than retrying forever.
-        """
-        try:
-            while True:
-                try:
-                    await channel.typing()
-                except Exception as e:
-                    _LOG.debug("Typing trigger failed for channel %s: %s", channel.id, e)
-                    return
-                await asyncio.sleep(_TYPING_REFRESH_INTERVAL)
-        except asyncio.CancelledError:
-            pass
 
     async def _send_failure_notice(
         self,
