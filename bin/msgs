@@ -85,7 +85,6 @@ def main():
         return
 
     messages = data.get("messages", [])
-    task_updates = data.get("task_updates", [])
 
     # Filter out synthetic/context messages
     real = [m for m in messages if m.get("message_id", 0) < SYNTHETIC_THRESHOLD
@@ -98,17 +97,12 @@ def main():
     while real and str(real[0].get("author_id", "")) == bot_id:
         real.pop(0)
 
-    if not real and not task_updates:
+    if not real:
         print("(no new messages)")
         return
 
     for m in real:
         print(format_message(m))
-
-    if task_updates:
-        print("\n--- task updates ---")
-        for t in task_updates:
-            print(json.dumps(t))
 
 
 if __name__ == "__main__":

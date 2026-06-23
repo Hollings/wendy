@@ -83,6 +83,7 @@ class StateManager:
                 timestamp INTEGER,
                 attachment_urls TEXT,
                 reply_to_id INTEGER,
+                delivered INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -154,6 +155,13 @@ class StateManager:
         # Migrations for columns added after initial deploy
         try:
             conn.execute("ALTER TABLE thread_registry ADD COLUMN thread_name TEXT")
+            conn.commit()
+        except Exception:
+            pass  # column already exists
+        try:
+            # `delivered` tracks synthetic messages handed to the CLI this turn but
+            # not yet committed (deleted). Lets a crashed turn re-read them.
+            conn.execute("ALTER TABLE message_history ADD COLUMN delivered INTEGER DEFAULT 0")
             conn.commit()
         except Exception:
             pass  # column already exists
@@ -365,6 +373,94 @@ class StateManager:
         conn.commit()
 
     # -------------------------------------------------------------------------
+    # Synthetic-message delivery lifecycle (crash-safe consumption)
+    #
+    # Synthetic messages (IDs >= synthetic threshold) are notifications, wakes,
+    # interrupt/context notices, etc.  Rather than deleting them the instant the
+    # CLI reads them, we mark them ``delivered`` and only delete them when the
+    # turn completes successfully (``commit_delivered_synthetics``).  If the turn
+    # fails, ``rollback_delivered_synthetics`` un-marks them so the next turn
+    # re-reads them -- at-least-once delivery that survives a mid-turn crash.
+    # -------------------------------------------------------------------------
+
+    def mark_synthetics_delivered(self, message_ids: list[int]) -> None:
+        """Mark the given synthetic messages as delivered (handed to the CLI)."""
+        if not message_ids:
+            return
+        conn = self._get_conn()
+        placeholders = ",".join("?" * len(message_ids))
+        conn.execute(
+            f"UPDATE message_history SET delivered = 1 WHERE message_id IN ({placeholders})",
+            message_ids,
+        )
+        conn.commit()
+
+    def commit_delivered_synthetics(
+        self,
+        channel_id: int,
+        synthetic_id_threshold: int = 9_000_000_000_000_000_000,
+    ) -> None:
+        """Delete this channel's delivered synthetics after a successful turn."""
+        conn = self._get_conn()
+        conn.execute(
+            """
+            DELETE FROM message_history
+            WHERE channel_id = ? AND delivered = 1 AND message_id >= ?
+            """,
+            (channel_id, synthetic_id_threshold),
+        )
+        conn.commit()
+
+    def rollback_delivered_synthetics(
+        self,
+        channel_id: int,
+        synthetic_id_threshold: int = 9_000_000_000_000_000_000,
+    ) -> None:
+        """Un-mark this channel's delivered synthetics after a failed turn so the
+        next turn re-reads them."""
+        conn = self._get_conn()
+        conn.execute(
+            """
+            UPDATE message_history SET delivered = 0
+            WHERE channel_id = ? AND delivered = 1 AND message_id >= ?
+            """,
+            (channel_id, synthetic_id_threshold),
+        )
+        conn.commit()
+
+    def count_unread_real_messages(
+        self,
+        channel_id: int,
+        bot_user_id: int,
+        synthetic_id_threshold: int = 9_000_000_000_000_000_000,
+    ) -> int:
+        """Count real, non-bot messages newer than the seen cursor.
+
+        Powers the state-driven Stop hook: reads queue STATE, not the transcript.
+        Bot commands (``!``/``-`` prefixes) and synthetic messages are excluded.
+        """
+        conn = self._get_conn()
+        last_seen = self.get_last_seen(channel_id)
+        base = """
+            SELECT COUNT(*) FROM message_history
+            WHERE channel_id = ?
+              AND message_id < ?
+              AND author_id != ?
+              AND (content IS NULL OR (content NOT LIKE '!%' AND content NOT LIKE '-%'))
+        """
+        if last_seen is not None:
+            row = conn.execute(
+                base + " AND message_id > ?",
+                (channel_id, synthetic_id_threshold, bot_user_id, last_seen),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                base,
+                (channel_id, synthetic_id_threshold, bot_user_id),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    # -------------------------------------------------------------------------
     # Message fetching (used by the internal API)
     # -------------------------------------------------------------------------
 
@@ -437,8 +533,13 @@ class StateManager:
             real_params = (channel_id, synthetic_threshold, limit)
         real_rows = conn.execute(real_query, real_params).fetchall()
 
-        # Fetch all pending synthetic messages (they get deleted after consumption).
-        synth_query = self._MESSAGE_QUERY_BASE + " AND m.message_id >= ? ORDER BY m.message_id ASC"
+        # Fetch pending synthetic messages. Exclude ones already delivered this
+        # turn (delivered=1) so a second read within a turn doesn't repeat them;
+        # they are deleted on turn commit or un-marked on turn rollback.
+        synth_query = (
+            self._MESSAGE_QUERY_BASE
+            + " AND m.message_id >= ? AND m.delivered = 0 ORDER BY m.message_id ASC"
+        )
         synth_params = (channel_id, synthetic_threshold)
         synth_rows = conn.execute(synth_query, synth_params).fetchall()
 

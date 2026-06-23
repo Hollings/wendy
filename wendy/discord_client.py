@@ -726,6 +726,11 @@ class WendyBot(commands.Bot):
 
         await self._maybe_update_presence()
 
+        # Seen-cursor position at the start of the turn. Restored on failure so a
+        # crashed/interrupted turn re-reads what it consumed. Initialised before
+        # the try so the failure handlers can reference it unconditionally.
+        saved_last_seen: int | None = None
+
         try:
             from .config import resolve_model
             from .prompt import build_system_prompt
@@ -777,14 +782,16 @@ class WendyBot(commands.Bot):
                 max_turns=100 if job.is_enrichment else None,
             )
             _LOG.info("CLI completed for channel %s", channel.id)
+            # Turn succeeded: commit the synthetics the CLI consumed this turn.
+            self._commit_turn(channel.id)
 
         except ClaudeCliError as e:
+            # Turn failed: roll back so messages/synthetics consumed this turn are
+            # re-read by the retry/next turn instead of being lost.
+            self._rollback_turn(channel.id, saved_last_seen)
             if "timed out" in str(e).lower():
                 job.timed_out = True
             if e.overloaded:
-                # Restore the watermark so the retry sees the messages.
-                if saved_last_seen is not None:
-                    state_manager.update_last_seen(channel.id, saved_last_seen)
                 if model_override != "opus":
                     _LOG.warning("Model overloaded for channel %s, waiting 10s then retrying with opus", channel.id)
                     await asyncio.sleep(10)
@@ -799,8 +806,15 @@ class WendyBot(commands.Bot):
                     _LOG.error("All models overloaded for channel %s, giving up", channel.id)
             self._handle_cli_error(channel, e)
 
+        except asyncio.CancelledError:
+            # WENDY interrupt / shutdown cancels the CLI. Roll back so the fresh
+            # turn re-reads, then propagate to honour cancellation semantics.
+            self._rollback_turn(channel.id, saved_last_seen)
+            raise
+
         except Exception:
             _LOG.exception("Generation failed")
+            self._rollback_turn(channel.id, saved_last_seen)
 
         finally:
             self._finalize_generation(channel, job)
@@ -826,6 +840,26 @@ class WendyBot(commands.Bot):
             )
         except Exception:
             _LOG.exception("Failed to send OAuth expiration notice")
+
+    def _commit_turn(self, channel_id: int) -> None:
+        """Commit a successful turn: delete the synthetics the CLI consumed."""
+        try:
+            state_manager.commit_delivered_synthetics(channel_id)
+        except Exception as e:
+            _LOG.error("Failed to commit turn for channel %s: %s", channel_id, e)
+
+    def _rollback_turn(self, channel_id: int, saved_last_seen: int | None) -> None:
+        """Roll back a failed turn: restore the seen cursor and re-arm the
+        synthetics consumed this turn so they are re-read next turn."""
+        try:
+            if saved_last_seen is not None:
+                state_manager.update_last_seen(channel_id, saved_last_seen)
+            else:
+                # No prior watermark -- clear any advance this turn made.
+                state_manager.reset_last_seen(channel_id)
+            state_manager.rollback_delivered_synthetics(channel_id)
+        except Exception as e:
+            _LOG.error("Failed to roll back turn for channel %s: %s", channel_id, e)
 
     def _finalize_generation(
         self,

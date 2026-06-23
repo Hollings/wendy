@@ -302,38 +302,20 @@ async def handle_send_message(request: web.Request) -> web.Response:
     return web.json_response(resp_body)
 
 
-def _delete_synthetic_messages(synthetic_ids: list[int]) -> None:
-    """Delete consumed synthetic messages from the database."""
-    state_manager.delete_messages(synthetic_ids)
-
-
-def _collect_task_updates() -> list[dict]:
-    """Consume unseen task-completion notifications and return them as dicts."""
-    unseen = state_manager.get_unseen_notifications_for_proxy()
-    notification_ids: list[int] = []
-    task_updates: list[dict] = []
-    for n in unseen:
-        notification_ids.append(n.id)
-        if n.type == "task_completion" and n.payload:
-            task_updates.append({
-                "task_id": n.payload.get("task_id", "unknown"),
-                "title": n.title,
-                "status": n.payload.get("status", "completed"),
-                "duration": n.payload.get("duration", "unknown"),
-                "completed_at": n.created_at,
-            })
-    if notification_ids:
-        state_manager.mark_notifications_seen_by_proxy(notification_ids)
-    return task_updates
-
-
 async def handle_check_messages(request: web.Request) -> web.Response:
-    """GET /api/check_messages/{channel_id} -- fetch recent messages and task updates.
+    """GET /api/check_messages/{channel_id} -- fetch recent messages.
 
     Query parameters:
         limit         -- max messages to return (default 10, capped by MAX_MESSAGE_LIMIT)
         all_messages  -- ``true`` to ignore the last-seen watermark
         count         -- override *limit* and ignore last-seen (fetch latest N)
+        peek          -- ``true`` to read WITHOUT advancing the seen cursor or
+                         marking synthetics delivered (a true non-destructive read)
+
+    A normal (non-peek) read advances the per-channel seen cursor and marks the
+    synthetic messages it returns as *delivered* rather than deleting them.  The
+    orchestrator deletes delivered synthetics only when the turn completes, and
+    un-marks them if the turn fails -- so a mid-turn crash never loses them.
     """
     try:
         channel_id = int(request.match_info["channel_id"])
@@ -348,14 +330,13 @@ async def handle_check_messages(request: web.Request) -> web.Response:
 
     limit = min(int(request.query.get("limit", "10")), MAX_MESSAGE_LIMIT)
     all_messages = request.query.get("all_messages", "").lower() == "true"
+    peek = request.query.get("peek", "").lower() == "true"
     count_param = request.query.get("count")
     count = min(int(count_param), MAX_MESSAGE_LIMIT) if count_param else None
 
     channel_name = get_channel_name(channel_id)
     messages: list[dict] = []
-    task_updates: list[dict] = []
 
-    # --- Messages ---
     try:
         if count is not None:
             since_id = None
@@ -377,23 +358,22 @@ async def handle_check_messages(request: web.Request) -> web.Response:
         # Rows come back DESC; reverse to chronological order.
         messages.reverse()
 
-        # Advance the watermark for real messages; clean up consumed synthetics.
-        synthetic_ids = [m["message_id"] for m in messages if m["message_id"] >= SYNTHETIC_ID_THRESHOLD]
-        real_messages = [m for m in messages if m["message_id"] < SYNTHETIC_ID_THRESHOLD]
-        if real_messages:
-            state_manager.update_last_seen(channel_id, max(m["message_id"] for m in real_messages))
-        _delete_synthetic_messages(synthetic_ids)
+        # A peek is a true non-destructive read: leave the cursor and synthetics
+        # exactly as they were.
+        if not peek:
+            synthetic_ids = [m["message_id"] for m in messages if m["message_id"] >= SYNTHETIC_ID_THRESHOLD]
+            real_messages = [m for m in messages if m["message_id"] < SYNTHETIC_ID_THRESHOLD]
+            if real_messages:
+                state_manager.update_last_seen(channel_id, max(m["message_id"] for m in real_messages))
+            # Mark (don't delete) synthetics so a crashed turn can re-read them.
+            state_manager.mark_synthetics_delivered(synthetic_ids)
 
     except Exception as e:
         _LOG.error("Error reading messages: %s", e)
 
-    # --- Task updates ---
-    try:
-        task_updates = _collect_task_updates()
-    except Exception as e:
-        _LOG.error("Error reading notifications: %s", e)
-
-    return web.json_response({"messages": messages, "task_updates": task_updates})
+    # ``task_updates`` retained as an empty list for response-shape compatibility;
+    # task completions now surface once, as synthetic messages via watch_notifications.
+    return web.json_response({"messages": messages, "task_updates": []})
 
 
 async def handle_emojis(request: web.Request) -> web.Response:
