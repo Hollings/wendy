@@ -173,6 +173,137 @@ def test_delete_messages_empty_list(tmp_path):
 
 
 # =========================================================================
+# Synthetic-message delivery lifecycle (crash-safe consumption)
+# =========================================================================
+
+SYNTH = 9_000_000_000_000_000_000
+
+
+def _insert_real(sm, mid, channel_id=123, author_id=42, content="hi", ts=None):
+    sm.insert_message(
+        message_id=mid, channel_id=channel_id, guild_id=1,
+        author_id=author_id, author_nickname="alice", is_bot=False,
+        content=content, timestamp=ts if ts is not None else mid,
+    )
+
+
+def _insert_synth(sm, mid, channel_id=123, content="[System] note"):
+    sm.insert_message(
+        message_id=mid, channel_id=channel_id, guild_id=None,
+        author_id=0, author_nickname="System", is_bot=False,
+        content=content, timestamp=mid,
+    )
+
+
+def _fetch_ids(sm, channel_id=123, since_id=None):
+    rows = sm.fetch_messages(channel_id, since_id=since_id, limit=50)
+    return {r["message_id"] for r in rows}
+
+
+def test_fetch_includes_real_and_undelivered_synthetics(tmp_path):
+    sm = _make_sm(tmp_path)
+    _insert_real(sm, 1001)
+    _insert_synth(sm, SYNTH + 5)
+
+    ids = _fetch_ids(sm)
+    assert ids == {1001, SYNTH + 5}
+
+
+def test_mark_delivered_excludes_synthetic_from_fetch(tmp_path):
+    sm = _make_sm(tmp_path)
+    _insert_real(sm, 1001)
+    _insert_synth(sm, SYNTH + 5)
+
+    sm.mark_synthetics_delivered([SYNTH + 5])
+    # Real message still visible; delivered synthetic hidden.
+    assert _fetch_ids(sm) == {1001}
+    # Even with a since_id, the delivered synthetic stays hidden.
+    assert _fetch_ids(sm, since_id=1000) == {1001}
+
+
+def test_rollback_redelivers_synthetic(tmp_path):
+    sm = _make_sm(tmp_path)
+    _insert_synth(sm, SYNTH + 5)
+
+    sm.mark_synthetics_delivered([SYNTH + 5])
+    assert _fetch_ids(sm) == set()
+
+    sm.rollback_delivered_synthetics(123)
+    assert _fetch_ids(sm) == {SYNTH + 5}
+
+
+def test_commit_deletes_only_delivered_synthetics(tmp_path):
+    sm = _make_sm(tmp_path)
+    _insert_synth(sm, SYNTH + 5)
+    _insert_synth(sm, SYNTH + 6)
+    _insert_real(sm, 1001)
+
+    # Deliver only one of the two synthetics.
+    sm.mark_synthetics_delivered([SYNTH + 5])
+    sm.commit_delivered_synthetics(123)
+
+    # Delivered synthetic is gone; undelivered one and the real message survive.
+    ids = _fetch_ids(sm)
+    assert ids == {SYNTH + 6, 1001}
+    # And it is truly deleted from the DB, not just hidden.
+    conn = sm._get_conn()
+    remaining = conn.execute(
+        "SELECT COUNT(*) FROM message_history WHERE message_id = ?", (SYNTH + 5,)
+    ).fetchone()[0]
+    assert remaining == 0
+
+
+def test_commit_and_rollback_are_channel_scoped(tmp_path):
+    sm = _make_sm(tmp_path)
+    _insert_synth(sm, SYNTH + 5, channel_id=123)
+    _insert_synth(sm, SYNTH + 6, channel_id=456)
+    sm.mark_synthetics_delivered([SYNTH + 5, SYNTH + 6])
+
+    # Committing channel 123 must not touch channel 456's delivered synthetic.
+    sm.commit_delivered_synthetics(123)
+    conn = sm._get_conn()
+    assert conn.execute(
+        "SELECT COUNT(*) FROM message_history WHERE channel_id = 456"
+    ).fetchone()[0] == 1
+
+
+def test_mark_delivered_empty_list(tmp_path):
+    sm = _make_sm(tmp_path)
+    sm.mark_synthetics_delivered([])  # should not crash
+
+
+# =========================================================================
+# Unread real-message count (state-driven Stop hook)
+# =========================================================================
+
+
+def test_count_unread_real_messages(tmp_path):
+    sm = _make_sm(tmp_path)
+    ch, bot = 200, 99
+    _insert_real(sm, 2001, channel_id=ch, author_id=1, content="hello")
+    _insert_real(sm, 2002, channel_id=ch, author_id=bot, content="bot reply")
+    _insert_real(sm, 2003, channel_id=ch, author_id=1, content="!command")
+    _insert_real(sm, 2004, channel_id=ch, author_id=1, content="another")
+    _insert_synth(sm, SYNTH + 1, channel_id=ch)
+
+    # No watermark: counts non-bot, non-command, non-synthetic only (2001, 2004).
+    assert sm.count_unread_real_messages(ch, bot) == 2
+
+    # Watermark past the first message: only 2004 remains unread.
+    sm.update_last_seen(ch, 2001)
+    assert sm.count_unread_real_messages(ch, bot) == 1
+
+    # Watermark past everything: nothing unread.
+    sm.update_last_seen(ch, 2004)
+    assert sm.count_unread_real_messages(ch, bot) == 0
+
+
+def test_count_unread_empty_channel(tmp_path):
+    sm = _make_sm(tmp_path)
+    assert sm.count_unread_real_messages(999, 0) == 0
+
+
+# =========================================================================
 # Notifications
 # =========================================================================
 
