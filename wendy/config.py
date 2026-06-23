@@ -45,6 +45,7 @@ CLAUDE_CLI_TIMEOUT: int = int(os.getenv("CLAUDE_CLI_TIMEOUT", "600"))  # legacy,
 CLAUDE_CLI_IDLE_TIMEOUT: int = int(os.getenv("CLAUDE_CLI_IDLE_TIMEOUT", "600"))
 CLAUDE_CLI_MAX_RUNTIME: int = int(os.getenv("CLAUDE_CLI_MAX_RUNTIME", "3600"))
 JOURNAL_NUDGE_INTERVAL: int = int(os.getenv("JOURNAL_NUDGE_INTERVAL", "10"))
+USAGE_BUDGET_FACTOR: float = float(os.getenv("USAGE_BUDGET_FACTOR", "0.8"))
 ENRICHMENT_HOUR_UTC: int = int(os.getenv("ENRICHMENT_HOUR_UTC", "21"))   # 1pm PST default
 ENRICHMENT_MINUTE_UTC: int = int(os.getenv("ENRICHMENT_MINUTE_UTC", "0"))
 ENRICHMENT_DURATION: int = int(os.getenv("ENRICHMENT_DURATION", "900"))  # 15 min
@@ -55,12 +56,6 @@ WENDY_WEB_URL: str = os.getenv("WENDY_WEB_URL", "wendy.monster")
 SYNTHETIC_ID_THRESHOLD: int = 9_000_000_000_000_000_000
 MAX_MESSAGE_LIMIT: int = 200
 DEV_MODE: bool = os.getenv("WENDY_DEV_MODE", "") == "1"
-
-# Knobs for the `!analysis` opinion-stability probe (see wendy/analysis.py).
-ANALYSIS_FORK_TIMEOUT: int = int(os.getenv("ANALYSIS_FORK_TIMEOUT", "75"))
-ANALYSIS_MAX_FORKS: int = int(os.getenv("ANALYSIS_MAX_FORKS", "5"))
-ANALYSIS_RATE_LIMIT_SECONDS: int = int(os.getenv("ANALYSIS_RATE_LIMIT_SECONDS", "60"))
-ANALYSIS_RUNS_DIR: str = os.getenv("ANALYSIS_RUNS_DIR", "/data/wendy/analysis_runs")
 MESSAGE_LOGGER_GUILDS: set[int] = set()
 _raw_guilds = os.getenv("MESSAGE_LOGGER_GUILDS", "")
 for _part in _raw_guilds.split(","):

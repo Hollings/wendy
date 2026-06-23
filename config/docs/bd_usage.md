@@ -106,22 +106,6 @@ Lighter than `bd comment` -- for quick status updates or breadcrumbs.
 - `bd ready --exclude-type <type>` -- same for ready queue
 - `bd list --status open,in_progress` -- comma-separated status filter
 
-## Killing a Running Agent
-
-`bd close` only marks the bead closed -- the orchestrator notices within a
-few seconds and then kills the subprocess. If you need to stop a runaway
-agent NOW (e.g. it's burning tokens on the wrong thing), use:
-
-```bash
-bd-kill <task-id>                        # immediate kill + bd close
-bd-kill <task-id> -r "edited wrong file" # leave a reason in the bd comment
-bd-kill --list                           # show running beads in this channel
-```
-
-`bd-kill` goes through the internal API and terminates the subprocess
-synchronously, then closes the bead. Prefer this over `bd close` whenever
-you've decided an agent should stop.
-
 ## When to Use Tasks
 
 **Use tasks for:**

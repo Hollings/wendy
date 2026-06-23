@@ -10,13 +10,11 @@ import asyncio
 import json
 import logging
 import os
-import secrets
 import shutil
 import time
 from pathlib import Path
 from typing import Any
 
-from . import config as _config
 from . import sessions
 from .config import (
     CLAUDE_CLI_IDLE_TIMEOUT,
@@ -40,18 +38,6 @@ from .paths import (
 )
 
 _LOG = logging.getLogger(__name__)
-
-# Per-channel nudge_id of the currently-running CLI turn. Set by run_cli()
-# before the subprocess spawns and cleared in finally. The internal API server
-# reads this when persisting Wendy's outgoing messages so each row in
-# message_history is keyed back to the nudge that produced it.
-_active_nudges: dict[int, str] = {}
-
-
-def get_active_nudge_id(channel_id: int) -> str | None:
-    """Return the nudge_id for the in-flight CLI turn on *channel_id*, if any."""
-    return _active_nudges.get(channel_id)
-
 
 TOOL_INSTRUCTIONS_TEMPLATE = """
 ---
@@ -115,6 +101,7 @@ REAL-TIME CHANNEL TOOLS (Channel ID: {channel_id})
    msgs                 # fetch new messages since last check
    msgs -n 10           # fetch last 10 messages
    msgs --all           # fetch all messages (ignores watermark)
+   msgs --peek          # fetch without advancing the read watermark
    msgs --raw           # dump raw JSON (for debugging/parsing)
 
    This is what you MUST call at the start of every turn. Equivalent to the
@@ -252,17 +239,11 @@ def build_nudge_prompt(
     channel_id: int,
     is_thread: bool = False,
     thread_name: str | None = None,
+    journal_note: str = "",
     beads_note: str = "",
     was_compacted: bool = False,
-    nudge_id: str | None = None,
 ) -> str:
-    """Build the nudge prompt sent to Claude CLI via stdin.
-
-    When *nudge_id* is provided, an ``[nudge:{id}]`` tag is appended to the
-    prompt. The tag is system-noise the model can ignore; it lets us locate
-    the exact turn boundary in the session JSONL afterwards (used by the
-    !analysis fork-point lookup).
-    """
+    """Build the nudge prompt sent to Claude CLI via stdin."""
     if is_thread:
         base = (
             f'<you\'ve been forked into a Discord thread: "{thread_name}". '
@@ -272,9 +253,7 @@ def build_nudge_prompt(
     else:
         base = (
             "<new messages - you MUST run `msgs` "
-            "before any other action. Do not assume what the messages contain. "
-            "If `msgs` returns '(no new messages - nothing to respond to, your turn is complete)', "
-            "do NOT call `msgs` again — just end your turn silently.>"
+            "before any other action. Do not assume what the messages contain.>"
         )
     compacted_note = (
         "<your session was auto-compacted since your last turn. "
@@ -282,11 +261,8 @@ def build_nudge_prompt(
         "After this, go back to plain `msgs` with no flags -- "
         "do not use -n unless you have a specific reason.>"
     ) if was_compacted else ""
-    extras = "\n".join(x for x in [beads_note, compacted_note] if x)
-    prompt = base + ("\n" + extras if extras else "")
-    if nudge_id:
-        prompt += f"\n[nudge:{nudge_id}]"
-    return prompt
+    extras = "\n".join(x for x in [journal_note, beads_note, compacted_note] if x)
+    return base + ("\n" + extras if extras else "")
 
 
 def setup_channel_folder(channel_name: str, beads_enabled: bool = False) -> None:
@@ -331,19 +307,8 @@ def setup_wendy_scripts() -> None:
     secrets_dir.mkdir(exist_ok=True, mode=0o700)
 
 
-# Stream-json event subtypes that are pure noise for the brain dashboard
-# (incremental token counters the CLI emits mid-turn). Skipped from the log so
-# they don't clutter the feed or churn the trim window.
-_NOISE_SYSTEM_SUBTYPES = frozenset({"thinking_tokens"})
-
-
 def append_to_stream_log(event: dict, channel_id: int | None) -> None:
     """Append a single event to the rolling stream log file."""
-    if (
-        event.get("type") == "system"
-        and event.get("subtype") in _NOISE_SYSTEM_SUBTYPES
-    ):
-        return
     try:
         STREAM_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         enriched = {
@@ -358,22 +323,15 @@ def append_to_stream_log(event: dict, channel_id: int | None) -> None:
 
 
 def trim_stream_log() -> None:
-    """Trim stream log to MAX_STREAM_LOG_LINES.
-
-    Uses an atomic replace: the brain watcher in wendy-web tails this file
-    by polling, and an in-place truncate-and-rewrite lets it read partial
-    content mid-rewrite.
-    """
+    """Trim stream log to MAX_STREAM_LOG_LINES."""
     try:
         if not STREAM_LOG_FILE.exists():
             return
         with open(STREAM_LOG_FILE) as f:
             lines = f.readlines()
         if len(lines) > MAX_STREAM_LOG_LINES:
-            tmp_path = STREAM_LOG_FILE.with_suffix(".jsonl.tmp")
-            with open(tmp_path, "w") as f:
+            with open(STREAM_LOG_FILE, "w") as f:
                 f.writelines(lines[-MAX_STREAM_LOG_LINES:])
-            tmp_path.replace(STREAM_LOG_FILE)
     except Exception as e:
         _LOG.error("Failed to trim stream log: %s", e)
 
@@ -547,15 +505,9 @@ def _build_cli_env(channel_name: str, channel_id: int, beads_enabled: bool) -> d
     cli_env = {k: v for k, v in os.environ.items() if k not in SENSITIVE_ENV_VARS}
     if beads_enabled:
         cli_env["BEADS_DIR"] = str(beads_dir(channel_name))
-    # Channel context for helper scripts (msg, react, msgs)
+    # Channel context for helper scripts (msg, react)
     cli_env["WENDY_CHANNEL_ID"] = str(channel_id)
     cli_env["WENDY_PROXY_PORT"] = str(PROXY_PORT)
-    # The msgs helper strips Wendy's own messages by author_id. Use the
-    # runtime bot ID (set in on_ready) rather than relying on the env file:
-    # if this is 0/unset, msgs shows her her own replies on every wake.
-    # Accessed via the module so we pick up the on_ready mutation.
-    if _config.WENDY_BOT_ID:
-        cli_env["WENDY_BOT_USER_ID"] = str(_config.WENDY_BOT_ID)
     # Pass auth and sync tokens explicitly so the CLI can authenticate even though
     # they're stripped from the general env (to keep them out of `env` output).
     if oauth_token := os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
@@ -775,7 +727,8 @@ async def run_cli(
         effort_args=effort_args, max_turns=max_turns,
     )
 
-    from .prompt import get_beads_warning_for_nudge
+    from .prompt import get_beads_warning_for_nudge, get_journal_listing_for_nudge
+    journal_note = get_journal_listing_for_nudge(channel_name)
     beads_note = get_beads_warning_for_nudge(channel_name) if beads_enabled else ""
 
     compacted_flag = channel_dir(channel_name) / ".compacted"
@@ -785,16 +738,11 @@ async def run_cli(
         from .fragments import reset_introductions
         reset_introductions(channel_name)
 
-    if nudge_override:
-        nudge_prompt = nudge_override
-        nudge_id: str | None = None
-    else:
-        nudge_id = secrets.token_hex(4)
-        nudge_prompt = build_nudge_prompt(
-            channel_id, is_thread=is_thread, thread_name=thread_name,
-            beads_note=beads_note,
-            was_compacted=was_compacted, nudge_id=nudge_id,
-        )
+    nudge_prompt = nudge_override or build_nudge_prompt(
+        channel_id, is_thread=is_thread, thread_name=thread_name,
+        journal_note=journal_note, beads_note=beads_note,
+        was_compacted=was_compacted,
+    )
 
     # Ensure filesystem prerequisites.
     WENDY_BASE.mkdir(parents=True, exist_ok=True)
@@ -806,9 +754,6 @@ async def run_cli(
 
     if beads_enabled:
         _write_current_session_file(channel_name, session_id)
-
-    if nudge_id:
-        _active_nudges[channel_id] = nudge_id
 
     proc = None
     idle_timeout = CLAUDE_CLI_IDLE_TIMEOUT
@@ -901,7 +846,3 @@ async def run_cli(
     except asyncio.CancelledError:
         _kill_process(proc)
         raise
-
-    finally:
-        if nudge_id:
-            _active_nudges.pop(channel_id, None)

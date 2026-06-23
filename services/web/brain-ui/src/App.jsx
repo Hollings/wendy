@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import AuthScreen from './components/AuthScreen'
-import Dashboard from './components/Dashboard'
+import BrainApp from './components/BrainApp'
 import { getToken, getPassphrase, tryReauth } from './auth'
 
 export default function App() {
@@ -23,6 +23,6 @@ export default function App() {
   if (checking) return null
 
   return authed
-    ? <Dashboard onLogout={() => setAuthed(false)} />
+    ? <BrainApp onLogout={() => setAuthed(false)} />
     : <AuthScreen onAuth={() => setAuthed(true)} />
 }

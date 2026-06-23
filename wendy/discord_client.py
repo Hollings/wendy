@@ -15,7 +15,6 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import discord
 from discord.ext import commands, tasks
@@ -28,6 +27,7 @@ from .config import (
     ENRICHMENT_MINUTE_UTC,
     MESSAGE_LOGGER_GUILDS,
     PROXY_PORT,
+    USAGE_BUDGET_FACTOR,
     parse_channel_configs,
 )
 from .enrichment import build_enrichment_continue_nudge, build_enrichment_end_nudge, build_enrichment_nudge
@@ -46,13 +46,30 @@ _LOG = logging.getLogger(__name__)
 _synthetic_counter = 0
 """Counter for unique synthetic message IDs."""
 
-# Minimum seconds between user-visible failure notices per channel (5 minutes).
-_FAILURE_NOTICE_COOLDOWN = 300
+_cached_usage: dict = {}
+"""Latest parsed usage data from get_usage.sh (updated by _maybe_update_presence)."""
+
+# Minimum seconds between presence updates (15 minutes).
+_PRESENCE_INTERVAL = 900
 
 
 def _folder_for_config(config: dict) -> str:
     """Return the workspace folder name for a channel or thread config."""
     return config.get("_folder") or config.get("name", "default")
+
+
+def _get_current_effort(model: str) -> list[str]:
+    """Return ``["--effort", "low"]`` for Opus when weekly usage >= 85%, else ``[]``.
+
+    The ``--effort`` flag only affects Opus; Sonnet/Haiku ignore it, so we
+    return an empty list for non-Opus models unconditionally.
+    """
+    if "opus" not in model:
+        return []
+    week_pct = _cached_usage.get("week_all_percent", 0)
+    if week_pct >= 85:
+        return ["--effort", "low"]
+    return []
 
 
 _MAX_TIMEOUT_CONTINUATIONS = 2
@@ -97,16 +114,11 @@ class WendyBot(commands.Bot):
         self.whitelist_channels: set[int] = set(self.channel_configs.keys())
         self._active_generations: dict[int, GenerationJob] = {}
         self._api_runner = None
+        self._presence_updated_at: float = 0.0
         self._enrichment_last_run_date: dict[int, datetime.date] = {}
         self._enrichment_notified: set[int] = set()
         self._pending_wakes: dict[int, asyncio.TimerHandle] = {}
         self._startup_catchup_done: bool = False
-        # !analysis support: one in-flight run per channel; global rate limit.
-        self._active_analyses: dict[int, asyncio.Task] = {}
-        self._analysis_last_run_at: float = 0.0
-        # Per-channel timestamp of the last user-visible failure notice,
-        # so repeated errors don't spam the channel.
-        self._last_failure_notice: dict[int, float] = {}
 
         ensure_shared_dirs()
         self._register_commands()
@@ -169,7 +181,7 @@ class WendyBot(commands.Bot):
         async def cmd_resume(ctx: commands.Context, *, session_id_prefix: str = "") -> None:
             """!resume <session_id> -- resume a previous session by ID or prefix."""
             if not session_id_prefix:
-                await ctx.send("usage: `!resume <session_id>` -- see `!sessions` for recent IDs")
+                await ctx.send("usage: `!resume <session_id>`")
                 return
             channel_config = self.channel_configs.get(ctx.channel.id)
             if channel_config is None:
@@ -191,174 +203,31 @@ class WendyBot(commands.Bot):
 
         @self.command(name="lunchtime")
         async def cmd_lunchtime(ctx: commands.Context) -> None:
-            """!lunchtime -- disabled."""
-            await ctx.send("lunchtime feature is disabled")
+            """!lunchtime -- start Wendy's personal free-time session."""
+            channel_config = self.channel_configs.get(ctx.channel.id)
+            if channel_config is None:
+                await ctx.send("not a configured channel")
+                return
+            existing_job = self._active_generations.get(ctx.channel.id)
+            if self._job_is_running(existing_job) and existing_job.is_enrichment:
+                await ctx.send("already on lunch break!")
+                return
+            if self._job_is_running(existing_job):
+                existing_job.task.cancel()
+            self._start_enrichment(ctx.channel, channel_config, manual=True)
 
         @self.command(name="endlunch")
         async def cmd_endlunch(ctx: commands.Context) -> None:
-            """!endlunch -- disabled."""
-            await ctx.send("lunchtime feature is disabled")
-
-        @self.command(name="beads")
-        async def cmd_beads(ctx: commands.Context) -> None:
-            """!beads -- list running bead agents in this channel."""
-            runner = getattr(self, "_task_runner", None)
-            if runner is None:
-                await ctx.send("task runner not running")
+            """!endlunch -- end Wendy's lunch break early."""
+            existing_job = self._active_generations.get(ctx.channel.id)
+            if not (self._job_is_running(existing_job) and existing_job.is_enrichment):
+                await ctx.send("no lunch break active")
                 return
-            channel_config = self.channel_configs.get(ctx.channel.id)
-            folder = _folder_for_config(channel_config) if channel_config else None
-            agents = runner.list_active(channel_name=folder)
-            if not agents:
-                await ctx.send("no active beads")
-                return
-            lines = ["**active beads:**"]
-            for a in agents:
-                mins, secs = divmod(a["elapsed_seconds"], 60)
-                title = (a["title"] or "(no title)").replace("`", "'")
-                if len(title) > 60:
-                    title = title[:57] + "..."
-                lines.append(f"`{a['task_id']}` · {mins}m{secs:02d}s · {title}")
-            await ctx.send("\n".join(lines))
-
-        @self.command(name="cancel")
-        async def cmd_cancel(ctx: commands.Context, task_id: str = "") -> None:
-            """!cancel <bead-id> -- kill a running bead agent and close its bead."""
-            runner = getattr(self, "_task_runner", None)
-            if runner is None:
-                await ctx.send("task runner not running")
-                return
-            task_id = task_id.strip()
-            if not task_id:
-                await ctx.send("usage: `!cancel <bead-id>` -- see `!beads` for IDs")
-                return
-            channel_config = self.channel_configs.get(ctx.channel.id)
-            folder = _folder_for_config(channel_config) if channel_config else None
-            result = await runner.cancel(
-                task_id,
-                reason=f"!cancel by {ctx.author.display_name}",
-                channel_name=folder,
-            )
-            prefix = "killed" if result["success"] else "error"
-            await ctx.send(f"{prefix}: {result['message']}")
-
-        @self.command(name="analysis")
-        async def cmd_analysis(ctx: commands.Context) -> None:
-            """!analysis -- reply to one of my messages to probe how stable that opinion is."""
-            from . import analysis as analysis_mod
-            from . import config as _config
-
-            if not ctx.message.reference or not ctx.message.reference.message_id:
-                await ctx.send(
-                    "reply to one of my messages with `!analysis` to probe it"
-                )
-                return
-
-            channel_config = self.channel_configs.get(ctx.channel.id)
-            if channel_config is None:
-                await ctx.send("not a configured channel")
-                return
-
-            now = time.monotonic()
-            if now - self._analysis_last_run_at < _config.ANALYSIS_RATE_LIMIT_SECONDS:
-                wait = int(
-                    _config.ANALYSIS_RATE_LIMIT_SECONDS
-                    - (now - self._analysis_last_run_at)
-                )
-                await ctx.send(f"analysis is rate-limited globally; try again in {wait}s")
-                return
-
-            existing = self._active_analyses.get(ctx.channel.id)
-            if existing and not existing.done():
-                await ctx.send("an analysis is already running in this channel")
-                return
-
-            self._analysis_last_run_at = now
-            target_msg_id = ctx.message.reference.message_id
-            channel_name = _folder_for_config(channel_config)
-            target_link = (
-                f"https://discord.com/channels/"
-                f"{ctx.guild.id if ctx.guild else '@me'}/"
-                f"{ctx.channel.id}/{target_msg_id}"
-            )
-
-            async def _runner() -> None:
-                progress_msg: discord.Message | None = None
-
-                async def _on_progress(text: str) -> None:
-                    nonlocal progress_msg
-                    try:
-                        if progress_msg is None:
-                            progress_msg = await ctx.send(f"-# analysis: {text}")
-                        else:
-                            await progress_msg.edit(content=f"-# analysis: {text}")
-                    except Exception as e:
-                        _LOG.warning("analysis progress update failed: %s", e)
-
-                try:
-                    output = await analysis_mod.run_analysis(
-                        ctx.channel.id,
-                        channel_name,
-                        target_msg_id,
-                        target_msg_link=target_link,
-                        on_progress=_on_progress,
-                    )
-                    await ctx.send(output[: _config.DISCORD_MAX_MESSAGE_LENGTH])
-                except analysis_mod.AnalysisError as e:
-                    await ctx.send(f"can't analyze: {e}")
-                except asyncio.CancelledError:
-                    try:
-                        await ctx.send("analysis cancelled")
-                    except Exception:
-                        pass
-                    raise
-                except Exception as e:
-                    _LOG.exception("analysis failed: %s", e)
-                    await ctx.send(f"analysis crashed: `{type(e).__name__}: {e}`")
-                finally:
-                    if progress_msg is not None:
-                        try:
-                            await progress_msg.delete()
-                        except Exception:
-                            pass
-
-            task = asyncio.create_task(_runner())
-            self._active_analyses[ctx.channel.id] = task
-
-        @self.command(name="sessions")
-        async def cmd_sessions(ctx: commands.Context, limit: int = 5) -> None:
-            """!sessions [n] -- list recent sessions for this channel (for !resume)."""
-            channel_config = self.channel_configs.get(ctx.channel.id)
-            if channel_config is None:
-                await ctx.send("not a configured channel")
-                return
-            limit = max(1, min(limit, 15))
-            current = sessions.get_session(ctx.channel.id)
-            history = state_manager.get_session_history(ctx.channel.id, limit=limit)
-
-            if not current and not history:
-                await ctx.send("no sessions recorded for this channel")
-                return
-
-            def _fmt(ts: int) -> str:
-                return datetime.datetime.fromtimestamp(ts, tz=datetime.UTC).strftime("%b %d %H:%M")
-
-            lines = []
-            if current:
-                lines.append(
-                    f"`{current.session_id[:8]}` · {_fmt(current.created_at)} UTC"
-                    f" · {current.message_count} turns · **current**"
-                )
-            seen = {current.session_id} if current else set()
-            for row in history:
-                sid = row["session_id"]
-                if sid in seen:
-                    continue
-                seen.add(sid)
-                turns = row.get("message_count") or 0
-                lines.append(f"`{sid[:8]}` · {_fmt(row['started_at'])} UTC · {turns} turns")
-            lines.append("-# `!resume <id>` switches back to one, `!clear` starts fresh")
-            await ctx.send("\n".join(lines))
+            # Set end timestamp to past so _finalize_generation doesn't re-invoke.
+            existing_job.enrichment_end_timestamp = 0.0
+            self._enrichment_notified.discard(ctx.channel.id)
+            existing_job.task.cancel()
+            await ctx.send("lunch break ended")
 
         @self.command(name="session")
         async def cmd_session(ctx: commands.Context) -> None:
@@ -401,19 +270,14 @@ class WendyBot(commands.Bot):
 
         if self.whitelist_channels:
             self.watch_notifications.start()
-            # Lunchtime/enrichment feature disabled for now.
-            # self.check_enrichment_schedule.start()
+            self.check_enrichment_schedule.start()
 
         self._cache_emojis_task = self.loop.create_task(self._cache_emojis())
         self._task_runner = TaskRunner()
-        api_server.set_task_runner(self._task_runner)
         self._task_runner_task = self.loop.create_task(self._task_runner.run())
 
     async def close(self) -> None:
         """Cleanup on shutdown: cancel the task runner so agents are killed cleanly."""
-        for task in list(self._active_analyses.values()):
-            if not task.done():
-                task.cancel()
         if hasattr(self, "_task_runner_task") and not self._task_runner_task.done():
             self._task_runner_task.cancel()
             try:
@@ -506,19 +370,11 @@ class WendyBot(commands.Bot):
 
         _LOG.info("Processing message from %s: %s...", message.author.display_name, message.content[:50])
 
-        # Interrupt: "WENDY" in all caps cancels the running generation,
-        # and also kills any in-flight !analysis run on this channel.
+        # Interrupt: "WENDY" in all caps cancels the running generation.
         existing_job = self._active_generations.get(message.channel.id)
-        existing_analysis = self._active_analyses.get(message.channel.id)
-        if message.content.strip() == "WENDY":
-            if existing_analysis and not existing_analysis.done():
-                existing_analysis.cancel()
-            if self._job_is_running(existing_job):
-                self._interrupt_channel(message, existing_job, channel_config)
-                return
-            if existing_analysis and not existing_analysis.done():
-                # No CLI generation to interrupt -- the cancel above is enough.
-                return
+        if message.content.strip() == "WENDY" and self._job_is_running(existing_job):
+            self._interrupt_channel(message, existing_job, channel_config)
+            return
 
         # If a generation is already running: enrich sessions suppress new messages,
         # normal sessions flag pending so a follow-up runs when the CLI finishes.
@@ -526,14 +382,10 @@ class WendyBot(commands.Bot):
             if existing_job.is_enrichment:
                 if message.channel.id not in self._enrichment_notified:
                     self._enrichment_notified.add(message.channel.id)
-                    end_dt = datetime.datetime.fromtimestamp(
-                        existing_job.enrichment_end_timestamp,
-                        tz=ZoneInfo("America/Los_Angeles"),
-                    )
-                    end_time = end_dt.strftime("%-I:%M %p %Z")
+                    end_time = existing_job.enrichment_end_time
                     asyncio.ensure_future(
                         message.channel.send(
-                            f"<@{message.author.id}> Wendy's on her lunch break until {end_time}! She'll be back soon."
+                            f"<@{message.author.id}> Wendy's on her lunch break until {end_time} UTC! She'll be back soon."
                         )
                     )
                 return
@@ -673,7 +525,6 @@ class WendyBot(commands.Bot):
             "mode": parent_config.get("mode", "chat"),
             "model": parent_config.get("model"),
             "beads_enabled": parent_config.get("beads_enabled", False),
-            "ignore_user_ids": parent_config.get("ignore_user_ids", set()),
             "_folder": folder_name,
             "_is_thread": True,
             "_parent_folder": parent_folder,
@@ -758,6 +609,108 @@ class WendyBot(commands.Bot):
         )
         new_job.task = new_task
 
+    async def _maybe_update_presence(self) -> None:
+        """Refresh the bot's Discord status with usage percentages (at most every 15 min)."""
+        if time.monotonic() - self._presence_updated_at < _PRESENCE_INTERVAL:
+            return
+        try:
+            week_pct_str, pace_str, resets_str = await self._fetch_usage_stats()
+            status = f"{week_pct_str} wk | {pace_str}"
+            if resets_str:
+                status += f" | {resets_str}"
+            await self.change_presence(
+                activity=discord.Activity(
+                    type=discord.ActivityType.watching,
+                    name=status,
+                )
+            )
+            self._presence_updated_at = time.monotonic()
+        except Exception as e:
+            _LOG.error("Failed to update presence: %s", e)
+
+    async def _fetch_usage_stats(self) -> tuple[str, str, str]:
+        """Read cached usage data and return (week_pct_str, pace_str, resets_str).
+
+        Reads from the usage_data.json file maintained by the TaskRunner's
+        ``_check_usage`` loop.  Falls back to running get_usage.sh directly
+        if the cached file is missing.
+
+        pace = floor(elapsed_week_pct) - week_all_percent: positive means budget
+        ahead of pace, negative means deficit. Updates ``_cached_usage`` on success.
+        Returns ``("N/A", "N/A", "")`` on any failure.
+        """
+        global _cached_usage
+
+        from .paths import WENDY_BASE
+        usage_file = WENDY_BASE / "usage_data.json"
+
+        data = None
+        if usage_file.exists():
+            try:
+                data = json.loads(usage_file.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        if data is None:
+            # Fallback: try running the script directly
+            proc = await asyncio.create_subprocess_exec(
+                "/app/scripts/get_usage.sh",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                _LOG.error("get_usage.sh failed: %s", stderr.decode("utf-8", errors="replace").strip())
+                return "N/A", "N/A", ""
+            try:
+                data = json.loads(stdout.decode())
+            except json.JSONDecodeError:
+                return "N/A", "N/A", ""
+
+        if USAGE_BUDGET_FACTOR < 1.0:
+            for key in ("week_all_percent", "week_sonnet_percent", "session_percent"):
+                if key in data:
+                    data[key] = min(100, int(data[key] / USAGE_BUDGET_FACTOR))
+        _cached_usage = data
+        week_pct = data.get("week_all_percent")
+        week_resets_str = data.get("week_all_resets", "")
+
+        week_pct_str = f"{week_pct}%" if week_pct is not None else "N/A"
+        pace_str = "N/A"
+        resets_str = ""
+
+        if week_pct is not None and week_resets_str:
+            try:
+                resets_at = datetime.datetime.fromisoformat(
+                    week_resets_str.replace("Z", "+00:00")
+                )
+                now = datetime.datetime.now(datetime.UTC)
+                # If resets_at is in the past, the cached percentage is from a
+                # previous billing week.  Project the date forward and treat
+                # usage as 0% for the new week.
+                week_secs = 7 * 24 * 3600
+                week_rolled = False
+                while resets_at <= now:
+                    resets_at += datetime.timedelta(seconds=week_secs)
+                    week_rolled = True
+                if week_rolled:
+                    week_pct = 0
+                    week_pct_str = "0%"
+                    _cached_usage["week_all_percent"] = 0
+                secs_remaining = (resets_at - now).total_seconds()
+                elapsed_pct = int((1 - secs_remaining / week_secs) * 100)
+                elapsed_pct = max(0, min(100, elapsed_pct))
+                surplus = elapsed_pct - week_pct
+                if surplus >= 0:
+                    pace_str = f"+{surplus}% surplus"
+                else:
+                    pace_str = f"{abs(surplus)}% deficit"
+                resets_str = resets_at.strftime("%b %-d")
+            except Exception as e:
+                _LOG.warning("Failed to compute surplus: %s", e)
+
+        return week_pct_str, pace_str, resets_str
+
     async def _generate_response(
         self,
         channel: discord.TextChannel | discord.Thread,
@@ -771,10 +724,15 @@ class WendyBot(commands.Bot):
         """
         channel_config = self.channel_configs.get(channel.id, {})
 
+        await self._maybe_update_presence()
+
         try:
+            from .config import resolve_model
             from .prompt import build_system_prompt
 
             system_prompt = build_system_prompt(channel.id, channel_config)
+            resolved_model = resolve_model(channel_config.get("model") or "sonnet")
+            effort_args = _get_current_effort(resolved_model)
 
             # Inject context introductions for newly relevant persons/topics.
             channel_name = _folder_for_config(channel_config)
@@ -813,6 +771,7 @@ class WendyBot(commands.Bot):
                 channel_config=channel_config,
                 system_prompt=system_prompt,
                 model_override=model_override,
+                effort_args=effort_args,
                 nudge_override=enrichment_nudge,
                 timeout_override=int(remaining) + 60 if remaining is not None else None,
                 max_turns=100 if job.is_enrichment else None,
@@ -838,80 +797,25 @@ class WendyBot(commands.Bot):
                     return await self._generate_response(channel, job, model_override="opus")
                 else:
                     _LOG.error("All models overloaded for channel %s, giving up", channel.id)
-            self._handle_cli_error(channel, e, job)
+            self._handle_cli_error(channel, e)
 
         except Exception:
             _LOG.exception("Generation failed")
-            asyncio.ensure_future(self._send_failure_notice(
-                channel,
-                "something broke on my end while writing a reply -- send that again in a bit",
-            ))
 
         finally:
             self._finalize_generation(channel, job)
-
-    async def _send_failure_notice(
-        self,
-        channel: discord.TextChannel | discord.Thread,
-        text: str,
-    ) -> None:
-        """Send a short user-visible failure notice, rate-limited per channel.
-
-        Without this, terminal failures (overload give-up, exhausted timeout
-        continuations, CLI crashes) are only logged and users wait on a reply
-        that will never come.
-        """
-        now = time.monotonic()
-        if now - self._last_failure_notice.get(channel.id, 0.0) < _FAILURE_NOTICE_COOLDOWN:
-            return
-        self._last_failure_notice[channel.id] = now
-        try:
-            await channel.send(f"-# {text}")
-        except Exception:
-            _LOG.exception("Failed to send failure notice to channel %s", channel.id)
 
     def _handle_cli_error(
         self,
         channel: discord.TextChannel | discord.Thread,
         error: ClaudeCliError,
-        job: GenerationJob,
     ) -> None:
-        """Log a CLI error and, for terminal failures, tell the channel.
-
-        Timeouts that will be auto-continued by ``_finalize_generation`` stay
-        silent; everything else gets a short notice so users aren't left
-        waiting on a reply that will never arrive.
-        """
+        """Log or report a CLI error; notify the channel on OAuth expiry."""
         error_str = str(error).lower()
         if "oauth" in error_str and "expired" in error_str:
             asyncio.ensure_future(self._send_oauth_notice(channel))
-            return
-
-        _LOG.error("Claude CLI error: %s", error)
-
-        if job.timed_out:
-            if job.continuation_count >= _MAX_TIMEOUT_CONTINUATIONS:
-                asyncio.ensure_future(self._send_failure_notice(
-                    channel,
-                    "i kept hitting the time limit on that and had to give up -- "
-                    "try breaking the request into smaller pieces",
-                ))
-            # else: _finalize_generation auto-continues; stay quiet.
-            return
-
-        if error.overloaded:
-            # Only reached after the opus fallback and the long-backoff retry
-            # have both failed (earlier attempts return before this point).
-            asyncio.ensure_future(self._send_failure_notice(
-                channel,
-                "claude's api is overloaded right now -- ping me again in a few minutes",
-            ))
-            return
-
-        asyncio.ensure_future(self._send_failure_notice(
-            channel,
-            "something broke on my end while writing a reply -- send that again in a bit",
-        ))
+        else:
+            _LOG.error("Claude CLI error: %s", error)
 
     async def _send_oauth_notice(self, channel: discord.TextChannel | discord.Thread) -> None:
         """Send an OAuth-expiration message to the channel, swallowing errors."""
@@ -996,17 +900,8 @@ class WendyBot(commands.Bot):
             self._active_generations.pop(channel.id, None)
 
     def _has_pending_messages(self, channel_id: int) -> bool:
-        """Return True if the channel has wake-worthy messages newer than last_seen.
-
-        Uses the same criteria as on_message: the bot's own messages and
-        messages from the channel's ignore_user_ids never count.
-        """
-        channel_config = self.channel_configs.get(channel_id, {})
-        return state_manager.has_pending_messages(
-            channel_id,
-            self.user.id,
-            ignored_author_ids=channel_config.get("ignore_user_ids", set()),
-        )
+        """Return True if the channel has user messages newer than last_seen."""
+        return state_manager.has_pending_messages(channel_id, self.user.id)
 
     # ------------------------------------------------------------------
     # Notification polling

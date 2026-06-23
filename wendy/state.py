@@ -49,18 +49,6 @@ class StateManager:
 
         return self._local.conn
 
-    def close(self) -> None:
-        """Close the calling thread's SQLite connection, if open.
-
-        A new connection is lazily reopened on the next ``_get_conn`` call.
-        Mainly useful in tests so the DB file can be deleted afterwards
-        (Windows refuses to unlink a file held open by SQLite).
-        """
-        conn = getattr(self._local, "conn", None)
-        if conn is not None:
-            conn.close()
-            self._local.conn = None
-
     def _init_schema(self, conn: sqlite3.Connection) -> None:
         """Initialize database schema. THIS IS THE ONLY SCHEMA DEFINITION."""
         conn.executescript("""
@@ -95,7 +83,6 @@ class StateManager:
                 timestamp INTEGER,
                 attachment_urls TEXT,
                 reply_to_id INTEGER,
-                nudge_id TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -125,6 +112,12 @@ class StateManager:
                 folder_name TEXT NOT NULL,
                 thread_name TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS usage_state (
+                key TEXT PRIMARY KEY,
+                value INTEGER NOT NULL,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
 
             CREATE TABLE IF NOT EXISTS bash_tool_log (
@@ -164,22 +157,6 @@ class StateManager:
             conn.commit()
         except Exception:
             pass  # column already exists
-        try:
-            conn.execute("ALTER TABLE message_history ADD COLUMN nudge_id TEXT")
-            conn.commit()
-        except Exception:
-            pass  # column already exists
-        # Index creation runs unconditionally so it's still created on fresh DBs
-        # (where ALTER TABLE failed because the column was already present from
-        # the CREATE TABLE statement above).
-        try:
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_message_history_nudge "
-                "ON message_history(nudge_id) WHERE nudge_id IS NOT NULL"
-            )
-            conn.commit()
-        except Exception:
-            pass
         _LOG.info("Schema initialized at %s", self.db_path)
 
     # =========================================================================
@@ -329,18 +306,17 @@ class StateManager:
         attachment_urls: str | None = None,
         reply_to_id: int | None = None,
         is_webhook: bool = False,
-        nudge_id: str | None = None,
     ) -> None:
         conn = self._get_conn()
         conn.execute(
             """
             INSERT OR IGNORE INTO message_history
                 (message_id, channel_id, guild_id, author_id, author_nickname,
-                 is_bot, is_webhook, content, timestamp, attachment_urls, reply_to_id, nudge_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 is_bot, is_webhook, content, timestamp, attachment_urls, reply_to_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (message_id, channel_id, guild_id, author_id, author_nickname,
-             int(is_bot), int(is_webhook), content, timestamp, attachment_urls, reply_to_id, nudge_id)
+             int(is_bot), int(is_webhook), content, timestamp, attachment_urls, reply_to_id)
         )
         conn.commit()
 
@@ -399,20 +375,12 @@ class StateManager:
         r.content as reply_content
     """
 
-    # The content filter mirrors on_message's command routing: messages
-    # starting with !, -, or / are dispatched as bot commands and never
-    # wake or reach the CLI, so they're excluded everywhere for consistency.
-    _COMMAND_CONTENT_FILTER = (
-        "(content IS NULL OR (content NOT LIKE '!%'"
-        " AND content NOT LIKE '-%' AND content NOT LIKE '/%'))"
-    )
-
     _MESSAGE_QUERY_BASE = f"""
         SELECT {_MESSAGE_QUERY_COLUMNS}
         FROM message_history m
         LEFT JOIN message_history r ON m.reply_to_id = r.message_id
         WHERE m.channel_id = ?
-        AND (m.content IS NULL OR (m.content NOT LIKE '!%' AND m.content NOT LIKE '-%' AND m.content NOT LIKE '/%'))
+        AND (m.content IS NULL OR (m.content NOT LIKE '!%' AND m.content NOT LIKE '-%'))
     """
 
     @staticmethod
@@ -478,64 +446,36 @@ class StateManager:
         combined = list(synth_rows)[::-1] + list(real_rows)
         return combined
 
-    @staticmethod
-    def _ignored_authors_clause(
-        ignored_author_ids,
-        params: list,
-        column: str = "author_id",
-    ) -> str:
-        """Build an ``AND <column> NOT IN (...)`` clause, appending to *params*.
-
-        Returns an empty string when there are no ignored authors. Used so
-        wake/pending detection matches on_message, which stores messages from
-        ``ignore_user_ids`` but never wakes for them.
-        """
-        ids = sorted(ignored_author_ids or ())
-        if not ids:
-            return ""
-        params.extend(ids)
-        placeholders = ",".join("?" * len(ids))
-        return f" AND {column} NOT IN ({placeholders})"
-
     def check_for_new_messages(
         self,
         channel_id: int,
         bot_user_id: int,
         synthetic_id_threshold: int,
         max_limit: int,
-        ignored_author_ids=(),
     ) -> list[dict]:
         """Return new *real* messages since the last ``check_messages`` call.
 
-        This powers the interrupt system and startup catchup: if the caller
-        detects unseen messages it forces Claude to re-read before sending.
+        This powers the interrupt system: if the caller detects unseen messages
+        it forces Claude to re-read before sending.
 
-        Messages from the bot itself and from *ignored_author_ids* are
-        excluded -- on_message never wakes for those, so counting them here
-        would produce wakes with nothing actionable.  Synthetic messages
-        (IDs >= *synthetic_id_threshold*) are excluded too: notifications
-        have their own wake path, and Context intros leaked by a generation
-        that died before its check_messages call used to wake the bot for
-        messages the msgs helper never even displays.  The ``last_seen``
-        watermark is **not** advanced here -- only ``handle_check_messages``
-        should advance it.  This prevents a race where the interrupt consumes
-        the watermark before ``check_messages`` can return the same messages.
+        Only non-bot messages are returned.  The ``last_seen`` watermark is
+        **not** advanced here -- only ``handle_check_messages`` should advance
+        it.  This prevents a race where the interrupt consumes the watermark
+        before ``check_messages`` can return the same messages.
         """
         last_seen = self.get_last_seen(channel_id)
         if last_seen is None:
             return []
 
-        params: list = [channel_id, last_seen, synthetic_id_threshold, bot_user_id]
         query = (
             self._MESSAGE_QUERY_BASE
             + " AND m.message_id > ?"
-            + " AND m.message_id < ?"
             + " AND m.author_id != ?"
-            + self._ignored_authors_clause(ignored_author_ids, params, "m.author_id")
             + " ORDER BY m.message_id DESC LIMIT ?"
         )
-        params.append(max_limit)
-        rows = self._get_conn().execute(query, params).fetchall()
+        rows = self._get_conn().execute(
+            query, (channel_id, last_seen, bot_user_id, max_limit)
+        ).fetchall()
         if not rows:
             return []
 
@@ -545,43 +485,39 @@ class StateManager:
         self,
         channel_id: int,
         bot_user_id: int,
-        ignored_author_ids=(),
-        synthetic_id_threshold: int = 9_000_000_000_000_000_000,
     ) -> bool:
         """Return True if the channel has messages newer than last_seen.
 
-        Counts both real and synthetic messages (webhooks, notifications),
-        excluding the bot's own messages and *ignored_author_ids* -- the same
-        criteria on_message uses to decide whether a message wakes the bot.
-        Synthetic "Context" intro rows are excluded: they are auto-injected
-        decoration inserted at generation start, and ones leaked by a killed
-        generation must not drive a wake (the msgs helper hides them anyway).
-        Fails open (returns True) on any error so messages are never
-        silently dropped.
+        Counts both real and synthetic messages (webhooks, notifications)
+        from non-bot authors.  Fails open (returns True) on any error so
+        messages are never silently dropped.
         """
         try:
             conn = self._get_conn()
             last_seen = self.get_last_seen(channel_id)
 
-            params: list = [channel_id]
-            watermark_clause = ""
             if last_seen:
-                watermark_clause = " AND message_id > ?"
-                params.append(last_seen)
-            params.append(bot_user_id)
-            ignored_clause = self._ignored_authors_clause(ignored_author_ids, params)
-            params.append(synthetic_id_threshold)
-
-            query = f"""
-                SELECT EXISTS(
-                    SELECT 1 FROM message_history
-                    WHERE channel_id = ?{watermark_clause}
-                      AND author_id != ?{ignored_clause}
-                      AND NOT (message_id >= ? AND author_nickname = 'Context')
-                      AND {self._COMMAND_CONTENT_FILTER}
-                    LIMIT 1
-                )
-            """
+                query = """
+                    SELECT EXISTS(
+                        SELECT 1 FROM message_history
+                        WHERE channel_id = ? AND message_id > ?
+                          AND author_id != ?
+                          AND (content IS NULL OR (content NOT LIKE '!%' AND content NOT LIKE '-%'))
+                        LIMIT 1
+                    )
+                """
+                params: tuple = (channel_id, last_seen, bot_user_id)
+            else:
+                query = """
+                    SELECT EXISTS(
+                        SELECT 1 FROM message_history
+                        WHERE channel_id = ?
+                          AND author_id != ?
+                          AND (content IS NULL OR (content NOT LIKE '!%' AND content NOT LIKE '-%'))
+                        LIMIT 1
+                    )
+                """
+                params = (channel_id, bot_user_id)
             return bool(conn.execute(query, params).fetchone()[0])
         except Exception as e:
             _LOG.error("Error checking pending messages: %s", e)
@@ -707,6 +643,28 @@ class StateManager:
             (thread_id,)
         ).fetchone()
         return row["parent_channel_id"] if row else None
+
+    # =========================================================================
+    # Usage State
+    # =========================================================================
+
+    def get_usage_threshold(self, key: str) -> int:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT value FROM usage_state WHERE key = ?", (key,)
+        ).fetchone()
+        return row["value"] if row else 0
+
+    def set_usage_threshold(self, key: str, value: int) -> None:
+        conn = self._get_conn()
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO usage_state (key, value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            """,
+            (key, value)
+        )
+        conn.commit()
 
     # =========================================================================
     # Session History

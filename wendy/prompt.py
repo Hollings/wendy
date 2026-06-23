@@ -161,6 +161,25 @@ unless they specifically ask about it. Just quietly write your entries.
 """
 
 
+def get_journal_listing_for_nudge(channel_name: str) -> str:
+    """Return a compact journal listing for the nudge prompt, or empty string if no entries."""
+    j_dir = journal_dir(channel_name)
+    try:
+        entries = sorted(
+            f.name
+            for f in j_dir.iterdir()
+            if f.is_file() and not f.name.startswith(".")
+        )
+    except OSError:
+        return ""
+
+    if not entries:
+        return ""
+
+    names = ", ".join(entries)
+    return f"Journal entries ({len(entries)} files): {names}"
+
+
 def _get_beads_instructions() -> str:
     """Inject bd task system instructions when beads_enabled."""
     return """

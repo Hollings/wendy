@@ -12,6 +12,8 @@ Route overview (see ``create_app`` for the full route table):
     POST /api/deploy_game           -- proxy a game deploy to wendy-web
     GET  /api/game_logs/:name       -- fetch game server logs
     POST /api/analyze_file          -- analyse media via Gemini
+    GET  /api/usage                 -- Claude Code usage stats
+    POST /api/usage/refresh         -- force a usage data refresh
     GET  /health                    -- liveness check
 """
 from __future__ import annotations
@@ -41,8 +43,6 @@ from .state import state as state_manager
 if TYPE_CHECKING:
     import discord
 
-    from .tasks import TaskRunner
-
 _LOG = logging.getLogger(__name__)
 
 # Channel config loaded from discord_client at startup
@@ -51,21 +51,11 @@ _channel_configs: dict[int, dict] = {}
 # Discord bot reference (set by discord_client at startup)
 _discord_bot: discord.Client | None = None
 
-# TaskRunner reference (set by discord_client at startup) -- powers the bead
-# control endpoints (list_active, cancel).
-_task_runner: TaskRunner | None = None
-
 
 def set_discord_bot(bot: discord.Client) -> None:
     """Store a reference to the Discord bot so route handlers can send messages."""
     global _discord_bot
     _discord_bot = bot
-
-
-def set_task_runner(runner: TaskRunner) -> None:
-    """Store a reference to the TaskRunner so bead endpoints can control agents."""
-    global _task_runner
-    _task_runner = runner
 
 
 def set_channel_configs(configs: dict[int, dict]) -> None:
@@ -89,28 +79,17 @@ def get_channel_name(channel_id: int) -> str | None:
     return state_manager.get_thread_folder(channel_id)
 
 
-def get_ignored_user_ids(channel_id: int) -> set[int]:
-    """Return the channel's ignore_user_ids set (empty if unconfigured)."""
-    cfg = _channel_configs.get(channel_id)
-    if not cfg:
-        return set()
-    return cfg.get("ignore_user_ids") or set()
-
-
 def check_for_new_messages(channel_id: int) -> list[dict]:
     """Return new *real* messages since the last ``check_messages`` call.
 
     Thin wrapper around ``state_manager.check_for_new_messages`` that passes
-    the bot user ID, the channel's ignored users, and config constants.
-    Ignored users' messages are stored but must never trigger wakes or send
-    interrupts -- mirroring on_message.
+    the bot user ID and config constants.
     """
     return state_manager.check_for_new_messages(
         channel_id,
         bot_user_id=_config.WENDY_BOT_ID,
         synthetic_id_threshold=SYNTHETIC_ID_THRESHOLD,
         max_limit=MAX_MESSAGE_LIMIT,
-        ignored_author_ids=get_ignored_user_ids(channel_id),
     )
 
 
@@ -119,7 +98,6 @@ def _save_bot_message(msg: discord.Message | None, channel_id: int) -> None:
     if not msg:
         return
     try:
-        from . import cli
         state_manager.insert_message(
             message_id=msg.id,
             channel_id=channel_id,
@@ -129,7 +107,6 @@ def _save_bot_message(msg: discord.Message | None, channel_id: int) -> None:
             is_bot=True,
             content=msg.content or "",
             timestamp=int(msg.created_at.timestamp()),
-            nudge_id=cli.get_active_nudge_id(channel_id),
         )
     except Exception as e:
         _LOG.warning("Failed to save bot message %s: %s", msg.id, e)
@@ -153,125 +130,41 @@ def _validate_attachment_path(path_str: str) -> str | None:
     return None
 
 
-MAX_SPLIT_CHUNKS = 6
-"""Max Discord messages a single over-long send may be split into."""
-
-_FENCE_RE = re.compile(r"^(`{3,})([^`\n]*)$", re.MULTILINE)
-
-
-def _fence_state_after(text: str, open_fence: tuple[str, str] | None) -> tuple[str, str] | None:
-    """Track Markdown code-fence state across *text*.
-
-    *open_fence* is the ``(ticks, lang)`` of a fence open at the start of
-    *text* (or ``None``).  Returns the fence still open at the end, if any.
-    """
-    fence = open_fence
-    for m in _FENCE_RE.finditer(text):
-        if fence is None:
-            fence = (m.group(1), m.group(2).strip())
-        elif len(m.group(1)) >= len(fence[0]):
-            fence = None
-    return fence
-
-
-def split_message_text(text: str, limit: int = DISCORD_MAX_MESSAGE_LENGTH) -> list[str]:
-    """Split *text* into chunks of at most *limit* characters.
-
-    Prefers paragraph, then line, then word boundaries.  Markdown code
-    fences that straddle a split are closed at the end of the chunk and
-    reopened (with their language tag) at the start of the next, so each
-    Discord message renders correctly on its own.
-    """
-    if len(text) <= limit:
-        return [text]
-
-    chunks: list[str] = []
-    open_fence: tuple[str, str] | None = None
-    remaining = text
-
-    while remaining:
-        prefix = f"{open_fence[0]}{open_fence[1]}\n" if open_fence else ""
-        if len(prefix) + len(remaining) <= limit:
-            chunks.append(prefix + remaining)
-            break
-
-        # Reserve room for a closing fence we may need to append.
-        closer_len = len(open_fence[0]) + 1 if open_fence else 4
-        budget = limit - len(prefix) - closer_len
-        window = remaining[:budget]
-
-        # Prefer paragraph > line > word boundaries; never split in the
-        # first half of the window (avoids degenerate tiny chunks).
-        cut = window.rfind("\n\n")
-        if cut < budget // 2:
-            cut = window.rfind("\n")
-        if cut < budget // 2:
-            cut = window.rfind(" ")
-        if cut < budget // 2:
-            cut = budget
-
-        piece = remaining[:cut]
-        remaining = remaining[cut:].lstrip(" \n")
-
-        next_fence = _fence_state_after(piece, open_fence)
-        if next_fence and remaining:
-            piece += f"\n{next_fence[0]}"
-        chunks.append(prefix + piece)
-        open_fence = next_fence
-
-    return chunks
-
-
-async def _send_split_message(
-    channel: discord.abc.Messageable,
+def _build_discord_send_kwargs(
     body: dict,
     channel_id: int,
-) -> tuple[list, str | None]:
-    """Send a message described by *body*, auto-splitting over-long content.
+) -> tuple[dict, str | None]:
+    """Build ``channel.send()`` keyword arguments from a request body.
 
-    The reply reference (if any) goes on the first chunk; the attachment
-    (if any) goes on the last, so it appears after the text that mentions it.
-    Every sent message is persisted to SQLite.
+    Handles content, attachment validation, and reply references.  Shared by
+    both single-message and batch-action ``send_message`` paths.
 
-    Returns ``(sent_messages, error_string)``.  *error_string* is ``None``
-    on success.
+    Returns ``(kwargs_dict, error_string)``.  *error_string* is ``None`` when
+    the input is valid.
     """
     import discord as _discord
 
     text = body.get("content") or body.get("message") or ""
+    if len(text) > DISCORD_MAX_MESSAGE_LENGTH:
+        return {}, f"Message too long ({len(text)} chars). Discord limit is {DISCORD_MAX_MESSAGE_LENGTH}."
 
     att_path = body.get("file_path") or body.get("attachment")
     if att_path:
         err = _validate_attachment_path(att_path)
         if err:
-            return [], err
+            return {}, err
 
-    chunks = split_message_text(text) if text else [""]
-    if len(chunks) > MAX_SPLIT_CHUNKS:
-        return [], (
-            f"Message too long ({len(text)} chars, would need {len(chunks)} Discord messages; "
-            f"max {MAX_SPLIT_CHUNKS}). Trim it, or save it to a file and send with an attachment."
-        )
+    kwargs: dict = {"content": text or None}
+    if att_path:
+        kwargs["file"] = _discord.File(att_path)
 
-    reference = None
     reply_to = body.get("reply_to")
     if reply_to:
-        reference = _discord.MessageReference(
+        kwargs["reference"] = _discord.MessageReference(
             message_id=int(reply_to), channel_id=channel_id,
         )
 
-    sent: list = []
-    for i, chunk in enumerate(chunks):
-        kwargs: dict = {"content": chunk or None}
-        if i == 0 and reference is not None:
-            kwargs["reference"] = reference
-        if i == len(chunks) - 1 and att_path:
-            kwargs["file"] = _discord.File(att_path)
-        msg = await channel.send(**kwargs)
-        _save_bot_message(msg, channel_id)
-        sent.append(msg)
-
-    return sent, None
+    return kwargs, None
 
 
 # ---------------------------------------------------------------------------
@@ -308,17 +201,15 @@ async def _execute_batch_actions(
         action_type = action.get("type")
 
         if action_type == "send_message":
-            sent_msgs, err = await _send_split_message(channel, action, channel_id)
+            kwargs, err = _build_discord_send_kwargs(action, channel_id)
             if err:
                 return web.json_response({"error": f"Action {i}: {err}"}, status=400)
-            result_entry = {
+            sent_msg = await channel.send(**kwargs)
+            _save_bot_message(sent_msg, channel_id)
+            results.append({
                 "action": i, "type": "send_message", "success": True,
-                "message_id": sent_msgs[0].id,
-                "content": "\n".join(m.content or "" for m in sent_msgs),
-            }
-            if len(sent_msgs) > 1:
-                result_entry["split_into"] = len(sent_msgs)
-            results.append(result_entry)
+                "message_id": sent_msg.id, "content": sent_msg.content or "",
+            })
 
         elif action_type == "add_reaction":
             msg_id = action.get("message_id")
@@ -389,26 +280,24 @@ async def handle_send_message(request: web.Request) -> web.Response:
         return await _execute_batch_actions(actions, channel, channel_id)
 
     # Single message mode
-    sent_msgs, err = await _send_split_message(channel, body, channel_id)
+    kwargs, err = _build_discord_send_kwargs(body, channel_id)
     if err:
         return web.json_response({"error": err}, status=400)
 
-    last_msg = sent_msgs[-1]
+    sent_msg = await channel.send(**kwargs)
+    _save_bot_message(sent_msg, channel_id)
     new_messages = check_for_new_messages(channel_id)
     resp_body: dict = {
         "success": True,
         "message": "Message sent",
-        "message_id": sent_msgs[0].id,
-        "content": "\n".join(m.content or "" for m in sent_msgs),
+        "message_id": sent_msg.id,
+        "content": sent_msg.content or "",
         "new_messages": new_messages,
     }
-    if len(sent_msgs) > 1:
-        resp_body["split_into"] = len(sent_msgs)
-        resp_body["message"] = f"Message sent (split into {len(sent_msgs)} parts to fit Discord's limit)"
-    if last_msg.attachments:
+    if sent_msg.attachments:
         resp_body["attachments"] = [
             {"filename": a.filename, "size": a.size, "url": a.url}
-            for a in last_msg.attachments
+            for a in sent_msg.attachments
         ]
     return web.json_response(resp_body)
 
@@ -489,9 +378,6 @@ async def handle_check_messages(request: web.Request) -> web.Response:
         messages.reverse()
 
         # Advance the watermark for real messages; clean up consumed synthetics.
-        # Every fetch claims what it returns -- a no-side-effect variant
-        # (the old --peek) returned the same "new" messages forever, which
-        # the model could lock onto and loop on.
         synthetic_ids = [m["message_id"] for m in messages if m["message_id"] >= SYNTHETIC_ID_THRESHOLD]
         real_messages = [m for m in messages if m["message_id"] < SYNTHETIC_ID_THRESHOLD]
         if real_messages:
@@ -872,6 +758,40 @@ async def handle_analyze_file(request: web.Request) -> web.Response:
 # Usage tracking
 # ---------------------------------------------------------------------------
 
+USAGE_DATA_FILE = WENDY_BASE / "usage_data.json"
+USAGE_FORCE_CHECK_FILE = WENDY_BASE / "usage_force_check"
+
+
+async def handle_usage(request: web.Request) -> web.Response:
+    """GET /api/usage -- return Claude Code usage stats from the cached JSON file."""
+    if not USAGE_DATA_FILE.exists():
+        return web.json_response({"error": "Usage data not available yet"}, status=404)
+    try:
+        data = json.loads(USAGE_DATA_FILE.read_text())
+        week_all = data.get("week_all_percent", 0)
+        week_sonnet = data.get("week_sonnet_percent", 0)
+        updated = data.get("updated_at", "unknown")
+        data["message"] = (
+            f"Claude Code Usage (as of {updated}):\n"
+            f"- Weekly (all models): {week_all}%\n"
+            f"- Weekly (Sonnet only): {week_sonnet}%"
+        )
+        return web.json_response(data)
+    except Exception as e:
+        _LOG.error("usage error: %s", e)
+        return web.json_response({"error": "Failed to read usage data"}, status=500)
+
+
+async def handle_usage_refresh(request: web.Request) -> web.Response:
+    """POST /api/usage/refresh -- create a marker file to trigger an immediate usage check."""
+    try:
+        USAGE_FORCE_CHECK_FILE.touch()
+        return web.json_response({"success": True, "message": "Usage refresh requested. Check back in ~30s."})
+    except Exception as e:
+        _LOG.error("usage refresh error: %s", e)
+        return web.json_response({"error": "Internal server error"}, status=500)
+
+
 async def handle_health(request: web.Request) -> web.Response:
     """GET /health -- simple liveness probe."""
     return web.json_response({"status": "ok"})
@@ -913,55 +833,6 @@ async def handle_schedule_wake(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
-# Bead agent control
-# ---------------------------------------------------------------------------
-
-
-async def handle_active_beads(request: web.Request) -> web.Response:
-    """GET /api/active_beads -- list currently running bead agents.
-
-    Query parameters:
-        channel -- workspace folder name to filter on (optional)
-    """
-    if _task_runner is None:
-        return web.json_response({"error": "task runner not ready"}, status=503)
-    channel = request.query.get("channel") or None
-    return web.json_response({"agents": _task_runner.list_active(channel_name=channel)})
-
-
-async def handle_cancel_bead(request: web.Request) -> web.Response:
-    """POST /api/cancel_bead -- kill a running bead agent and close its bead.
-
-    Body: ``{"task_id": "bd-xxx", "reason": "...", "channel": "folder"}``
-    Either ``channel`` (workspace folder name) or ``channel_id`` (Discord
-    channel id, resolved to a folder via the channel config) may be supplied
-    to scope the cancel; if both are absent, no scope check is enforced.
-    """
-    if _task_runner is None:
-        return web.json_response({"error": "task runner not ready"}, status=503)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-
-    task_id = (body.get("task_id") or "").strip()
-    if not task_id:
-        return web.json_response({"error": "task_id required"}, status=400)
-    reason = body.get("reason") or "cancelled by operator"
-
-    channel = body.get("channel") or None
-    if channel is None and body.get("channel_id"):
-        try:
-            channel = get_channel_name(int(body["channel_id"]))
-        except (TypeError, ValueError):
-            return web.json_response({"error": "channel_id must be an int"}, status=400)
-
-    result = await _task_runner.cancel(task_id, reason=reason, channel_name=channel)
-    status = 200 if result["success"] else 404
-    return web.json_response(result, status=status)
-
-
-# ---------------------------------------------------------------------------
 # Application factory and server startup
 # ---------------------------------------------------------------------------
 
@@ -976,9 +847,9 @@ def create_app() -> web.Application:
     app.router.add_post("/api/deploy_game", handle_deploy_game)
     app.router.add_get("/api/game_logs/{name}", handle_game_logs)
     app.router.add_post("/api/analyze_file", handle_analyze_file)
+    app.router.add_get("/api/usage", handle_usage)
+    app.router.add_post("/api/usage/refresh", handle_usage_refresh)
     app.router.add_post("/api/schedule_wake", handle_schedule_wake)
-    app.router.add_get("/api/active_beads", handle_active_beads)
-    app.router.add_post("/api/cancel_bead", handle_cancel_bead)
     app.router.add_get("/health", handle_health)
     return app
 

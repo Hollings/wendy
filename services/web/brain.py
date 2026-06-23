@@ -27,7 +27,6 @@ import json
 import logging
 import os
 import sqlite3
-import time
 from pathlib import Path
 
 from fastapi import WebSocket
@@ -50,6 +49,9 @@ CLAUDE_DIR: Path = Path("/data/claude")
 
 ORCHESTRATOR_LOGS_DIR: Path = Path("/data/wendy/orchestrator_logs")
 """Directory containing agent_{task_id}_{ts}.log files from beads agents."""
+
+BEADS_JSONL: Path = Path("/data/wendy/channels/coding/.beads/issues.jsonl")
+"""Legacy beads task list (issues.jsonl) — kept for backwards compat."""
 
 BEADS_SNAPSHOT: Path = Path("/data/wendy/shared/beads_snapshot.json")
 """Beads snapshot written by wendy's TaskRunner every poll cycle."""
@@ -147,30 +149,6 @@ def get_recent_events(n: int = MAX_HISTORY) -> list[str]:
         return []
 
 
-def read_complete_lines(path: Path, pos: int) -> tuple[list[str], int]:
-    """Read newline-terminated lines from *path* starting at byte offset *pos*.
-
-    A trailing partial line (the writer hasn't flushed its newline yet) is
-    left in the file: the returned offset points just past the last newline,
-    so the next call picks the line up once it is complete. This prevents
-    broadcasting truncated JSON fragments when we poll mid-write.
-
-    Returns:
-        (lines, new_pos) where lines are stripped, non-empty strings.
-    """
-    with open(path, "rb") as f:
-        f.seek(pos)
-        chunk = f.read()
-    if not chunk:
-        return [], pos
-    last_nl = chunk.rfind(b"\n")
-    if last_nl == -1:
-        return [], pos
-    complete = chunk[: last_nl + 1]
-    lines = [ln.decode("utf-8", errors="replace").strip() for ln in complete.split(b"\n")]
-    return [ln for ln in lines if ln], pos + last_nl + 1
-
-
 # =============================================================================
 # WebSocket Broadcasting
 # =============================================================================
@@ -216,15 +194,10 @@ async def tail_stream() -> None:
             pos = STREAM_FILE.stat().st_size
             _LOG.info("Stream file found, starting from position %d", pos)
 
-            # force_polling=True: inotify events from writes in other
-            # containers (wendy bot) don't propagate to wendy-web on shared
-            # volumes, so fall back to stat-based polling.
-            async for changes in awatch(STREAM_FILE, force_polling=True):
-                deleted = False
+            async for changes in awatch(STREAM_FILE):
                 for change_type, _ in changes:
                     if change_type == Change.deleted:
                         _LOG.warning("Stream file deleted, waiting for recreation...")
-                        deleted = True
                         break
 
                     try:
@@ -241,19 +214,21 @@ async def tail_stream() -> None:
                         if current_size <= pos:
                             continue
 
-                        new_lines, pos = read_complete_lines(STREAM_FILE, pos)
+                        with open(STREAM_FILE) as f:
+                            f.seek(pos)
+                            new_lines = f.readlines()
+                            pos = f.tell()
+
                         for line in new_lines:
-                            update_stats_from_event(line)
-                            await broadcast(line)
+                            line = line.strip()
+                            if line:
+                                update_stats_from_event(line)
+                                await broadcast(line)
 
                     except FileNotFoundError:
                         _LOG.warning("Stream file disappeared during read")
-                        deleted = True
+                        pos = 0
                         break
-                if deleted:
-                    # Restart the outer loop so we re-wait for the file and
-                    # re-anchor pos instead of tailing a stale watch handle.
-                    break
 
         except Exception as e:
             _LOG.exception("Watcher error: %s", e)
@@ -265,12 +240,8 @@ async def tail_stream() -> None:
 # =============================================================================
 
 
-def add_client(ws: WebSocket) -> bool:
+async def add_client(ws: WebSocket) -> bool:
     """Add a WebSocket client connection.
-
-    The socket must already be accepted: broadcast() sends to every
-    registered client, and sending to an un-accepted socket raises, which
-    would get the client silently evicted before it ever saw a live event.
 
     Args:
         ws: WebSocket connection to add.
@@ -607,25 +578,15 @@ def get_channels_map() -> dict:
 # =============================================================================
 
 
-_last_good_beads: list[dict] = []
-"""Last successfully parsed beads list, reused if a snapshot read fails."""
-
-
 def _read_beads_list() -> list[dict]:
-    """Read beads from the snapshot file written by wendy's TaskRunner.
-
-    On a read/parse failure (e.g. we caught the file mid-write), returns the
-    last good list instead of an empty one so a transient race never wipes
-    the beads panel on every connected dashboard.
-    """
-    global _last_good_beads
+    """Read beads from the snapshot file written by wendy's TaskRunner."""
     if not BEADS_SNAPSHOT.exists():
         return []
     try:
         raw = json.loads(BEADS_SNAPSHOT.read_text())
     except Exception as e:
         _LOG.debug("Failed to read beads snapshot: %s", e)
-        return _last_good_beads
+        return []
 
     beads = [
         {
@@ -639,7 +600,6 @@ def _read_beads_list() -> list[dict]:
     ]
     order = {"in_progress": 0, "open": 1, "closed": 2, "tombstone": 3}
     beads.sort(key=lambda b: (order.get(b["status"], 4),))
-    _last_good_beads = beads
     return beads
 
 
@@ -675,7 +635,7 @@ async def tail_beads() -> None:
                 await asyncio.sleep(10)
                 continue
 
-            async for changes in awatch(*watch_dirs, force_polling=True):
+            async for changes in awatch(*watch_dirs):
                 for change_type, path_str in changes:
                     path = Path(path_str)
 
@@ -686,30 +646,28 @@ async def tail_beads() -> None:
                         continue
 
                     # Agent log file changed -> tail new lines
-                    if path.parent == ORCHESTRATOR_LOGS_DIR and path.suffix == ".log":
-                        if change_type == Change.deleted:
-                            log_positions.pop(path_str, None)
-                            continue
+                    if (
+                        path.parent == ORCHESTRATOR_LOGS_DIR
+                        and path.suffix == ".log"
+                        and change_type != Change.deleted
+                    ):
                         task_id = _extract_task_id(path.name)
                         if not task_id:
                             continue
                         try:
                             current_size = path.stat().st_size
-                            # A freshly created log starts from 0 so the
-                            # agent's first events aren't skipped; for files
-                            # already present when the watcher starts, anchor
-                            # at the end to avoid re-broadcasting history.
-                            default_pos = 0 if change_type == Change.added else current_size
-                            pos = log_positions.get(path_str, default_pos)
+                            pos = log_positions.get(path_str, current_size)
                             if current_size < pos:
                                 pos = 0  # file was truncated/replaced
                             if current_size <= pos:
                                 log_positions[path_str] = current_size
                                 continue
-                            new_lines, new_pos = read_complete_lines(path, pos)
-                            log_positions[path_str] = new_pos
-                            ts = int(time.time() * 1000)
-                            broadcast_count = 0
+                            with open(path) as f:
+                                f.seek(pos)
+                                new_lines = f.readlines()
+                                log_positions[path_str] = f.tell()
+                            import time as _time
+                            ts = int(_time.time() * 1000)
                             for line in new_lines:
                                 line = line.strip()
                                 if not line:
@@ -717,8 +675,6 @@ async def tail_beads() -> None:
                                 # Try to parse as stream-json event
                                 try:
                                     event_data = json.loads(line)
-                                    if not isinstance(event_data, dict):
-                                        continue
                                     # Wrap as a bead event envelope
                                     envelope = {
                                         "ts": event_data.get("ts", ts),
@@ -727,16 +683,10 @@ async def tail_beads() -> None:
                                         "event": event_data.get("event", event_data),
                                     }
                                     await broadcast(json.dumps(envelope))
-                                    broadcast_count += 1
                                 except json.JSONDecodeError:
                                     pass  # skip non-JSON log lines
-                            if broadcast_count:
-                                _LOG.info(
-                                    "bead %s: broadcast %d events to %d clients",
-                                    task_id, broadcast_count, len(connected_clients),
-                                )
-                        except (FileNotFoundError, OSError) as e:
-                            _LOG.warning("could not tail %s: %s", path, e)
+                        except (FileNotFoundError, OSError):
+                            pass
 
         except Exception as e:
             _LOG.exception("Beads watcher error: %s", e)

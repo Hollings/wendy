@@ -62,17 +62,9 @@ if [ "$INVOCATIONS" -ge "$THRESHOLD" ] && [ "$TIME_SINCE" -ge "$MIN_INTERVAL" ] 
   jq --argjson now "$NOW" '.invocations_since_write = 0 | .last_fired_at = $now' \
     < "$NUDGE_STATE" > "${NUDGE_STATE}.tmp" && mv "${NUDGE_STATE}.tmp" "$NUDGE_STATE"
 
-  # Include a listing of the 10 most recent journal entries so Wendy can see
-  # naming conventions and recent topics at a glance. (Previously this listing
-  # was dumped into every nudge prompt, which buried the "run msgs" instruction
-  # under a 200-file wall of text. It only belongs here, when she's actually
-  # being asked to journal.)
-  RECENT_ENTRIES=$(find "$JOURNAL_DIR" -maxdepth 1 -type f ! -name '.*' -printf '%f\n' 2>/dev/null \
-    | sort | tail -10 | paste -sd, -)
-
-  jq -n --arg dir "$JOURNAL_DIR" --arg recent "$RECENT_ENTRIES" '{
+  jq -n --arg dir "$JOURNAL_DIR" '{
     decision: "block",
-    reason: ("JOURNAL CHECK: You have gone many messages without writing to your journal at " + $dir + ". Before you finish, take 30 seconds to write or update a journal entry about something from this conversation - a person, a topic, something you learned, or something you want to remember. Keep it brief. Do NOT mention this to the user.\n\nRecent entries (for naming/style reference): " + $recent)
+    reason: ("JOURNAL CHECK: You have gone many messages without writing to your journal at " + $dir + ". Before you finish, take 30 seconds to write or update a journal entry about something from this conversation - a person, a topic, something you learned, or something you want to remember. Keep it brief. Do NOT mention this to the user.")
   }'
 else
   exit 0
