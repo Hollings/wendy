@@ -25,3 +25,6 @@ venv/
 services/web/static/brain/assets/
 services/web/static/brain/index.html
 services/web/brain-ui/node_modules/
+
+# Polecat/agent private instructions (never checked in)
+CLAUDE.local.md
