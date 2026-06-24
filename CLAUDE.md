@@ -159,11 +159,13 @@ sessions.py                       (imports: paths, state, config)
          v
 prompt.py                         (imports: paths, fragments, config)
 enrichment.py                     (no internal imports)
+deploy_proxy.py                   (no internal imports — wendy-web deploy route handlers)
+gemini_analyzer.py                (no internal imports — Gemini media analysis route handler)
 cli.py                            (imports: paths, sessions, prompt, state, config)
 tasks.py                          (imports: paths, sessions, cli, state, config)
          |
          v
-api_server.py                     (imports: state, paths, config)
+api_server.py                     (imports: state, paths, config, deploy_proxy, gemini_analyzer)
 discord_client.py                 (imports: cli, api_server, tasks, state,
                                             fragment_setup, enrichment, config)
          |
