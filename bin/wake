@@ -17,7 +17,9 @@ import os
 import re
 import sys
 import urllib.request
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+UTC = timezone.utc
 
 
 def parse_duration(s: str) -> int | None:

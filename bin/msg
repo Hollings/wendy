@@ -18,6 +18,18 @@ import sys
 import urllib.request
 
 
+def build_body(channel_id, content, file=None, reply=None, force=False):
+    """Assemble the /api/send_message request body, omitting unset fields."""
+    body = {"channel_id": channel_id, "content": content}
+    if file:
+        body["attachment"] = file
+    if reply:
+        body["reply_to"] = reply
+    if force:
+        body["force"] = True
+    return body
+
+
 def main():
     p = argparse.ArgumentParser(description="Send a Discord message")
     p.add_argument("content", nargs="*", help="Message content (reads stdin if omitted)")
@@ -45,13 +57,7 @@ def main():
 
     port = os.environ.get("WENDY_PROXY_PORT", "8945")
 
-    body = {"channel_id": channel_id, "content": content}
-    if args.file:
-        body["attachment"] = args.file
-    if args.reply:
-        body["reply_to"] = args.reply
-    if args.force:
-        body["force"] = True
+    body = build_body(channel_id, content, file=args.file, reply=args.reply, force=args.force)
 
     data = json.dumps(body).encode()
     req = urllib.request.Request(

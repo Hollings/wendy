@@ -109,6 +109,15 @@ EMOJI_MAP = {
 }
 
 
+def resolve_emoji(name: str) -> str:
+    """Map a friendly emoji name to unicode; pass unknown names through as-is.
+
+    Unknown names fall through unchanged so raw unicode (e.g. "🔥") and custom
+    server emoji (e.g. ":wendy:") still work.
+    """
+    return EMOJI_MAP.get(name, name)
+
+
 def main():
     if len(sys.argv) < 3:
         print("Usage: react MESSAGE_ID EMOJI_NAME", file=sys.stderr)
@@ -120,7 +129,7 @@ def main():
     emoji_name = sys.argv[2]
 
     # Resolve emoji: check the map, otherwise pass through as-is (for unicode or custom emoji)
-    emoji = EMOJI_MAP.get(emoji_name, emoji_name)
+    emoji = resolve_emoji(emoji_name)
 
     channel_id = os.environ.get("WENDY_CHANNEL_ID")
     if not channel_id:

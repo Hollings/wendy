@@ -24,9 +24,27 @@ SYNTHETIC_THRESHOLD = 9_000_000_000_000_000_000  # synthetic/context messages
 DISPLAY_TZ = ZoneInfo("America/Los_Angeles")
 
 
+def filter_messages(messages: list[dict], bot_id: str = "0") -> list[dict]:
+    """Drop synthetic/context messages, then strip leading messages from the bot.
+
+    Synthetic/context messages (IDs at or above SYNTHETIC_THRESHOLD, or authored
+    by "Context...") are never user-visible. Leading bot messages are dropped
+    because Wendy already knows what she just said; bot messages that follow a
+    human message are kept so she sees the context she was replying to.
+    """
+    real = [m for m in messages if m.get("message_id", 0) < SYNTHETIC_THRESHOLD
+            and not m.get("author", "").startswith("Context")]
+    while real and str(real[0].get("author_id", "")) == bot_id:
+        real.pop(0)
+    return real
+
+
 def format_message(m: dict) -> str:
     msg_id = m.get("message_id", "")
-    ts = int(m.get("timestamp", 0))
+    try:
+        ts = int(m.get("timestamp", 0))
+    except (TypeError, ValueError):
+        ts = 0
     time_str = datetime.fromtimestamp(ts, tz=DISPLAY_TZ).strftime("%H:%M %Z") if ts else "??:??"
     author = m.get("author", "?")
     content = m.get("content", "").strip()
@@ -86,16 +104,9 @@ def main():
 
     messages = data.get("messages", [])
 
-    # Filter out synthetic/context messages
-    real = [m for m in messages if m.get("message_id", 0) < SYNTHETIC_THRESHOLD
-            and not m.get("author", "").startswith("Context")]
-
-    # Strip leading messages from Wendy -- she already knows what she said.
-    # Keep her messages that appear after a human message (the human msg was unread).
     # Use author_id to match only Wendy, not other bots on the server.
     bot_id = os.environ.get("WENDY_BOT_USER_ID", "0")
-    while real and str(real[0].get("author_id", "")) == bot_id:
-        real.pop(0)
+    real = filter_messages(messages, bot_id)
 
     if not real:
         print("(no new messages)")
