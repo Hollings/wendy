@@ -19,7 +19,13 @@ from aiohttp import web
 _LOG = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
+# Model is config-driven so it's a one-line bump and can't silently go
+# deprecated again. gemini-3.1-pro-preview is the strongest current multimodal
+# model (verified via the API model list, 2026-06) and handles image / audio /
+# video / document input. Override with WENDY_GEMINI_MODEL (e.g. gemini-pro-latest
+# to auto-track the newest pro).
+GEMINI_MODEL = os.getenv("WENDY_GEMINI_MODEL", "gemini-3.1-pro-preview")
+GEMINI_MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB (inline_data limit; see Files-API TODO)
 GEMINI_MAX_VIDEO_DURATION = 5 * 60       # 5 minutes
 GEMINI_MAX_AUDIO_DURATION = 30 * 60      # 30 minutes
 
@@ -34,7 +40,17 @@ SUPPORTED_VIDEO_TYPES = {
     "video/mp4", "video/mpeg", "video/quicktime", "video/avi",
     "video/x-flv", "video/webm", "video/x-ms-wmv", "video/3gpp",
 }
-SUPPORTED_MEDIA_TYPES = SUPPORTED_IMAGE_TYPES | SUPPORTED_AUDIO_TYPES | SUPPORTED_VIDEO_TYPES
+# Documents + plain-text/code formats Gemini can read directly (PDF especially).
+SUPPORTED_DOCUMENT_TYPES = {
+    "application/pdf",
+    "text/plain", "text/html", "text/css", "text/markdown", "text/md",
+    "text/csv", "text/xml", "application/xml", "text/x-python",
+    "application/x-javascript", "text/javascript", "application/rtf", "text/rtf",
+}
+SUPPORTED_MEDIA_TYPES = (
+    SUPPORTED_IMAGE_TYPES | SUPPORTED_AUDIO_TYPES
+    | SUPPORTED_VIDEO_TYPES | SUPPORTED_DOCUMENT_TYPES
+)
 
 EXTENSION_TO_MIME: dict[str, str] = {
     ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -44,6 +60,10 @@ EXTENSION_TO_MIME: dict[str, str] = {
     ".mp4": "video/mp4", ".mpeg": "video/mpeg", ".mpg": "video/mpeg",
     ".mov": "video/quicktime", ".avi": "video/avi", ".flv": "video/x-flv",
     ".webm": "video/webm", ".wmv": "video/x-ms-wmv", ".3gp": "video/3gpp",
+    ".pdf": "application/pdf", ".txt": "text/plain", ".html": "text/html",
+    ".htm": "text/html", ".css": "text/css", ".md": "text/markdown",
+    ".markdown": "text/markdown", ".csv": "text/csv", ".xml": "text/xml",
+    ".py": "text/x-python", ".js": "text/javascript", ".rtf": "application/rtf",
 }
 
 
@@ -89,8 +109,13 @@ def _get_media_duration(content: bytes, media_type: str) -> float | None:
 
 
 def _get_gemini_model(media_type: str) -> str:
-    """Select the Gemini model appropriate for the media type."""
-    return "gemini-2.5-pro" if media_type in SUPPORTED_VIDEO_TYPES else "gemini-3-pro-preview"
+    """Return the configured Gemini model.
+
+    gemini-3.1-pro-preview is multimodal across image / audio / video / document
+    input, so a single model now serves every media type (no per-type split).
+    The argument is kept for signature stability and future per-type overrides.
+    """
+    return GEMINI_MODEL
 
 
 def _get_video_resolution(duration: float | None) -> str:

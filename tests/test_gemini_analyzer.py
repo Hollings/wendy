@@ -21,9 +21,19 @@ def test_infer_media_type_empty_when_unknown():
     assert ga._infer_media_type("file.xyz", None) == ""
 
 
-def test_get_gemini_model_picks_pro_for_video():
-    assert ga._get_gemini_model("video/mp4") == "gemini-2.5-pro"
-    assert ga._get_gemini_model("image/png") == "gemini-3-pro-preview"
+def test_get_gemini_model_uses_configured_model_for_all_media():
+    # One multimodal model now serves every media type.
+    assert ga._get_gemini_model("video/mp4") == ga.GEMINI_MODEL
+    assert ga._get_gemini_model("image/png") == ga.GEMINI_MODEL
+    assert ga._get_gemini_model("application/pdf") == ga.GEMINI_MODEL
+    assert ga.GEMINI_MODEL == "gemini-3.1-pro-preview"
+
+
+def test_document_types_supported():
+    # "Accept all media Gemini supports" includes documents / text / code.
+    assert "application/pdf" in ga.SUPPORTED_MEDIA_TYPES
+    assert ga._infer_media_type("notes.pdf", "application/octet-stream") == "application/pdf"
+    assert ga._infer_media_type("readme.md", None) == "text/markdown"
 
 
 def test_video_resolution_thresholds():
