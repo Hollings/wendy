@@ -78,7 +78,10 @@ remote "
 # (with a trailing + if the tree is dirty) into a file the bot reads for its
 # Discord presence.
 SHA="$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || true)"
-if [[ -n "$SHA" && -n "$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null)" ]]; then
+# Dirty = uncommitted CODE changes. Ignore .beads/ (runtime issue-tracker state,
+# not deployed code) so it doesn't spuriously mark every deploy as hand-edited.
+DIRTY="$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null | grep -v '\.beads/' || true)"
+if [[ -n "$SHA" && -n "$DIRTY" ]]; then
     SHA="${SHA}+"
 fi
 echo "${SHA:-unknown}" > "$SCRIPT_DIR/wendy/_version.txt"
