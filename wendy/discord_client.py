@@ -57,6 +57,10 @@ _PRESENCE_INTERVAL = 900
 # live. A deploy recreates the container, so on_ready fires fresh each time.
 _START_TIME = time.time()
 _SRC_DIR = str(Path(__file__).resolve().parent.parent)
+# deploy.sh tars the tree WITHOUT .git, so the container can't run git — it stamps
+# the SHA into this file at deploy time. We read it first, then fall back to live
+# git (local dev runs from the repo).
+_VERSION_FILE = Path(__file__).resolve().parent / "_version.txt"
 
 
 def _git_short_sha(cwd: str) -> str | None:
@@ -83,11 +87,21 @@ def _git_short_sha(cwd: str) -> str | None:
     return sha
 
 
+def _running_sha() -> str:
+    """The running commit SHA: the deploy-stamped file if present, else live git."""
+    try:
+        stamped = _VERSION_FILE.read_text().strip()
+        if stamped:
+            return stamped
+    except OSError:
+        pass
+    return _git_short_sha(_SRC_DIR) or "unknown"
+
+
 def _version_presence_text() -> str:
     """Presence string ``v<sha> · up <start time>`` (sha ``unknown`` if no git)."""
-    sha = _git_short_sha(_SRC_DIR) or "unknown"
     start = time.strftime("%b %d %H:%M", time.localtime(_START_TIME))
-    return f"v{sha} · up {start}"
+    return f"v{_running_sha()} · up {start}"
 
 
 def _folder_for_config(config: dict) -> str:

@@ -28,3 +28,4 @@ services/web/brain-ui/node_modules/
 
 # Polecat/agent private instructions (never checked in)
 CLAUDE.local.md
+wendy/_version.txt

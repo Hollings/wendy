@@ -73,6 +73,17 @@ remote "
     sudo find $BACKUP_DIR -name 'wendy-*.db' -mtime +7 -delete 2>/dev/null || true
 "
 
+# --- Stamp running version ---
+# The tarball excludes .git, so the container can't run git. Write the short SHA
+# (with a trailing + if the tree is dirty) into a file the bot reads for its
+# Discord presence.
+SHA="$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || true)"
+if [[ -n "$SHA" && -n "$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null)" ]]; then
+    SHA="${SHA}+"
+fi
+echo "${SHA:-unknown}" > "$SCRIPT_DIR/wendy/_version.txt"
+echo "    Version: ${SHA:-unknown}"
+
 # --- Package ---
 echo "==> Packaging..."
 TMP_TAR="/tmp/wendy-v2-deploy-$$.tar.gz"
