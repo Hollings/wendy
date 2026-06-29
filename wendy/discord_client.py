@@ -52,6 +52,43 @@ _cached_usage: dict = {}
 # Minimum seconds between presence updates (15 minutes).
 _PRESENCE_INTERVAL = 900
 
+# Running-version presence (mirrors gt-bridge): process start time + the source
+# dir whose git SHA we surface, so the Discord presence shows which commit is
+# live. A deploy recreates the container, so on_ready fires fresh each time.
+_START_TIME = time.time()
+_SRC_DIR = str(Path(__file__).resolve().parent.parent)
+
+
+def _git_short_sha(cwd: str) -> str | None:
+    """Short git SHA of the repo at *cwd*, or None if it can't be resolved.
+
+    A trailing ``+`` marks a dirty working tree (uncommitted edits), so the
+    presence distinguishes a clean deployed commit from a hand-edited one.
+    """
+    try:
+        r = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                           cwd=cwd, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    sha = (r.stdout or "").strip()
+    if r.returncode != 0 or not sha:
+        return None
+    try:
+        d = subprocess.run(["git", "status", "--porcelain"],
+                           cwd=cwd, capture_output=True, text=True, timeout=10)
+        if d.returncode == 0 and (d.stdout or "").strip():
+            sha += "+"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return sha
+
+
+def _version_presence_text() -> str:
+    """Presence string ``v<sha> · up <start time>`` (sha ``unknown`` if no git)."""
+    sha = _git_short_sha(_SRC_DIR) or "unknown"
+    start = time.strftime("%b %d %H:%M", time.localtime(_START_TIME))
+    return f"v{sha} · up {start}"
+
 
 def _folder_for_config(config: dict) -> str:
     """Return the workspace folder name for a channel or thread config."""
@@ -293,6 +330,10 @@ class WendyBot(commands.Bot):
         _LOG.info("Logged in as %s (id=%d)", self.user.name, self.user.id)
         from . import config as _config
         _config.WENDY_BOT_ID = self.user.id
+
+        # Surface the running version in the presence right away (gt-bridge style),
+        # so a fresh deploy is visible even before any message triggers a refresh.
+        await self._maybe_update_presence(force=True)
 
         from .cli import setup_channel_folder
         for cfg in self.channel_configs.values():
@@ -609,20 +650,24 @@ class WendyBot(commands.Bot):
         )
         new_job.task = new_task
 
-    async def _maybe_update_presence(self) -> None:
-        """Refresh the bot's Discord status with usage percentages (at most every 15 min)."""
-        if time.monotonic() - self._presence_updated_at < _PRESENCE_INTERVAL:
+    async def _maybe_update_presence(self, force: bool = False) -> None:
+        """Set the bot's Discord presence to the running version (mirrors gt-bridge).
+
+        Presence shows ``v<sha> · up <start>`` so the live commit is visible at a
+        glance. Usage stats are still refreshed here (side effect) because
+        ``_get_current_effort`` reads ``_cached_usage`` to throttle Opus effort.
+        Throttled to once per ``_PRESENCE_INTERVAL`` unless *force* (e.g. on_ready).
+        """
+        if not force and time.monotonic() - self._presence_updated_at < _PRESENCE_INTERVAL:
             return
         try:
-            week_pct_str, pace_str, resets_str = await self._fetch_usage_stats()
-            status = f"{week_pct_str} wk | {pace_str}"
-            if resets_str:
-                status += f" | {resets_str}"
+            # Keep _cached_usage fresh for the Opus effort/budget guard.
+            try:
+                await self._fetch_usage_stats()
+            except Exception as e:
+                _LOG.warning("usage refresh failed: %s", e)
             await self.change_presence(
-                activity=discord.Activity(
-                    type=discord.ActivityType.watching,
-                    name=status,
-                )
+                activity=discord.CustomActivity(name=_version_presence_text())
             )
             self._presence_updated_at = time.monotonic()
         except Exception as e:
