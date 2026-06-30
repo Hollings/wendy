@@ -46,6 +46,10 @@ CLAUDE_CLI_IDLE_TIMEOUT: int = int(os.getenv("CLAUDE_CLI_IDLE_TIMEOUT", "600"))
 CLAUDE_CLI_MAX_RUNTIME: int = int(os.getenv("CLAUDE_CLI_MAX_RUNTIME", "3600"))
 JOURNAL_NUDGE_INTERVAL: int = int(os.getenv("JOURNAL_NUDGE_INTERVAL", "10"))
 USAGE_BUDGET_FACTOR: float = float(os.getenv("USAGE_BUDGET_FACTOR", "0.8"))
+# Global kill switch for the daily "free time"/enrichment feature. Disabled by
+# default — both the daily scheduled trigger and the manual !lunchtime command are
+# gated on this. Set ENRICHMENT_ENABLED=1 to turn the feature back on.
+ENRICHMENT_ENABLED: bool = os.getenv("ENRICHMENT_ENABLED", "0") not in ("0", "", "false", "False")
 ENRICHMENT_HOUR_UTC: int = int(os.getenv("ENRICHMENT_HOUR_UTC", "21"))   # 1pm PST default
 ENRICHMENT_MINUTE_UTC: int = int(os.getenv("ENRICHMENT_MINUTE_UTC", "0"))
 ENRICHMENT_DURATION: int = int(os.getenv("ENRICHMENT_DURATION", "900"))  # 15 min

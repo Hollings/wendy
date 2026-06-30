@@ -23,6 +23,7 @@ from . import api_server, sessions
 from .cli import ClaudeCliError, run_cli, setup_wendy_scripts
 from .config import (
     ENRICHMENT_DURATION,
+    ENRICHMENT_ENABLED,
     ENRICHMENT_HOUR_UTC,
     ENRICHMENT_MINUTE_UTC,
     MESSAGE_LOGGER_GUILDS,
@@ -255,6 +256,9 @@ class WendyBot(commands.Bot):
         @self.command(name="lunchtime")
         async def cmd_lunchtime(ctx: commands.Context) -> None:
             """!lunchtime -- start Wendy's personal free-time session."""
+            if not ENRICHMENT_ENABLED:
+                await ctx.send("free-time/enrichment is disabled")
+                return
             channel_config = self.channel_configs.get(ctx.channel.id)
             if channel_config is None:
                 await ctx.send("not a configured channel")
@@ -1036,6 +1040,8 @@ class WendyBot(commands.Bot):
     @tasks.loop(minutes=1)
     async def check_enrichment_schedule(self) -> None:
         """Trigger enrichment for eligible channels when the scheduled time arrives."""
+        if not ENRICHMENT_ENABLED:
+            return
         now = datetime.datetime.now(datetime.UTC)
         if now.hour != ENRICHMENT_HOUR_UTC or now.minute != ENRICHMENT_MINUTE_UTC:
             return
