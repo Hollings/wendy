@@ -31,7 +31,7 @@ if os.name == "posix" and os.getuid() == 0:
 
 MODEL_MAP: dict[str, str] = {
     "opus": "claude-opus-4-6",
-    "sonnet": "claude-sonnet-4-6",
+    "sonnet": "claude-sonnet-5",
     "haiku": "claude-haiku-4-5-20251001",
 }
 
