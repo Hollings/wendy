@@ -392,7 +392,7 @@ docker exec wendy ls -lt /root/.claude/projects/-data-wendy-channels-coding/ | h
 | `JOURNAL_NUDGE_INTERVAL` | Invocations between journal nudges | `10` |
 | `WENDY_WEB_URL` | URL of wendy-web service | `https://wendy.monster` |
 | `WENDY_BOT_NAME` | Bot display name (used in prompts) | `Wendy` |
-| `WENDY_BOT_USER_ID` | Bot's Discord user ID (for filtering own messages) | `0` |
+| `WENDY_BOT_USER_ID` | Bot's Discord user ID (for filtering own messages) | auto-set from Discord login |
 | `WENDY_DEPLOY_TOKEN` | Token for site deploys | — |
 | `WENDY_GAMES_TOKEN` | Token for game deploys | falls back to `WENDY_DEPLOY_TOKEN` |
 | `GEMINI_API_KEY` | Gemini API for file analysis | — |

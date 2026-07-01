@@ -492,6 +492,9 @@ class StateManager:
         """
         msg: dict = {
             "message_id": row["message_id"],
+            # String, not int: Discord snowflakes exceed JS's safe-integer range,
+            # and bin/msgs compares author_id against an env var string.
+            "author_id": str(row["author_id"]),
             "author": row["author_nickname"],
             "is_bot": bool(row["is_bot"]),
             "content": row["content"],

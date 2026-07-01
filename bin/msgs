@@ -15,7 +15,6 @@ import urllib.request
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-
 SYNTHETIC_THRESHOLD = 9_000_000_000_000_000_000  # synthetic/context messages
 
 # Display timestamps in Pacific time so Wendy matches her users' local clock
@@ -25,15 +24,16 @@ DISPLAY_TZ = ZoneInfo("America/Los_Angeles")
 
 
 def filter_messages(messages: list[dict], bot_id: str = "0") -> list[dict]:
-    """Drop synthetic/context messages, then strip leading messages from the bot.
+    """Drop context-replay messages, then strip leading messages from the bot.
 
-    Synthetic/context messages (IDs at or above SYNTHETIC_THRESHOLD, or authored
-    by "Context...") are never user-visible. Leading bot messages are dropped
-    because Wendy already knows what she just said; bot messages that follow a
-    human message are kept so she sees the context she was replying to.
+    Synthetic system messages (task completions, self-wakes, webhooks -- IDs at
+    or above SYNTHETIC_THRESHOLD) are KEPT: they are often the entire reason
+    Wendy was woken. Only "Context..." replay messages are hidden. Leading bot
+    messages are dropped because Wendy already knows what she just said; bot
+    messages that follow a human message are kept so she sees the context she
+    was replying to.
     """
-    real = [m for m in messages if m.get("message_id", 0) < SYNTHETIC_THRESHOLD
-            and not m.get("author", "").startswith("Context")]
+    real = [m for m in messages if not m.get("author", "").startswith("Context")]
     while real and str(real[0].get("author_id", "")) == bot_id:
         real.pop(0)
     return real
@@ -41,6 +41,7 @@ def filter_messages(messages: list[dict], bot_id: str = "0") -> list[dict]:
 
 def format_message(m: dict) -> str:
     msg_id = m.get("message_id", "")
+    is_synthetic = isinstance(msg_id, int) and msg_id >= SYNTHETIC_THRESHOLD
     try:
         ts = int(m.get("timestamp", 0))
     except (TypeError, ValueError):
@@ -49,6 +50,10 @@ def format_message(m: dict) -> str:
     author = m.get("author", "?")
     content = m.get("content", "").strip()
     attachments = m.get("attachments", [])
+
+    # Synthetic system messages have meaningless 9e18-range IDs; label instead.
+    if is_synthetic:
+        return f"[{time_str}] {author} (system): {content}"
 
     reply = m.get("reply_to")
     if reply:
@@ -109,7 +114,7 @@ def main():
     real = filter_messages(messages, bot_id)
 
     if not real:
-        print("(no new messages)")
+        print("(no new messages - nothing to respond to, your turn is complete)")
         return
 
     for m in real:

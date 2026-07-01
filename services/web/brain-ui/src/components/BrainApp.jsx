@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useWebSocket } from '../hooks/useWebSocket'
-import { parseStreamEvent, getEventSnippet, CONTEXT_WINDOW } from '../eventUtils'
+import { parseStreamEvent, getEventSnippet, contextWindowFor } from '../eventUtils'
 import { authHeaders, clearToken, clearPassphrase } from '../auth'
 import Feed from './Feed'
 import Sidebar from './Sidebar'
@@ -74,10 +74,10 @@ export default function BrainApp() {
     setChannelsMap(channels)
   }, [])
 
-  const onContextUpdate = useCallback(({ usage, channel_id }) => {
+  const onContextUpdate = useCallback(({ usage, model, channel_id }) => {
     if (!channel_id) return
     const tokens = (usage.cache_read_input_tokens ?? 0) + (usage.input_tokens ?? 0)
-    const pct = Math.min(100, Math.round((tokens / CONTEXT_WINDOW) * 100 * 10) / 10)
+    const pct = Math.min(100, Math.round((tokens / contextWindowFor(model)) * 100 * 10) / 10)
     setChannelContextPct(prev => ({ ...prev, [channel_id]: pct }))
   }, [])
 

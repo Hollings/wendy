@@ -1,7 +1,22 @@
 // Stream event parsing utilities.
 // Each raw WS message -> a parsed event object for the feed.
 
-export const CONTEXT_WINDOW = 200_000
+const DEFAULT_CONTEXT_WINDOW = 200_000
+
+// Per-model context window sizes, matched by model-ID prefix.
+const CONTEXT_WINDOWS = {
+  'claude-sonnet-5': 1_000_000,
+}
+
+/** Context window for a model ID, defaulting to 200k. */
+export function contextWindowFor(model) {
+  if (model) {
+    for (const [prefix, window] of Object.entries(CONTEXT_WINDOWS)) {
+      if (model.startsWith(prefix)) return window
+    }
+  }
+  return DEFAULT_CONTEXT_WINDOW
+}
 
 export const TOOL_CONFIG = {
   Read:       { icon: '📄', color: '#a78bfa', label: 'Read' },

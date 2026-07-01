@@ -253,7 +253,10 @@ def build_nudge_prompt(
     else:
         base = (
             "<new messages - you MUST run `msgs` "
-            "before any other action. Do not assume what the messages contain.>"
+            "before any other action. Do not assume what the messages contain. "
+            "If `msgs` reports no new messages, do NOT run it again to poll or wait "
+            "for a reply -- end your turn silently. You are woken automatically "
+            "the moment a new message arrives.>"
         )
     compacted_note = (
         "<your session was auto-compacted since your last turn. "

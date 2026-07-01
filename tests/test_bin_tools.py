@@ -136,14 +136,16 @@ def test_build_body_full():
 # bin/msgs -- filtering and formatting
 # --------------------------------------------------------------------------- #
 
-def test_filter_messages_drops_synthetic():
+def test_filter_messages_keeps_synthetic():
+    # Synthetic system messages (task completions, self-wakes) are kept --
+    # they are often the entire reason Wendy was woken.
     messages = [
         {"message_id": 1, "author": "alice", "author_id": "10"},
-        {"message_id": msgs.SYNTHETIC_THRESHOLD, "author": "system", "author_id": "10"},
-        {"message_id": msgs.SYNTHETIC_THRESHOLD + 5, "author": "system", "author_id": "10"},
+        {"message_id": msgs.SYNTHETIC_THRESHOLD, "author": "Task System", "author_id": "0"},
+        {"message_id": msgs.SYNTHETIC_THRESHOLD + 5, "author": "Self-Wake", "author_id": "0"},
     ]
-    out = msgs.filter_messages(messages, bot_id="0")
-    assert [m["message_id"] for m in out] == [1]
+    out = msgs.filter_messages(messages, bot_id="42")
+    assert [m["message_id"] for m in out] == [1, msgs.SYNTHETIC_THRESHOLD, msgs.SYNTHETIC_THRESHOLD + 5]
 
 
 def test_filter_messages_drops_context_author():
@@ -169,6 +171,18 @@ def test_filter_messages_keeps_bot_after_human():
     ]
     out = msgs.filter_messages(messages, bot_id="42")
     assert [m["message_id"] for m in out] == [1, 2]
+
+
+def test_format_message_synthetic():
+    line = msgs.format_message({
+        "message_id": msgs.SYNTHETIC_THRESHOLD + 1,
+        "author": "Task System",
+        "content": "task done",
+        "timestamp": 0,
+    })
+    assert "(system)" in line
+    assert "task done" in line
+    assert str(msgs.SYNTHETIC_THRESHOLD + 1) not in line
 
 
 def test_format_message_basic():

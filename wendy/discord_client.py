@@ -11,6 +11,7 @@ import datetime
 import io
 import json
 import logging
+import os
 import shutil
 import subprocess
 import time
@@ -348,6 +349,10 @@ class WendyBot(commands.Bot):
         _LOG.info("Logged in as %s (id=%d)", self.user.name, self.user.id)
         from . import config as _config
         _config.WENDY_BOT_ID = self.user.id
+        # Publish to the process env so CLI subprocesses (and their hooks --
+        # unread_messages_stop_check.sh, bin/msgs) can filter out Wendy's own
+        # messages. Discord is the source of truth; no manual config needed.
+        os.environ["WENDY_BOT_USER_ID"] = str(self.user.id)
 
         # Surface the running version in the presence right away (gt-bridge style),
         # so a fresh deploy is visible even before any message triggers a refresh.

@@ -8,7 +8,7 @@ import { getToken, tryReauth } from '../auth'
  *   onEvent(rawMsg)         - raw WS message (stream event or bead event)
  *   onBeadsList(beads[])    - beads_list envelope
  *   onChannelsMap(channels) - channels_map envelope
- *   onContextUpdate(usage)  - assistant usage object
+ *   onContextUpdate({usage, model, channel_id}) - assistant usage for context tracking
  *   onStatus(string)        - 'connecting' | 'connected' | 'disconnected' | 'full' | 'auth_error'
  */
 export function useWebSocket({ onEvent, onBeadsList, onChannelsMap, onContextUpdate, onStatus }) {
@@ -50,7 +50,7 @@ export function useWebSocket({ onEvent, onBeadsList, onChannelsMap, onContextUpd
 
         // Side-channel: extract usage for context tracking
         const usage = msg.event?.message?.usage
-        if (usage) onContextUpdate({ usage, channel_id: msg.channel_id ?? null })
+        if (usage) onContextUpdate({ usage, model: msg.event?.message?.model ?? null, channel_id: msg.channel_id ?? null })
       } catch {
         // ignore parse errors
       }
