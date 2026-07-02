@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { getToken, tryReauth, authHeaders } from './auth'
-import { parseFrame, frameKey, frameUsage, eventSnippet } from './events'
+import { parseFrame, frameKey, frameUsage, frameModel, eventSnippet } from './events'
 
 const MAX_EVENTS = 300
 const MAX_SEEN = 4000
@@ -79,13 +79,15 @@ export function useBrainStore({ onAuthError }) {
     if (raw.channel_id) {
       const id = raw.channel_id
       const tokens = frameUsage(raw)
+      const model = frameModel(raw)
       const lastTs = parsed[0]?.ts ?? Date.now()
       setChannelStats(prev => {
-        const cur = prev[id] ?? { tokens: 0, lastTs: 0, count: 0 }
+        const cur = prev[id] ?? { tokens: 0, lastTs: 0, count: 0, model: null }
         return {
           ...prev,
           [id]: {
             tokens: tokens ?? cur.tokens,
+            model: model ?? cur.model,
             lastTs: Math.max(cur.lastTs, lastTs),
             count: cur.count + parsed.length,
           },

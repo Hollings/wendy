@@ -1,4 +1,4 @@
-import { CONTEXT_WINDOW, channelColor, channelHue, formatTokens, agoShort } from '../events'
+import { contextWindowFor, channelColor, channelHue, formatTokens, agoShort } from '../events'
 
 /**
  * One row per channel session: name, last activity, context-window fill.
@@ -22,7 +22,7 @@ export default function SessionsPanel({ channelsMap, channelStats, hiddenChannel
       <div className="panel-body">
         {rows.length === 0 && <div className="panel-empty">no activity yet</div>}
         {rows.map(s => {
-          const pct = Math.min(100, (s.tokens / CONTEXT_WINDOW) * 100)
+          const pct = Math.min(100, (s.tokens / contextWindowFor(s.model)) * 100)
           const muted = hiddenChannels.has(s.id)
           const hue = channelHue(s.id)
           const warn = pct > 85 ? 'high' : pct > 65 ? 'mid' : ''

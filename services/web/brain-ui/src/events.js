@@ -8,7 +8,23 @@
 // Adding support for a new tool or event kind means adding an entry to a
 // table here -- no component changes.
 
-export const CONTEXT_WINDOW = 200_000
+const DEFAULT_CONTEXT_WINDOW = 200_000
+
+// Per-model context window sizes, matched by model-ID prefix. Sonnet 5 runs a
+// 1M window; everything else falls back to 200k.
+const CONTEXT_WINDOWS = {
+  'claude-sonnet-5': 1_000_000,
+}
+
+/** Context window (tokens) for a model ID, defaulting to 200k. */
+export function contextWindowFor(model) {
+  if (model) {
+    for (const [prefix, window] of Object.entries(CONTEXT_WINDOWS)) {
+      if (model.startsWith(prefix)) return window
+    }
+  }
+  return DEFAULT_CONTEXT_WINDOW
+}
 
 // system-event subtypes the CLI emits mid-turn (incremental token counters)
 // that carry no feed value. Dropped before they become rows.
@@ -145,6 +161,12 @@ export function frameUsage(raw) {
   const usage = raw.event.message?.usage
   if (!usage) return null
   return (usage.cache_read_input_tokens ?? 0) + (usage.input_tokens ?? 0)
+}
+
+/** Model ID from an assistant frame, or null. Used to size the context window. */
+export function frameModel(raw) {
+  if (raw.event?.type !== 'assistant') return null
+  return raw.event.message?.model ?? null
 }
 
 /** Short text snippet for bead cards. */

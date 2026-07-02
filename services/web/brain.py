@@ -60,8 +60,22 @@ MAX_HISTORY: int = 50
 MAX_CLIENTS: int = 100
 """Maximum concurrent WebSocket connections allowed."""
 
-CONTEXT_WINDOW: int = 200000
-"""Claude's context window size in tokens (for percentage calculation)."""
+DEFAULT_CONTEXT_WINDOW: int = 200000
+"""Fallback context window size in tokens (for percentage calculation)."""
+
+CONTEXT_WINDOWS: dict[str, int] = {
+    "claude-sonnet-5": 1_000_000,
+}
+"""Per-model context window sizes, matched by model-ID prefix."""
+
+
+def context_window_for(model: str | None) -> int:
+    """Return the context window for a model ID, defaulting to 200k."""
+    if model:
+        for prefix, window in CONTEXT_WINDOWS.items():
+            if model.startswith(prefix):
+                return window
+    return DEFAULT_CONTEXT_WINDOW
 
 # =============================================================================
 # Module State
@@ -384,14 +398,16 @@ def update_stats_from_event(event_json: str) -> None:
 
         # Track context usage from assistant messages
         if event.get("type") == "assistant":
-            usage = event.get("message", {}).get("usage", {})
+            message = event.get("message", {})
+            usage = message.get("usage", {})
             if usage:
                 # Calculate context load from cache read tokens
                 cache_read = usage.get("cache_read_input_tokens", 0)
                 input_tokens = usage.get("input_tokens", 0)
+                window = context_window_for(message.get("model"))
                 _latest_stats["context_tokens"] = cache_read + input_tokens
                 _latest_stats["context_pct"] = round(
-                    (_latest_stats["context_tokens"] / CONTEXT_WINDOW) * 100, 1
+                    (_latest_stats["context_tokens"] / window) * 100, 1
                 )
 
         # Track costs from result events
