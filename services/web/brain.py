@@ -679,6 +679,18 @@ async def tail_beads() -> None:
     _LOG.info("Starting beads watcher...")
     log_positions: dict[str, int] = {}
 
+    # Anchor logs that already exist at watcher start to their current end so
+    # history isn't re-broadcast. Anything not seeded here is a new file --
+    # its first change starts from position 0 regardless of change_type
+    # (force_polling on Docker volumes often reports new files as `modified`,
+    # not `added`, so change_type alone can't identify new files).
+    if ORCHESTRATOR_LOGS_DIR.exists():
+        for existing in ORCHESTRATOR_LOGS_DIR.glob("*.log"):
+            try:
+                log_positions[str(existing)] = existing.stat().st_size
+            except OSError:
+                pass
+
     while True:
         try:
             watch_dirs = []
@@ -711,12 +723,10 @@ async def tail_beads() -> None:
                             continue
                         try:
                             current_size = path.stat().st_size
-                            # A freshly created log starts from 0 so the
-                            # agent's first events aren't skipped; for files
-                            # already present when the watcher starts, anchor
-                            # at the end to avoid re-broadcasting history.
-                            default_pos = 0 if change_type == Change.added else current_size
-                            pos = log_positions.get(path_str, default_pos)
+                            # A file we haven't seen before is new: start from
+                            # 0 so the agent's first events aren't skipped.
+                            # Files present at watcher start were seeded above.
+                            pos = log_positions.get(path_str, 0)
                             if current_size < pos:
                                 pos = 0  # file was truncated/replaced
                             if current_size <= pos:

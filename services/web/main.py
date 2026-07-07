@@ -63,15 +63,26 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
-import auth
-import brain
-import httpx
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-from starlette.websockets import WebSocketDisconnect
+import auth  # noqa: E402
+import brain  # noqa: E402
+import httpx  # noqa: E402
+from fastapi import (  # noqa: E402
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    WebSocket,
+)
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
+from starlette.websockets import WebSocketDisconnect  # noqa: E402
 
 app = FastAPI(title="Wendy Web", version="1.0.0")
 
@@ -150,7 +161,7 @@ def _verify_token(authorization: str | None, token: str) -> None:
     if not authorization:
         raise HTTPException(status_code=401, detail="Authorization required")
     t = authorization.removeprefix("Bearer ")
-    if t != token:
+    if not hmac.compare_digest(t, token):
         raise HTTPException(status_code=403, detail="Invalid token")
 
 
@@ -158,9 +169,21 @@ def _valid_name(name: str) -> bool:
     return bool(name) and bool(SITE_NAME_RE.match(name))
 
 
+def _check_content_length(request: Request, limit: int, detail: str) -> None:
+    """Reject oversized uploads early, before buffering the whole body.
+
+    The post-read size check remains as the backstop for requests that omit
+    or lie about Content-Length.
+    """
+    content_length = request.headers.get("content-length")
+    if content_length and content_length.isdigit() and int(content_length) > limit:
+        raise HTTPException(status_code=413, detail=detail)
+
+
 def _safe_extract(tar_path: Path, dest_dir: Path) -> None:
     resolved_dest = dest_dir.resolve()
     with tarfile.open(tar_path, "r:gz") as tar:
+        members = []
         for member in tar.getmembers():
             if Path(member.name).is_absolute():
                 raise HTTPException(status_code=400, detail="Tarball contains absolute paths")
@@ -169,9 +192,11 @@ def _safe_extract(tar_path: Path, dest_dir: Path) -> None:
             # accepts a resolved path of "/data/sites/fooBAR/evil".
             if not (resolved_dest / member.name).resolve().is_relative_to(resolved_dest):
                 raise HTTPException(status_code=400, detail="Tarball contains path traversal")
-            if member.name.startswith(".") and member.name != ".":
+            # Skip hidden files/dirs (any path component starting with ".")
+            if any(part.startswith(".") for part in Path(member.name).parts):
                 continue
-        tar.extractall(dest_dir, filter="data")
+            members.append(member)
+        tar.extractall(dest_dir, members=members, filter="data")
 
 
 # =============================================================================
@@ -181,6 +206,7 @@ def _safe_extract(tar_path: Path, dest_dir: Path) -> None:
 
 @app.post("/api/sites/deploy")
 async def deploy_site(
+    request: Request,
     name: str = Form(...),
     files: UploadFile = File(...),
     authorization: str | None = Header(None),
@@ -190,6 +216,7 @@ async def deploy_site(
         raise HTTPException(status_code=400, detail="Invalid site name")
     if name in RESERVED_NAMES:
         raise HTTPException(status_code=400, detail=f"Name '{name}' is reserved")
+    _check_content_length(request, MAX_UPLOAD_SIZE, "Upload too large (max 50MB)")
 
     content = await files.read()
     if len(content) > MAX_UPLOAD_SIZE:
@@ -267,24 +294,43 @@ async def _allocate_port(game_name: str) -> int:
     raise HTTPException(status_code=503, detail=f"No available ports (max {MAX_GAMES} games)")
 
 
+async def _release_port(game_name: str) -> None:
+    async with _ports_lock:
+        ports = _load_ports()
+        if game_name in ports:
+            del ports[game_name]
+            _save_ports(ports)
+
+
 def _container_name(game_name: str) -> str:
     return f"wendy-game-{game_name}"
 
 
-def _docker(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
-    result = subprocess.run(["docker"] + args, capture_output=True, text=True)
+async def _docker(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
+    """Run a docker command without blocking the event loop."""
+    proc = await asyncio.create_subprocess_exec(
+        "docker", *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    result = subprocess.CompletedProcess(
+        ["docker"] + args, proc.returncode or 0,
+        stdout.decode(errors="replace"), stderr.decode(errors="replace"),
+    )
     if check and result.returncode != 0:
         raise HTTPException(status_code=500, detail=f"Docker error: {result.stderr}")
     return result
 
 
-def _is_running(game_name: str) -> bool:
-    result = _docker(["ps", "-q", "-f", f"name={_container_name(game_name)}"], check=False)
+async def _is_running(game_name: str) -> bool:
+    result = await _docker(["ps", "-q", "-f", f"name={_container_name(game_name)}"], check=False)
     return bool(result.stdout.strip())
 
 
 @app.post("/api/games/deploy")
 async def deploy_game(
+    request: Request,
     name: str = Form(...),
     files: UploadFile = File(...),
     authorization: str | None = Header(None),
@@ -292,6 +338,7 @@ async def deploy_game(
     _verify_token(authorization, GAMES_TOKEN)
     if not _valid_name(name):
         raise HTTPException(status_code=400, detail="Invalid game name")
+    _check_content_length(request, 10 * 1024 * 1024, "Upload too large (max 10MB)")
 
     content = await files.read()
     if len(content) > 10 * 1024 * 1024:
@@ -309,7 +356,8 @@ async def deploy_game(
         if state_file.exists():
             state_backup = state_file.read_text()
 
-        if game_dir.exists():
+        dir_existed = game_dir.exists()
+        if dir_existed:
             shutil.rmtree(game_dir)
         game_dir.mkdir(parents=True)
 
@@ -326,26 +374,38 @@ async def deploy_game(
             shutil.rmtree(game_dir)
             raise HTTPException(status_code=400, detail="server.ts not found")
 
+        port_preexisting = name in _load_ports()
         port = await _allocate_port(name)
         cname = _container_name(name)
-        _docker(["stop", cname], check=False)
-        _docker(["rm", cname], check=False)
+        await _docker(["stop", cname], check=False)
+        await _docker(["rm", cname], check=False)
 
         host_game_dir = f"{HOST_GAMES_DIR}/{name}"
-        _docker([
-            "run", "-d",
-            "--name", cname,
-            "--restart", "unless-stopped",
-            "--network", DOCKER_NETWORK,
-            "-p", f"0.0.0.0:{port}:8000",
-            "-v", f"{host_game_dir}:/app/game:ro",
-            "-v", f"{host_game_dir}/state.json:/data/state.json",
-            "-e", "PORT=8000",
-            "-e", "STATE_FILE=/data/state.json",
-            "--memory", "256m",
-            "--cpus", "0.5",
-            "wendy-games-runtime",
-        ])
+        try:
+            await _docker([
+                "run", "-d",
+                "--name", cname,
+                "--restart", "unless-stopped",
+                "--network", DOCKER_NETWORK,
+                "-p", f"0.0.0.0:{port}:8000",
+                "-v", f"{host_game_dir}:/app/game:ro",
+                "-v", f"{host_game_dir}/state.json:/data/state.json",
+                "-e", "PORT=8000",
+                "-e", "STATE_FILE=/data/state.json",
+                "--memory", "256m",
+                "--cpus", "0.5",
+                "wendy-games-runtime",
+            ])
+        except HTTPException:
+            # Roll back what this request created so a failed deploy doesn't
+            # leak a phantom port allocation or orphaned game dir. On a failed
+            # *re*deploy the port and dir belong to the pre-existing game, so
+            # leave them alone.
+            if not port_preexisting:
+                await _release_port(name)
+            if not dir_existed and game_dir.exists():
+                shutil.rmtree(game_dir)
+            raise
 
         return JSONResponse({
             "success": True,
@@ -362,10 +422,10 @@ async def deploy_game(
 async def list_games(authorization: str | None = Header(None)) -> dict:
     _verify_token(authorization, GAMES_TOKEN)
     ports = _load_ports()
-    return {"games": [
-        {"name": n, "port": p, "url": f"{BASE_URL}/game/{n}/", "running": _is_running(n)}
-        for n, p in ports.items()
-    ]}
+    games = []
+    for n, p in ports.items():
+        games.append({"name": n, "port": p, "url": f"{BASE_URL}/game/{n}/", "running": await _is_running(n)})
+    return {"games": games}
 
 
 @app.get("/api/games/{name}")
@@ -374,7 +434,7 @@ async def get_game(name: str, authorization: str | None = Header(None)) -> dict:
     ports = _load_ports()
     if name not in ports:
         raise HTTPException(status_code=404, detail="Game not found")
-    return {"name": name, "port": ports[name], "url": f"{BASE_URL}/game/{name}/", "running": _is_running(name)}
+    return {"name": name, "port": ports[name], "url": f"{BASE_URL}/game/{name}/", "running": await _is_running(name)}
 
 
 @app.post("/api/games/{name}/restart")
@@ -382,7 +442,7 @@ async def restart_game(name: str, authorization: str | None = Header(None)) -> d
     _verify_token(authorization, GAMES_TOKEN)
     if name not in _load_ports():
         raise HTTPException(status_code=404, detail="Game not found")
-    _docker(["restart", _container_name(name)])
+    await _docker(["restart", _container_name(name)])
     return {"success": True}
 
 
@@ -393,8 +453,8 @@ async def delete_game(name: str, authorization: str | None = Header(None)) -> di
     if name not in ports:
         raise HTTPException(status_code=404, detail="Game not found")
     cname = _container_name(name)
-    _docker(["stop", cname], check=False)
-    _docker(["rm", cname], check=False)
+    await _docker(["stop", cname], check=False)
+    await _docker(["rm", cname], check=False)
     game_dir = GAMES_DIR / name
     if game_dir.exists():
         shutil.rmtree(game_dir)
@@ -408,7 +468,7 @@ async def game_logs(name: str, lines: int = 50, authorization: str | None = Head
     _verify_token(authorization, GAMES_TOKEN)
     if name not in _load_ports():
         raise HTTPException(status_code=404, detail="Game not found")
-    result = _docker(["logs", "--tail", str(lines), _container_name(name)], check=False)
+    result = await _docker(["logs", "--tail", str(lines), _container_name(name)], check=False)
     return {"name": name, "logs": result.stdout + result.stderr}
 
 
@@ -445,7 +505,15 @@ async def proxy_websocket(websocket: WebSocket, name: str) -> None:
                 except Exception:
                     pass
 
-            await asyncio.gather(fwd_to_backend(), fwd_to_client(), return_exceptions=True)
+            # Run both directions as tasks; when either side hangs up, cancel
+            # the other so we don't hold the backend connection open waiting
+            # for traffic that will never come. Exiting the `async with`
+            # closes the backend connection.
+            tasks = [asyncio.create_task(fwd_to_backend()), asyncio.create_task(fwd_to_client())]
+            _done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
     except Exception as e:
         try:
             await websocket.close(code=1011, reason=str(e)[:100])
@@ -635,10 +703,23 @@ async def brain_task_log(
         return {"task_id": task_id, "log": "", "offset": 0, "complete": False}
     log_file = max(log_files, key=lambda f: f.stat().st_mtime)
     try:
-        content = log_file.read_text()
-        new_content = content[offset:] if offset < len(content) else ""
-        complete = "=== TASK COMPLETE ===" in content or "=== TASK FAILED ===" in content
-        return {"task_id": task_id, "log": new_content, "offset": len(content), "complete": complete}
+        with open(log_file, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            if offset < 0 or offset > size:
+                offset = 0  # file was rotated/truncated
+            f.seek(offset)
+            new_content = f.read().decode("utf-8", errors="replace")
+            # The completion marker may sit before `offset`, so check the
+            # file tail rather than only the newly read chunk.
+            f.seek(max(0, size - 4096))
+            tail = f.read().decode("utf-8", errors="replace")
+        complete = any(
+            marker in chunk
+            for marker in ("=== TASK COMPLETE ===", "=== TASK FAILED ===")
+            for chunk in (new_content, tail)
+        )
+        return {"task_id": task_id, "log": new_content, "offset": size, "complete": complete}
     except OSError:
         return {"task_id": task_id, "log": "", "offset": 0, "complete": False}
 
@@ -659,7 +740,8 @@ def _load_webhooks() -> dict:
 
 def _validate_webhook_token(token: str) -> dict | None:
     for name, config in _load_webhooks().items():
-        if config.get("token") == token:
+        stored = config.get("token")
+        if isinstance(stored, str) and stored and hmac.compare_digest(stored, token):
             return {"name": name, **config}
     return None
 
@@ -751,6 +833,7 @@ async def receive_webhook(token: str, request: Request) -> JSONResponse:
         raise HTTPException(status_code=404, detail="Not found")
     if not _check_rate_limit(token):
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
+    _check_content_length(request, WEBHOOK_MAX_PAYLOAD, "Payload too large")
 
     body = await request.body()
 
@@ -801,7 +884,7 @@ async def serve_avatar_root() -> FileResponse:
 @app.get("/avatar/{path:path}")
 async def serve_avatar(path: str) -> FileResponse:
     file_path = (AVATAR_DIR / path).resolve()
-    if not str(file_path).startswith(str(AVATAR_DIR.resolve())):
+    if not file_path.is_relative_to(AVATAR_DIR.resolve()):
         raise HTTPException(status_code=403, detail="Access denied")
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="Not found")
@@ -836,6 +919,8 @@ async def health() -> dict:
 
 @app.get("/{site_name}")
 async def serve_site_root(site_name: str) -> FileResponse:
+    if not _valid_name(site_name):
+        raise HTTPException(status_code=404, detail="Site not found")
     site_dir = SITES_DIR / site_name
     if not site_dir.exists():
         raise HTTPException(status_code=404, detail="Site not found")
@@ -844,12 +929,16 @@ async def serve_site_root(site_name: str) -> FileResponse:
 
 @app.get("/{site_name}/{path:path}")
 async def serve_site(site_name: str, path: str = "") -> FileResponse:
-    site_dir = SITES_DIR / site_name
-    if not site_dir.exists():
+    if not _valid_name(site_name):
+        raise HTTPException(status_code=404, detail="Site not found")
+    site_dir = (SITES_DIR / site_name).resolve()
+    if not site_dir.is_relative_to(SITES_DIR.resolve()) or not site_dir.exists():
         raise HTTPException(status_code=404, detail="Site not found")
 
+    # Use is_relative_to() instead of startswith() to prevent the
+    # prefix-confusion attack (site "foo" reading sibling "foobar").
     file_path = (site_dir / (path or "index.html")).resolve()
-    if not str(file_path).startswith(str(site_dir.resolve())):
+    if not file_path.is_relative_to(site_dir):
         raise HTTPException(status_code=403, detail="Access denied")
 
     if not file_path.exists():
