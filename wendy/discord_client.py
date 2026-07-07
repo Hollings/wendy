@@ -165,6 +165,11 @@ class WendyBot(commands.Bot):
 
         self.channel_configs: dict[int, dict] = parse_channel_configs()
         self.whitelist_channels: set[int] = set(self.channel_configs.keys())
+        # Global pause: when True, incoming messages are still logged/cached but
+        # no Claude CLI generation is started (see _start_generation /
+        # _start_enrichment / _finalize_generation). Toggled at runtime via
+        # !pause / !unpause; seeded from WENDY_PAUSED so a restart can start paused.
+        self._paused: bool = os.getenv("WENDY_PAUSED", "") not in ("", "0", "false", "False")
         self._active_generations: dict[int, GenerationJob] = {}
         self._api_runner = None
         self._presence_updated_at: float = 0.0
@@ -284,6 +289,37 @@ class WendyBot(commands.Bot):
             self._enrichment_notified.discard(ctx.channel.id)
             existing_job.task.cancel()
             await ctx.send("lunch break ended")
+
+        @self.command(name="pause")
+        async def cmd_pause(ctx: commands.Context) -> None:
+            """!pause -- stop routing to Claude; messages keep being logged."""
+            self._paused = True
+            _LOG.info("Paused by %s in channel %s", ctx.author.display_name, ctx.channel.id)
+            try:
+                await self.change_presence(
+                    status=discord.Status.idle,
+                    activity=discord.CustomActivity(name="paused"),
+                )
+            except Exception:
+                _LOG.exception("Failed to set paused presence")
+            await ctx.send(
+                "paused. messages are still logged, but i won't respond. `!unpause` to wake me up."
+            )
+
+        @self.command(name="unpause")
+        async def cmd_unpause(ctx: commands.Context) -> None:
+            """!unpause -- resume routing messages to Claude."""
+            was_paused = self._paused
+            self._paused = False
+            _LOG.info("Unpaused by %s in channel %s", ctx.author.display_name, ctx.channel.id)
+            try:
+                await self.change_presence(
+                    status=discord.Status.online,
+                    activity=discord.CustomActivity(name=_version_presence_text()),
+                )
+            except Exception:
+                _LOG.exception("Failed to restore presence on unpause")
+            await ctx.send("back online." if was_paused else "wasn't paused, but ok.")
 
         @self.command(name="session")
         async def cmd_session(ctx: commands.Context) -> None:
@@ -632,6 +668,9 @@ class WendyBot(commands.Bot):
         channel_config: dict,
     ) -> None:
         """Create a new GenerationJob and schedule it on the event loop."""
+        if self._paused:
+            _LOG.info("Paused: skipping generation for channel %s", channel.id)
+            return
         model_override = channel_config.get("model")
         job = GenerationJob()
         task = self.loop.create_task(
@@ -938,6 +977,12 @@ class WendyBot(commands.Bot):
         if self._active_generations.get(channel.id) is not job:
             return
 
+        # Paused mid-flight: let this job end but don't spawn any continuation
+        # (timeout/pending/enrichment restart) until unpaused.
+        if self._paused:
+            self._active_generations.pop(channel.id, None)
+            return
+
         if job.is_enrichment:
             remaining = job.enrichment_end_timestamp - time.time()
             if remaining > 30:
@@ -1085,6 +1130,9 @@ class WendyBot(commands.Bot):
         manual: bool = False,
     ) -> None:
         """Slot an enrichment generation into _active_generations."""
+        if self._paused:
+            _LOG.info("Paused: skipping enrichment for channel %s", channel.id)
+            return
         channel_id = channel.id
         today = datetime.datetime.now(datetime.UTC).date()
 
