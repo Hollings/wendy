@@ -56,7 +56,11 @@ ENRICHMENT_DURATION: int = int(os.getenv("ENRICHMENT_DURATION", "900"))  # 15 mi
 DISCORD_MAX_MESSAGE_LENGTH: int = 2000
 WENDY_BOT_ID: int = int(os.getenv("WENDY_BOT_USER_ID", "0"))
 WENDY_BOT_NAME: str = os.getenv("WENDY_BOT_NAME", "Wendy")
-WENDY_WEB_URL: str = os.getenv("WENDY_WEB_URL", "wendy.monster")
+# Public-facing base URL (system prompt, webhook URLs). Distinct from
+# WENDY_WEB_URL, which is the *internal* endpoint the bot uses to reach the
+# wendy-web service (http://localhost:8910 in prod) -- conflating the two made
+# Wendy hand out localhost links.
+WENDY_PUBLIC_URL: str = os.getenv("WENDY_PUBLIC_URL", "https://wendy.monster")
 SYNTHETIC_ID_THRESHOLD: int = 9_000_000_000_000_000_000
 MAX_MESSAGE_LIMIT: int = 200
 DEV_MODE: bool = os.getenv("WENDY_DEV_MODE", "") == "1"

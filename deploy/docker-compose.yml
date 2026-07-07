@@ -26,6 +26,7 @@ services:
       - WENDY_PROXY_PORT=8945
       - ORCHESTRATOR_CONCURRENCY=3
       - WENDY_WEB_URL=http://localhost:8910
+      - WENDY_PUBLIC_URL=https://wendy.monster
 
   web:
     build:

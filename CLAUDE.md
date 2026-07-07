@@ -385,12 +385,14 @@ docker exec wendy ls -lt /root/.claude/projects/-data-wendy-channels-coding/ | h
 | `WENDY_DB_PATH` | SQLite path | `/data/wendy/shared/wendy.db` |
 | `SYSTEM_PROMPT_FILE` | System prompt path | `/app/config/system_prompt.txt` |
 | `WENDY_PROXY_PORT` | Internal API port | `8945` |
-| `CLAUDE_CLI_TIMEOUT` | Max CLI runtime (seconds) | `300` |
+| `CLAUDE_CLI_IDLE_TIMEOUT` | Kill CLI after this many seconds with no output | `600` |
+| `CLAUDE_CLI_MAX_RUNTIME` | Absolute max CLI runtime (seconds) | `3600` |
 | `ORCHESTRATOR_CONCURRENCY` | Max concurrent beads agents | `3` |
 | `ORCHESTRATOR_POLL_INTERVAL` | Seconds between beads task polls | `30` |
-| `ORCHESTRATOR_AGENT_TIMEOUT` | Max beads agent runtime (seconds) | `1800` |
+| `ORCHESTRATOR_AGENT_TIMEOUT` | Max beads agent runtime (seconds) | `14400` |
 | `JOURNAL_NUDGE_INTERVAL` | Invocations between journal nudges | `10` |
-| `WENDY_WEB_URL` | URL of wendy-web service | `https://wendy.monster` |
+| `WENDY_WEB_URL` | Internal endpoint of the wendy-web service (deploy proxy) | `http://localhost:8910` |
+| `WENDY_PUBLIC_URL` | Public base URL (system prompt `{web_url}`, webhook URLs) | `https://wendy.monster` |
 | `WENDY_BOT_NAME` | Bot display name (used in prompts) | `Wendy` |
 | `WENDY_BOT_USER_ID` | Bot's Discord user ID (for filtering own messages) | auto-set from Discord login |
 | `WENDY_DEPLOY_TOKEN` | Token for site deploys | — |

@@ -25,7 +25,7 @@ import os
 from pathlib import Path
 
 from .cli import TOOL_INSTRUCTIONS_TEMPLATE
-from .config import PROXY_PORT, WENDY_BOT_NAME, WENDY_WEB_URL
+from .config import PROXY_PORT, WENDY_BOT_NAME, WENDY_PUBLIC_URL
 from .fragments import get_recent_messages, load_fragments
 from .paths import beads_dir, journal_dir
 
@@ -35,7 +35,10 @@ _LOG = logging.getLogger(__name__)
 def build_system_prompt(channel_id: int, channel_config: dict) -> str:
     """Build the complete system prompt for a channel."""
     channel_name = channel_config.get("_folder", channel_config.get("name", "default"))
-    mode = channel_config.get("mode", "full")
+    # Default to "chat" (limited tools): configs always set mode explicitly, so
+    # this default only applies to unconfigured channels (e.g. a bot mention in
+    # a non-whitelisted channel) -- those must not get full coding tools.
+    mode = channel_config.get("mode", "chat")
     beads_enabled = channel_config.get("beads_enabled", False)
 
     is_thread = channel_config.get("_is_thread", False)
@@ -100,7 +103,7 @@ def _get_base_system_prompt(channel_name: str, mode: str = "full") -> str:
         content = Path(system_prompt_file).read_text().strip()
         content = content.replace("{folder}", channel_name)
         content = content.replace("{bot_name}", WENDY_BOT_NAME)
-        content = content.replace("{web_url}", WENDY_WEB_URL)
+        content = content.replace("{web_url}", WENDY_PUBLIC_URL)
 
         if mode == "chat":
             import re as _re

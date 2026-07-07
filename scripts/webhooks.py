@@ -18,7 +18,9 @@ import uuid
 from pathlib import Path
 
 WEBHOOKS_FILE = Path("/data/wendy/secrets/webhooks.json")
-BASE_URL = os.environ.get("WENDY_WEB_URL", "https://wendy.monster") + "/webhook"
+# WENDY_PUBLIC_URL is the public base; WENDY_WEB_URL is the bot's *internal*
+# endpoint (localhost in prod) and must not leak into user-facing URLs.
+BASE_URL = os.environ.get("WENDY_PUBLIC_URL", "https://wendy.monster") + "/webhook"
 
 
 def load_webhooks() -> dict:
@@ -31,14 +33,19 @@ def load_webhooks() -> dict:
     try:
         return json.loads(WEBHOOKS_FILE.read_text())
     except json.JSONDecodeError:
-        return {}
+        # A corrupt file must be fatal: returning {} here means the next
+        # save silently erases every webhook.
+        print(f"Error: {WEBHOOKS_FILE} is corrupt JSON - fix or delete it manually", file=sys.stderr)
+        sys.exit(1)
 
 
 def save_webhooks(webhooks: dict) -> None:
-    """Save webhooks to file."""
+    """Save webhooks to file (atomically, so a crash can't truncate it)."""
     WEBHOOKS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    WEBHOOKS_FILE.write_text(json.dumps(webhooks, indent=2))
-    WEBHOOKS_FILE.chmod(0o600)
+    tmp = WEBHOOKS_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(webhooks, indent=2))
+    tmp.chmod(0o600)
+    os.replace(tmp, WEBHOOKS_FILE)
 
 
 def generate_token() -> str:
