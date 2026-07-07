@@ -156,3 +156,57 @@ def test_build_send_kwargs_valid_attachment(tmp_path):
     finally:
         if os.path.exists(real):
             os.remove(real)
+
+
+# =========================================================================
+# _consume_delivered_messages -- the send-block retry loop fix
+# =========================================================================
+
+
+def test_consume_delivered_messages_unblocks_retry(tmp_path, monkeypatch):
+    """A blocked send delivers the new messages in its response; consuming them
+    must advance the watermark so the amended retry is not blocked again."""
+    from wendy import api_server
+    from wendy.config import SYNTHETIC_ID_THRESHOLD
+    from wendy.state import StateManager
+
+    sm = StateManager(db_path=tmp_path / "t.db")
+    sm._get_conn()
+    monkeypatch.setattr(api_server, "state_manager", sm)
+
+    channel = 7
+    bot_id = 999
+    synth_id = SYNTHETIC_ID_THRESHOLD + 1
+
+    def insert(mid, author_id=42, is_bot=False):
+        sm.insert_message(
+            message_id=mid, channel_id=channel, guild_id=1, author_id=author_id,
+            author_nickname="user", is_bot=is_bot, content="hello", timestamp=1,
+        )
+
+    insert(2000)
+    sm.update_last_seen(channel, 2000)  # watermark exists (mid-turn)
+    insert(2001)
+    insert(2002)
+    insert(synth_id, author_id=0)
+
+    # These messages arrive in the blocked-send response...
+    pending = sm.check_for_new_messages(
+        channel, bot_user_id=bot_id,
+        synthetic_id_threshold=SYNTHETIC_ID_THRESHOLD, max_limit=50,
+    )
+    assert {m["message_id"] for m in pending} == {2001, 2002, synth_id}
+
+    api_server._consume_delivered_messages(channel, pending)
+
+    # ...so the retry sees nothing new and goes through. The delivered
+    # synthetic must not re-block either (it used to re-block every wake turn).
+    assert sm.get_last_seen(channel) == 2002
+    retry_pending = sm.check_for_new_messages(
+        channel, bot_user_id=bot_id,
+        synthetic_id_threshold=SYNTHETIC_ID_THRESHOLD, max_limit=50,
+    )
+    assert retry_pending == []
+    # The synthetic is marked delivered, not deleted (commit/rollback later).
+    rows = sm.fetch_messages(channel, since_id=2002)
+    assert rows == []

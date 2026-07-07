@@ -528,8 +528,17 @@ class StateManager:
         conn = self._get_conn()
 
         # Fetch real messages (below synthetic threshold) with the limit.
+        # Unread reads take the OLDEST messages first: the caller advances the
+        # watermark to the max returned ID, so newest-first would silently skip
+        # everything older in a burst larger than *limit*.
         if since_id is not None:
-            real_query = self._MESSAGE_QUERY_BASE + " AND m.message_id > ? AND m.message_id < ? ORDER BY m.message_id DESC LIMIT ?"
+            real_query = (
+                "SELECT * FROM ("
+                + self._MESSAGE_QUERY_BASE
+                + " AND m.message_id > ? AND m.message_id < ?"
+                + " ORDER BY m.message_id ASC LIMIT ?"
+                + ") ORDER BY message_id DESC"
+            )
             real_params = (channel_id, since_id, synthetic_threshold, limit)
         else:
             real_query = self._MESSAGE_QUERY_BASE + " AND m.message_id < ? ORDER BY m.message_id DESC LIMIT ?"
@@ -571,10 +580,15 @@ class StateManager:
         if last_seen is None:
             return []
 
+        # Exclude delivered synthetics: their IDs (>= 9e18) are always above
+        # the real-message watermark, so without this every turn that started
+        # from a synthetic wake (task completion, self-wake, context intro)
+        # had its first send blocked by the message it had already read.
         query = (
             self._MESSAGE_QUERY_BASE
             + " AND m.message_id > ?"
             + " AND m.author_id != ?"
+            + " AND m.delivered = 0"
             + " ORDER BY m.message_id DESC LIMIT ?"
         )
         rows = self._get_conn().execute(

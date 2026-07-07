@@ -452,3 +452,37 @@ def test_usage_state(tmp_path):
 
     sm.set_usage_threshold("test_key", 100)
     assert sm.get_usage_threshold("test_key") == 100
+
+
+# =========================================================================
+# fetch_messages -- unread bursts must not skip messages
+# =========================================================================
+
+
+def test_fetch_messages_unread_returns_oldest_first(tmp_path):
+    """A burst larger than the limit returns the OLDEST messages so the
+    watermark (max returned ID) never jumps past unreturned ones."""
+    sm = _make_sm(tmp_path)
+    for i in range(1, 16):  # 15 unread: ids 1001..1015
+        _insert_real(sm, 1000 + i, channel_id=5, content=f"m{i}")
+
+    rows = sm.fetch_messages(5, since_id=1000, limit=10)
+    ids = [r["message_id"] for r in rows]
+    # DESC contract preserved, but the batch is the oldest 10 (1001..1010)
+    assert ids == list(range(1010, 1000, -1))
+
+    # Advancing the watermark to the max returned ID leaves the rest readable.
+    sm.update_last_seen(5, max(ids))
+    rows2 = sm.fetch_messages(5, since_id=sm.get_last_seen(5), limit=10)
+    assert sorted(r["message_id"] for r in rows2) == list(range(1011, 1016))
+
+
+def test_fetch_messages_no_watermark_returns_newest(tmp_path):
+    """Without a watermark (fresh channel) the newest N are still returned."""
+    sm = _make_sm(tmp_path)
+    for i in range(1, 16):
+        _insert_real(sm, 2000 + i, channel_id=6)
+
+    rows = sm.fetch_messages(6, since_id=None, limit=5)
+    ids = [r["message_id"] for r in rows]
+    assert ids == list(range(2015, 2010, -1))

@@ -89,6 +89,25 @@ def check_for_new_messages(channel_id: int) -> list[dict]:
     )
 
 
+def _consume_delivered_messages(channel_id: int, messages: list[dict]) -> None:
+    """Advance consumption state for messages just delivered in a response.
+
+    Mirrors what a normal ``check_messages`` read does: the seen cursor moves
+    past the real messages and synthetics are marked delivered (committed or
+    rolled back with the turn). Used by the send-block path -- the blocked
+    response *is* the delivery, so without this an amended retry is blocked
+    by the same messages forever (msg -> blocked -> msg -> blocked -> ...).
+    """
+    try:
+        real_ids = [m["message_id"] for m in messages if m["message_id"] < SYNTHETIC_ID_THRESHOLD]
+        synth_ids = [m["message_id"] for m in messages if m["message_id"] >= SYNTHETIC_ID_THRESHOLD]
+        if real_ids:
+            state_manager.update_last_seen(channel_id, max(real_ids))
+        state_manager.mark_synthetics_delivered(synth_ids)
+    except Exception as e:
+        _LOG.error("Failed to consume delivered messages for channel %s: %s", channel_id, e)
+
+
 def _save_bot_message(msg: discord.Message | None, channel_id: int) -> None:
     """Persist a bot-sent Discord message to SQLite for history and check_messages visibility."""
     if not msg:
@@ -252,6 +271,7 @@ async def handle_send_message(request: web.Request) -> web.Response:
     if not body.get("force", False):
         new_messages = check_for_new_messages(channel_id)
         if new_messages:
+            _consume_delivered_messages(channel_id, new_messages)
             return web.json_response({
                 "error": "New messages received since your last check. Review them and retry.",
                 "new_messages": new_messages,
@@ -332,6 +352,7 @@ async def handle_check_messages(request: web.Request) -> web.Response:
 
     channel_name = get_channel_name(channel_id)
     messages: list[dict] = []
+    more_pending = 0
 
     try:
         if count is not None:
@@ -363,13 +384,19 @@ async def handle_check_messages(request: web.Request) -> web.Response:
                 state_manager.update_last_seen(channel_id, max(m["message_id"] for m in real_messages))
             # Mark (don't delete) synthetics so a crashed turn can re-read them.
             state_manager.mark_synthetics_delivered(synthetic_ids)
+            # A full page of unread messages may mean more are waiting behind
+            # the new watermark -- tell the caller so it can read again.
+            if count is None and not all_messages and len(real_messages) >= limit:
+                more_pending = state_manager.count_unread_real_messages(
+                    channel_id, _config.WENDY_BOT_ID,
+                )
 
     except Exception as e:
         _LOG.error("Error reading messages: %s", e)
 
     # ``task_updates`` retained as an empty list for response-shape compatibility;
     # task completions now surface once, as synthetic messages via watch_notifications.
-    return web.json_response({"messages": messages, "task_updates": []})
+    return web.json_response({"messages": messages, "more_pending": more_pending, "task_updates": []})
 
 
 async def handle_emojis(request: web.Request) -> web.Response:
