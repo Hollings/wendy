@@ -101,8 +101,10 @@ REAL-TIME CHANNEL TOOLS (Channel ID: {channel_id})
    msgs                 # fetch new messages since last check
    msgs -n 10           # fetch last 10 messages
    msgs --all           # fetch all messages (ignores watermark)
-   msgs --peek          # fetch without advancing the read watermark
    msgs --raw           # dump raw JSON (for debugging/parsing)
+
+   If the output ends with a "more unread messages waiting" note, run msgs
+   again before replying so you see everything.
 
    This is what you MUST call at the start of every turn. Equivalent to the
    check_messages API but formatted for the terminal.
@@ -285,6 +287,8 @@ def setup_channel_folder(channel_name: str, beads_enabled: bool = False) -> None
 def _sync_scripts(src_dir: Path, dest_dir: Path, pattern: str, *, make_executable: bool = False) -> None:
     """Copy scripts from *src_dir* to *dest_dir* when the source is newer."""
     for script in src_dir.glob(pattern):
+        if not script.is_file():  # skip stray dirs like bin/__pycache__/
+            continue
         dest = dest_dir / script.name
         if not dest.exists() or dest.stat().st_mtime < script.stat().st_mtime:
             shutil.copy2(script, dest)
@@ -531,6 +535,36 @@ def _is_session_resume_error(cmd: list[str], error_text: str) -> bool:
     return "session" in lower or "no conversation found" in lower
 
 
+def _jsonl_line_is_overloaded(line: str) -> bool:
+    """Return True if a session-JSONL line is an actual API overloaded error.
+
+    Substring matching alone is not enough: conversation content can contain
+    the literal string ``overloaded_error`` (a pasted error log, Wendy reading
+    her own source), which used to kill healthy sessions. Only trust entries
+    the CLI marks as API errors, or non-conversation record types.
+    """
+    if "overloaded_error" not in line:
+        return False
+    try:
+        entry = json.loads(line)
+    except json.JSONDecodeError:
+        return False
+    if entry.get("isApiErrorMessage"):
+        return True
+    return entry.get("type") not in ("user", "assistant", "summary")
+
+
+def _stream_event_is_overloaded(event: dict) -> bool:
+    """Return True if a stream-json event is an actual overloaded API error
+    (not conversation content quoting the string)."""
+    if event.get("isApiErrorMessage"):
+        return True
+    etype = event.get("type")
+    if etype == "result":
+        return bool(event.get("is_error"))
+    return etype not in ("user", "assistant")
+
+
 async def _watch_session_for_overloaded(
     session_jsonl: Path,
     proc: asyncio.subprocess.Process,
@@ -541,8 +575,8 @@ async def _watch_session_for_overloaded(
     The CLI swallows 529 overloaded errors internally and retries for
     ~4 minutes without emitting anything on stdout.  This watcher reads
     the tail of the session file every *poll_interval* seconds.  When it
-    spots ``overloaded_error``, it kills the subprocess so the caller
-    can retry with a different model.
+    spots an overloaded API error entry, it kills the subprocess so the
+    caller can retry with a different model.
     """
     # Record the file size at start so we only scan new bytes.
     try:
@@ -550,6 +584,7 @@ async def _watch_session_for_overloaded(
     except OSError:
         initial_size = 0
 
+    partial = ""
     while proc.returncode is None:
         await asyncio.sleep(poll_interval)
         try:
@@ -566,8 +601,12 @@ async def _watch_session_for_overloaded(
         except OSError:
             continue
         initial_size = current_size
-        if "overloaded_error" in new_data:
-            _LOG.warning("Session JSONL contains overloaded_error, killing CLI")
+        # Parse complete lines only; carry any trailing partial line over to
+        # the next poll so a mid-write read can't corrupt the JSON parse.
+        lines = (partial + new_data).split("\n")
+        partial = lines.pop()
+        if any(_jsonl_line_is_overloaded(line) for line in lines):
+            _LOG.warning("Session JSONL contains overloaded API error, killing CLI")
             _kill_process(proc)
             return
 
@@ -639,7 +678,7 @@ async def _stream_cli_output(
                 if event.get("type") == "result":
                     usage = event.get("usage", {})
                 # Also check stdout in case the CLI does emit it here.
-                if "overloaded_error" in decoded:
+                if "overloaded_error" in decoded and _stream_event_is_overloaded(event):
                     _LOG.warning("Detected overloaded_error in stream output")
                     overloaded_detected = True
                     _kill_process(proc)

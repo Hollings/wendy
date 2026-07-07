@@ -147,3 +147,52 @@ def test_extract_forked_session_id_none():
         {"type": "assistant", "message": "hello"},
     ]
     assert extract_forked_session_id(events, "coding") is None
+
+
+# =========================================================================
+# Overloaded-error detection precision
+# =========================================================================
+
+
+def test_jsonl_overloaded_ignores_conversation_content():
+    """Conversation content quoting the literal string must not kill the CLI."""
+    import json as _json
+
+    from wendy.cli import _jsonl_line_is_overloaded
+
+    user = _json.dumps({"type": "user", "message": {"content": "my log says overloaded_error"}})
+    assert not _jsonl_line_is_overloaded(user)
+    assistant = _json.dumps({"type": "assistant", "message": {"content": "overloaded_error is matched in cli.py"}})
+    assert not _jsonl_line_is_overloaded(assistant)
+
+
+def test_jsonl_overloaded_detects_api_error_entries():
+    import json as _json
+
+    from wendy.cli import _jsonl_line_is_overloaded
+
+    api_err = _json.dumps({
+        "type": "assistant", "isApiErrorMessage": True,
+        "message": {"content": "API Error: 529 overloaded_error"},
+    })
+    assert _jsonl_line_is_overloaded(api_err)
+    # Unknown non-conversation record types containing the string still count.
+    other = _json.dumps({"type": "system", "detail": "overloaded_error"})
+    assert _jsonl_line_is_overloaded(other)
+
+
+def test_jsonl_overloaded_partial_or_plain_lines():
+    from wendy.cli import _jsonl_line_is_overloaded
+
+    assert not _jsonl_line_is_overloaded('{"type": "assistant", "overloaded_error')  # torn mid-write
+    assert not _jsonl_line_is_overloaded("nothing to see here")
+
+
+def test_stream_event_overloaded_precision():
+    from wendy.cli import _stream_event_is_overloaded
+
+    assert not _stream_event_is_overloaded({"type": "assistant", "message": {}})
+    assert not _stream_event_is_overloaded({"type": "user"})
+    assert not _stream_event_is_overloaded({"type": "result", "is_error": False})
+    assert _stream_event_is_overloaded({"type": "result", "is_error": True})
+    assert _stream_event_is_overloaded({"type": "assistant", "isApiErrorMessage": True})
