@@ -6,6 +6,7 @@ handler, plus the media-type detection and validation helpers it relies on.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import os
@@ -204,7 +205,9 @@ async def handle_analyze_file(request: web.Request) -> web.Response:
         if media_type not in SUPPORTED_MEDIA_TYPES:
             return web.json_response({"error": f"Unsupported file type: {media_type}"}, status=400)
 
-        err, duration = _validate_media(file_content, media_type)
+        # ffprobe runs in a worker thread -- a synchronous probe of a 20MB
+        # video would otherwise freeze the whole event loop for seconds.
+        err, duration = await asyncio.to_thread(_validate_media, file_content, media_type)
         if err:
             return web.json_response({"error": err}, status=400)
 
