@@ -17,6 +17,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Load DEPLOY_HOST from .env if not already set
 if [[ -z "${DEPLOY_HOST:-}" && -f "$SCRIPT_DIR/.env" ]]; then
     DEPLOY_HOST=$(grep '^DEPLOY_HOST=' "$SCRIPT_DIR/.env" | cut -d= -f2-)
+    # Strip surrounding quotes if the .env value is quoted
+    DEPLOY_HOST="${DEPLOY_HOST%\"}"; DEPLOY_HOST="${DEPLOY_HOST#\"}"
+    DEPLOY_HOST="${DEPLOY_HOST%\'}"; DEPLOY_HOST="${DEPLOY_HOST#\'}"
 fi
 SERVER="${DEPLOY_HOST:?Set DEPLOY_HOST in .env or environment}"
 REMOTE_DIR="/srv/wendy-v2"
@@ -66,11 +69,22 @@ BACKUP_DIR="/srv/wendy-backups"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 
 echo "==> Backing up database..."
+# Prefer sqlite3 .backup via the running container: the DB is WAL-mode, so a
+# raw cp of wendy.db alone misses everything still in the -wal file. Fall back
+# to copying db + sidecars if the container isn't running (first deploy).
 remote "
     sudo mkdir -p $BACKUP_DIR
-    sudo docker run --rm -v wendy_data:/data -v $BACKUP_DIR:/backup alpine \
-        cp /data/shared/wendy.db /backup/wendy-${TIMESTAMP}.db 2>/dev/null || true
-    sudo find $BACKUP_DIR -name 'wendy-*.db' -mtime +7 -delete 2>/dev/null || true
+    if sudo docker exec wendy sqlite3 /data/wendy/shared/wendy.db \
+            \".backup '/data/wendy/shared/.backup_tmp.db'\" 2>/dev/null; then
+        sudo docker run --rm -v wendy_data:/data -v $BACKUP_DIR:/backup alpine \
+            sh -c 'mv /data/shared/.backup_tmp.db /backup/wendy-${TIMESTAMP}.db'
+    else
+        sudo docker run --rm -v wendy_data:/data -v $BACKUP_DIR:/backup alpine \
+            sh -c 'cp /data/shared/wendy.db /backup/wendy-${TIMESTAMP}.db 2>/dev/null;
+                   cp /data/shared/wendy.db-wal /backup/wendy-${TIMESTAMP}.db-wal 2>/dev/null;
+                   cp /data/shared/wendy.db-shm /backup/wendy-${TIMESTAMP}.db-shm 2>/dev/null' || true
+    fi
+    sudo find $BACKUP_DIR -name 'wendy-*.db*' -mtime +7 -delete 2>/dev/null || true
 "
 
 # --- Stamp running version ---
@@ -118,11 +132,32 @@ echo "==> Uploading to $SERVER:$REMOTE_DIR..."
 scp -o ConnectTimeout=15 "$TMP_TAR" "$SERVER:/tmp/wendy-v2-deploy.tar.gz"
 rm -f "$TMP_TAR"
 
+# $REMOTE_DIR/config is bind-mounted read-only into the RUNNING wendy container
+# (/app/config). rm -rf'ing the whole tree would yank the mounted inode away --
+# the live bot loses its system prompt, hooks, and settings until the container
+# is recreated (and a web-only deploy never recreates it). So: extract to a
+# staging dir, swap everything except config/, and sync config/ contents in
+# place so its directory inode survives.
 remote "
-    sudo rm -rf $REMOTE_DIR
-    sudo mkdir -p $REMOTE_DIR
-    sudo tar -xzf /tmp/wendy-v2-deploy.tar.gz -C $REMOTE_DIR
+    set -e
+    STAGING=$REMOTE_DIR.staging
+    sudo rm -rf \$STAGING
+    sudo mkdir -p \$STAGING $REMOTE_DIR/config
+    sudo tar -xzf /tmp/wendy-v2-deploy.tar.gz -C \$STAGING
     rm -f /tmp/wendy-v2-deploy.tar.gz
+
+    # Replace everything except config/ wholesale.
+    sudo find $REMOTE_DIR -mindepth 1 -maxdepth 1 ! -name config -exec rm -rf {} +
+    sudo find \$STAGING -mindepth 1 -maxdepth 1 ! -name config -exec mv -t $REMOTE_DIR {} +
+
+    # Sync config/ contents in place (keep the mounted dir inode alive), then
+    # prune files that no longer exist in the repo.
+    sudo cp -a \$STAGING/config/. $REMOTE_DIR/config/
+    (cd $REMOTE_DIR/config && sudo find . -type f -print0) | while IFS= read -r -d '' f; do
+        [ -e \"\$STAGING/config/\$f\" ] || sudo rm -f \"$REMOTE_DIR/config/\$f\"
+    done
+    sudo find $REMOTE_DIR/config -depth -type d -empty -delete 2>/dev/null || true
+    sudo rm -rf \$STAGING
 "
 
 # --- Build & start ---
