@@ -35,20 +35,37 @@ if [ -z "$COMMAND" ]; then
   exit 0
 fi
 
-# Ensure the table exists (idempotent)
-sqlite3 "$DB_PATH" "CREATE TABLE IF NOT EXISTS bash_tool_log (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  session_id TEXT,
-  command TEXT NOT NULL,
-  description TEXT,
-  cwd TEXT,
-  exit_code INTEGER,
-  output TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
-);" 2>/dev/null
+# Insert via python3: the sqlite3 CLI does NOT bind extra args to ?
+# placeholders (it executes them as additional SQL), so the previous
+# sqlite3-based insert silently failed on every call.
+python3 - "$DB_PATH" "$SESSION_ID" "$COMMAND" "$DESCRIPTION" "$CWD" "$EXIT_CODE" "$OUTPUT" <<'PY' || true
+import sqlite3
+import sys
 
-sqlite3 "$DB_PATH" "INSERT INTO bash_tool_log (session_id, command, description, cwd, exit_code, output)
-VALUES (?, ?, ?, ?, ?, ?);" \
-  "$SESSION_ID" "$COMMAND" "$DESCRIPTION" "$CWD" "$EXIT_CODE" "$OUTPUT" 2>/dev/null
+db, sid, cmd, desc, cwd, code, out = sys.argv[1:8]
+conn = sqlite3.connect(db, timeout=10)
+try:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bash_tool_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT,
+            command TEXT NOT NULL,
+            description TEXT,
+            cwd TEXT,
+            exit_code INTEGER,
+            output TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute(
+        "INSERT INTO bash_tool_log (session_id, command, description, cwd, exit_code, output)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (sid or None, cmd, desc or None, cwd or None,
+         int(code) if code.lstrip("-").isdigit() else None, out or None),
+    )
+    conn.commit()
+finally:
+    conn.close()
+PY
 
 exit 0

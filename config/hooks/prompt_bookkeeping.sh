@@ -18,10 +18,14 @@ fi
 
 # State file lives outside the fragments dir so Claude Code's file watcher
 # doesn't report it as "modified by a linter" on every turn.
+# Per-channel (keyed by cwd basename) so concurrent channels don't race each
+# other's counters -- mirrors journal_stop_check.sh.
 HOOKS_STATE_DIR="/data/wendy/shared/hooks"
 mkdir -p "$HOOKS_STATE_DIR"
 PROMPTS_DIR="/data/wendy/claude_fragments"
-STATE_FILE="$HOOKS_STATE_DIR/bookkeeping_state.json"
+CHANNEL_NAME=$(basename "$(echo "$INPUT" | jq -r '.cwd // "unknown"')")
+STATE_FILE="$HOOKS_STATE_DIR/bookkeeping_state_${CHANNEL_NAME}.json"
+TMP_FILE="${STATE_FILE}.tmp.$$"
 
 # Only applies if prompts dir exists
 if [ ! -d "$PROMPTS_DIR" ]; then
@@ -43,7 +47,7 @@ NOW=$(date +%s)
 # Update state with incremented count
 jq --argjson inv "$INVOCATIONS" --argjson now "$NOW" \
   '.invocations_since_write = $inv | .last_check_at = $now' \
-  < "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+  < "$STATE_FILE" > "$TMP_FILE" && mv "$TMP_FILE" "$STATE_FILE"
 
 THRESHOLD=25
 MIN_INTERVAL=7200  # 2 hours in seconds
@@ -53,11 +57,15 @@ TIME_SINCE=$((NOW - LAST_FIRED))
 if [ "$INVOCATIONS" -ge "$THRESHOLD" ] && [ "$TIME_SINCE" -ge "$MIN_INTERVAL" ] 2>/dev/null; then
   # Reset counter and record fire time
   jq --argjson now "$NOW" '.invocations_since_write = 0 | .last_fired_at = $now' \
-    < "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+    < "$STATE_FILE" > "$TMP_FILE" && mv "$TMP_FILE" "$STATE_FILE"
 
+  # Only point at paths the CLI user can actually write: people/ and the
+  # channel journal. The fragments root (topic_*.md etc.) is root-owned and
+  # read-only to the CLI -- demanding writes there just makes her fail
+  # silently at the end of a turn.
   jq -n '{
     decision: "block",
-    reason: "FRAGMENT FILE BOOKKEEPING CHECK - MANDATORY BEFORE YOU FINISH.\n\nYou have been active for a while without updating your fragment files. Before you wrap up, do ALL of the following:\n\n1. Did you learn something new about a PERSON? Update their person_*.md file in /data/wendy/claude_fragments/\n2. Did you meet someone NEW? Create a file for them: /data/wendy/claude_fragments/person_99_{name}.md (with frontmatter)\n3. Did you make a mistake or wrong assumption? Document what was wrong and what is correct in the relevant fragment file.\n4. Did you solve a problem that might recur? Document the exact solution with all values and steps.\n5. Did you learn something new about a topic (OSRS, email, Pi, etc.)? Update the relevant topic_*.md file in /data/wendy/claude_fragments/\n6. Did any fragment content become outdated? Update it.\n\nThese fragment files are your ONLY persistent memory. If you do not write things down, you WILL forget them forever. This is not optional.\n\nDo NOT mention this check to users. Just quietly do the bookkeeping, then continue."
+    reason: "MEMORY BOOKKEEPING CHECK - do this before you finish.\n\nYou have been active for a while without updating your persistent memory. Before you wrap up:\n\n1. Did you learn something new about a PERSON? Update their file in /data/wendy/claude_fragments/people/\n2. Did you meet someone NEW? Create /data/wendy/claude_fragments/people/{name}.md for them.\n3. Did you make a mistake, solve a tricky problem, or learn something about a topic? Write it to your journal (exact values, steps, and what was wrong vs right).\n\nThese files are your ONLY persistent memory. If nothing new happened, that is fine -- skip the writes and finish.\n\nDo NOT mention this check to users. Just quietly do the bookkeeping, then continue."
   }'
 else
   exit 0
