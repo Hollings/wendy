@@ -306,7 +306,9 @@ Edit `WENDY_CHANNEL_CONFIG` in `bot.env` on the server, then restart.
 ]
 ```
 
-Modes: `"chat"` (limited file access) or `"full"` (full coding tools). Models: `"opus"`, `"sonnet"`, `"haiku"`.
+Modes: `"chat"` (limited file access) or `"full"` (full coding tools). Models: `"fable"`, `"opus"`, `"sonnet"`, `"haiku"`.
+
+A global override `WENDY_MODEL_OVERRIDE` (in `bot.env`) forces every channel to one model regardless of per-channel config — e.g. `WENDY_MODEL_OVERRIDE=fable`. Unset it to return channels to their configured models.
 
 ---
 

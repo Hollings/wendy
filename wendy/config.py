@@ -30,6 +30,7 @@ if os.name == "posix" and os.getuid() == 0:
 # =============================================================================
 
 MODEL_MAP: dict[str, str] = {
+    "fable": "claude-fable-5",
     "opus": "claude-opus-4-6",
     "sonnet": "claude-sonnet-5",
     "haiku": "claude-haiku-4-5-20251001",
@@ -154,8 +155,10 @@ def parse_channel_configs() -> dict[int, dict]:
 
 def resolve_model(model_shorthand: str | None, *, allow_env_override: bool = True) -> str:
     """Resolve a model shorthand to a full model ID."""
-    # Temporary override: force all channels to a specific model via env var.
-    # Remove this once sonnet capacity recovers.
+    # Global override: force all channels to a specific model via the
+    # WENDY_MODEL_OVERRIDE env var (e.g. "fable"). Bypassed when an explicit
+    # model_override is passed (e.g. the overload-retry path), so fallbacks
+    # to opus still work. Unset the env var to return channels to their configs.
     if allow_env_override:
         override = os.environ.get("WENDY_MODEL_OVERRIDE")
         if override:
