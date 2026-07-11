@@ -486,3 +486,29 @@ def test_fetch_messages_no_watermark_returns_newest(tmp_path):
     rows = sm.fetch_messages(6, since_id=None, limit=5)
     ids = [r["message_id"] for r in rows]
     assert ids == list(range(2015, 2010, -1))
+
+
+def test_rollback_all_delivered_synthetics_restores_orphans(tmp_path):
+    """Startup recovery: delivered-but-uncommitted synthetics (crash mid-turn)
+    are restored for re-delivery across all channels."""
+    sm = _make_sm(tmp_path)
+    synth_a = 9_000_000_000_000_000_001
+    synth_b = 9_000_000_000_000_000_002
+    sm.insert_message(message_id=synth_a, channel_id=1, guild_id=None, author_id=0,
+                      author_nickname="System", is_bot=False, content="wake a", timestamp=1)
+    sm.insert_message(message_id=synth_b, channel_id=2, guild_id=None, author_id=0,
+                      author_nickname="System", is_bot=False, content="wake b", timestamp=1)
+    sm.mark_synthetics_delivered([synth_a, synth_b])
+
+    # Delivered synthetics are hidden from fetch (normal mid-turn state)...
+    assert sm.fetch_messages(1, since_id=None, limit=10) == []
+
+    # ...crash happens; startup restores them.
+    assert sm.rollback_all_delivered_synthetics() == 2
+    ids1 = [r["message_id"] for r in sm.fetch_messages(1, since_id=None, limit=10)]
+    ids2 = [r["message_id"] for r in sm.fetch_messages(2, since_id=None, limit=10)]
+    assert synth_a in ids1
+    assert synth_b in ids2
+
+    # Idempotent: nothing left to restore.
+    assert sm.rollback_all_delivered_synthetics() == 0

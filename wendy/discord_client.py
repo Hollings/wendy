@@ -408,6 +408,15 @@ class WendyBot(commands.Bot):
         # come when someone else happens to type. Runs once per process.
         if not self._startup_catchup_done:
             self._startup_catchup_done = True
+            # A crash mid-turn leaves synthetics stuck delivered=1 (neither the
+            # commit nor the rollback ran). No turn is in flight at boot, so
+            # restore them -- the catchup sweep below then re-delivers.
+            try:
+                restored = state_manager.rollback_all_delivered_synthetics()
+                if restored:
+                    _LOG.info("Restored %d crash-orphaned synthetic message(s)", restored)
+            except Exception:
+                _LOG.exception("Failed to restore orphaned synthetics")
             await self._startup_catchup()
 
     async def _startup_catchup(self) -> None:

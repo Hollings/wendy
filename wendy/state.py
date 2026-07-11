@@ -428,6 +428,26 @@ class StateManager:
         )
         conn.commit()
 
+    def rollback_all_delivered_synthetics(
+        self,
+        synthetic_id_threshold: int = 9_000_000_000_000_000_000,
+    ) -> int:
+        """Un-mark every delivered synthetic across all channels. Startup only.
+
+        A process crash mid-turn leaves synthetics delivered=1 with no turn
+        left to commit (delete) or roll them back -- they would be silently
+        dropped forever. At boot no turn is in flight, so anything still
+        marked delivered is orphaned; restore it for re-delivery.
+        Returns the number of rows restored.
+        """
+        conn = self._get_conn()
+        cur = conn.execute(
+            "UPDATE message_history SET delivered = 0 WHERE delivered = 1 AND message_id >= ?",
+            (synthetic_id_threshold,),
+        )
+        conn.commit()
+        return cur.rowcount
+
     def count_unread_real_messages(
         self,
         channel_id: int,
