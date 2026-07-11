@@ -16,6 +16,13 @@ if [ "$STOP_HOOK_ACTIVE" = "true" ]; then
   exit 0
 fi
 
+# Main-session only: beads agents share the channel cwd (and would share this
+# counter) but don't get WENDY_CHANNEL_ID -- they must not be nagged to
+# journal, and they must not burn the main session's nudge budget.
+if [ -z "$WENDY_CHANNEL_ID" ]; then
+  exit 0
+fi
+
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 if [ -z "$CWD" ]; then
   exit 0
@@ -46,21 +53,33 @@ INVOCATIONS=$(jq -r '.invocations_since_write // 0' < "$NUDGE_STATE")
 LAST_FIRED=$(jq -r '.last_fired_at // 0' < "$NUDGE_STATE")
 INVOCATIONS=$((INVOCATIONS + 1))
 NOW=$(date +%s)
+TMP_FILE="${NUDGE_STATE}.tmp.$$"
+
+THRESHOLD=15
+MIN_INTERVAL=10800  # 3 hours in seconds
+
+# If she journaled voluntarily within the interval, the nudge has done its
+# job -- reset the counter instead of nagging on a fixed schedule. (The
+# counter is named invocations_since_write; without this check it was really
+# "invocations since last nudge" and voluntary writes counted for nothing.)
+NEWEST_WRITE=$(find "$JOURNAL_DIR" -maxdepth 1 -type f -printf '%T@\n' 2>/dev/null | sort -rn | head -1 | cut -d. -f1)
+if [[ "$NEWEST_WRITE" =~ ^[0-9]+$ ]] && [ "$NEWEST_WRITE" -ge $((NOW - MIN_INTERVAL)) ]; then
+  jq --argjson now "$NOW" '.invocations_since_write = 0 | .last_check_at = $now' \
+    < "$NUDGE_STATE" > "$TMP_FILE" && mv "$TMP_FILE" "$NUDGE_STATE"
+  exit 0
+fi
 
 # Update state with incremented count
 jq --argjson inv "$INVOCATIONS" --argjson now "$NOW" \
   '.invocations_since_write = $inv | .last_check_at = $now' \
-  < "$NUDGE_STATE" > "${NUDGE_STATE}.tmp" && mv "${NUDGE_STATE}.tmp" "$NUDGE_STATE"
-
-THRESHOLD=15
-MIN_INTERVAL=10800  # 3 hours in seconds
+  < "$NUDGE_STATE" > "$TMP_FILE" && mv "$TMP_FILE" "$NUDGE_STATE"
 
 TIME_SINCE=$((NOW - LAST_FIRED))
 
 if [ "$INVOCATIONS" -ge "$THRESHOLD" ] && [ "$TIME_SINCE" -ge "$MIN_INTERVAL" ] 2>/dev/null; then
   # Reset counter and record fire time
   jq --argjson now "$NOW" '.invocations_since_write = 0 | .last_fired_at = $now' \
-    < "$NUDGE_STATE" > "${NUDGE_STATE}.tmp" && mv "${NUDGE_STATE}.tmp" "$NUDGE_STATE"
+    < "$NUDGE_STATE" > "$TMP_FILE" && mv "$TMP_FILE" "$NUDGE_STATE"
 
   jq -n --arg dir "$JOURNAL_DIR" '{
     decision: "block",

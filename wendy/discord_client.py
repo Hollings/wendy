@@ -871,6 +871,7 @@ class WendyBot(commands.Bot):
                 nudge_override=enrichment_nudge,
                 timeout_override=int(remaining) + 60 if remaining is not None else None,
                 max_turns=100 if job.is_enrichment else None,
+                enrichment=job.is_enrichment,
             )
             _LOG.info("CLI completed for channel %s", channel.id)
             # Turn succeeded: commit the synthetics the CLI consumed this turn.

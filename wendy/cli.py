@@ -503,7 +503,12 @@ def _resolve_session(
     return session_id, is_new_session, fork_mode
 
 
-def _build_cli_env(channel_name: str, channel_id: int, beads_enabled: bool) -> dict[str, str]:
+def _build_cli_env(
+    channel_name: str,
+    channel_id: int,
+    beads_enabled: bool,
+    enrichment: bool = False,
+) -> dict[str, str]:
     """Build the environment dict for the CLI subprocess.
 
     Strips sensitive variables, optionally sets BEADS_DIR, and points
@@ -515,6 +520,10 @@ def _build_cli_env(channel_name: str, channel_id: int, beads_enabled: bool) -> d
     # Channel context for helper scripts (msg, react)
     cli_env["WENDY_CHANNEL_ID"] = str(channel_id)
     cli_env["WENDY_PROXY_PORT"] = str(PROXY_PORT)
+    if enrichment:
+        # Lets hooks skip checks that conflict with lunch mode (the unread
+        # stop hook would demand `msgs`, which the API 403s during lunch).
+        cli_env["WENDY_ENRICHMENT"] = "1"
     # Pass auth and sync tokens explicitly so the CLI can authenticate even though
     # they're stripped from the general env (to keep them out of `env` output).
     if oauth_token := os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
@@ -734,6 +743,7 @@ async def run_cli(
     nudge_override: str | None = None,
     timeout_override: int | None = None,
     max_turns: int | None = None,
+    enrichment: bool = False,
 ) -> None:
     """Spawn the Claude CLI subprocess and stream its output.
 
@@ -779,10 +789,16 @@ async def run_cli(
     # bd is an external subprocess -- keep it off the event loop.
     beads_note = await asyncio.to_thread(get_beads_warning_for_nudge, channel_name) if beads_enabled else ""
 
-    compacted_flag = channel_dir(channel_name) / ".compacted"
-    was_compacted = compacted_flag.exists()
+    # The compaction flag is written by pre_compact.sh into the CLI's cwd
+    # (the parent folder for threads) and is session-scoped -- a bare
+    # .compacted couldn't tell a thread's compaction from its parent's.
+    flag_dir = channel_dir(session_cwd_folder)
+    compacted_flag = flag_dir / f".compacted_{session_id}"
+    legacy_flag = flag_dir / ".compacted"
+    was_compacted = compacted_flag.exists() or legacy_flag.exists()
     if was_compacted:
         compacted_flag.unlink(missing_ok=True)
+        legacy_flag.unlink(missing_ok=True)
 
     nudge_prompt = nudge_override or build_nudge_prompt(
         is_thread=is_thread, thread_name=thread_name,
@@ -813,7 +829,7 @@ async def run_cli(
             stderr=asyncio.subprocess.STDOUT,
             limit=10 * 1024 * 1024,
             cwd=channel_dir(session_cwd_folder),
-            env=_build_cli_env(channel_name, channel_id, beads_enabled),
+            env=_build_cli_env(channel_name, channel_id, beads_enabled, enrichment=enrichment),
             **user_kwargs,
         )
 
@@ -861,6 +877,7 @@ async def run_cli(
                     nudge_override=nudge_override,
                     timeout_override=timeout_override,
                     max_turns=max_turns,
+                    enrichment=enrichment,
                 )
             is_overloaded = "overloaded" in error_detail.lower()
             raise ClaudeCliError(

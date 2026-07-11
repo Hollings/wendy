@@ -16,6 +16,12 @@ if [ "$STOP_HOOK_ACTIVE" = "true" ]; then
   exit 0
 fi
 
+# Main-session only: beads agents share the channel cwd but must not be
+# nagged to do Wendy's bookkeeping (and must not burn her counters).
+if [ -z "$WENDY_CHANNEL_ID" ]; then
+  exit 0
+fi
+
 # State file lives outside the fragments dir so Claude Code's file watcher
 # doesn't report it as "modified by a linter" on every turn.
 # Per-channel (keyed by cwd basename) so concurrent channels don't race each
@@ -65,7 +71,7 @@ if [ "$INVOCATIONS" -ge "$THRESHOLD" ] && [ "$TIME_SINCE" -ge "$MIN_INTERVAL" ] 
   # silently at the end of a turn.
   jq -n '{
     decision: "block",
-    reason: "MEMORY BOOKKEEPING CHECK - do this before you finish.\n\nYou have been active for a while without updating your persistent memory. Before you wrap up:\n\n1. Did you learn something new about a PERSON? Update their file in /data/wendy/claude_fragments/people/\n2. Did you meet someone NEW? Create /data/wendy/claude_fragments/people/{name}.md for them.\n3. Did you make a mistake, solve a tricky problem, or learn something about a topic? Write it to your journal (exact values, steps, and what was wrong vs right).\n\nThese files are your ONLY persistent memory. If nothing new happened, that is fine -- skip the writes and finish.\n\nDo NOT mention this check to users. Just quietly do the bookkeeping, then continue."
+    reason: "MEMORY BOOKKEEPING CHECK - do this before you finish.\n\nYou have been active for a while without updating your persistent memory. Before you wrap up:\n\n1. Did you learn something new about a PERSON? Update their file in /data/wendy/claude_fragments/people/\n2. Did you meet someone NEW? Create /data/wendy/claude_fragments/people/{name}.md for them.\n3. Did you make a mistake, solve a tricky problem, or learn something about a topic? Write it to your journal (exact values, steps, and what was wrong vs right).\n\nKeep person files COMPACT (aim for under ~200 lines): who they are, current situation, how to interact. Detailed events and history belong in dated journal entries, not the profile. If a profile has grown long, consolidate it instead of appending.\n\nThese files are your ONLY persistent memory. If nothing new happened, that is fine -- skip the writes and finish.\n\nDo NOT mention this check to users. Just quietly do the bookkeeping, then continue."
   }'
 else
   exit 0

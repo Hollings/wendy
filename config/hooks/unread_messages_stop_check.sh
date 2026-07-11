@@ -26,6 +26,12 @@ if ! [[ "$CHANNEL_ID" =~ ^[0-9]+$ ]]; then
   exit 0
 fi
 
+# Lunch mode: check_messages is 403-blocked during enrichment, so demanding
+# `msgs` here would give contradictory orders. Skip.
+if [ "${WENDY_ENRICHMENT:-}" = "1" ]; then
+  exit 0
+fi
+
 DB="${WENDY_DB_PATH:-/data/wendy/shared/wendy.db}"
 if [ ! -f "$DB" ]; then
   exit 0
@@ -41,15 +47,24 @@ if ! [[ "$BOT_ID" =~ ^[0-9]+$ ]]; then
 fi
 SYNTH_THRESHOLD=9000000000000000000
 
-# Count unread real messages: newer than the seen cursor (COALESCE handles a
-# channel with no watermark yet -> count everything), below the synthetic
+# A channel with no watermark row has no meaningful "unread" concept -- after
+# !clear (which deletes the watermark) counting from -1 would report the
+# channel's ENTIRE history as unread. Fail open until the first read re-seats
+# the cursor.
+LAST_SEEN=$(sqlite3 "$DB" "
+  SELECT last_message_id FROM channel_last_seen WHERE channel_id = $CHANNEL_ID;
+" 2>/dev/null)
+if ! [[ "$LAST_SEEN" =~ ^[0-9]+$ ]]; then
+  exit 0
+fi
+
+# Count unread real messages: newer than the seen cursor, below the synthetic
 # threshold, not from the bot, and not a bot command (! or - prefix).
 COUNT=$(sqlite3 "$DB" "
   SELECT COUNT(*) FROM message_history
   WHERE channel_id = $CHANNEL_ID
     AND message_id < $SYNTH_THRESHOLD
-    AND message_id > COALESCE(
-      (SELECT last_message_id FROM channel_last_seen WHERE channel_id = $CHANNEL_ID), -1)
+    AND message_id > $LAST_SEEN
     AND author_id != $BOT_ID
     AND (content IS NULL OR (content NOT LIKE '!%' AND content NOT LIKE '-%'));
 " 2>/dev/null)
