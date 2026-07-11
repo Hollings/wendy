@@ -4,10 +4,9 @@ version: '3.8'
 #
 #   docker compose -f deploy/docker-compose.dev.yml up --build
 #
-# Claude sessions persist in a named volume (wendy_claude_dev) so you only
-# need to `claude login` once:
-#
-#   docker compose -f deploy/docker-compose.dev.yml exec wendy claude login
+# Auth: set CLAUDE_CODE_OAUTH_TOKEN in .env (generate with `claude setup-token`).
+# Do NOT use `claude login` -- it writes .credentials.json, which shadows the
+# env token and expires after ~2 days (see CLAUDE.md troubleshooting).
 #
 # Games use a bind mount instead of a named volume. Create the directory first:
 #
@@ -40,6 +39,7 @@ services:
       - WENDY_PROXY_PORT=8945
       - ORCHESTRATOR_CONCURRENCY=3
       - WENDY_WEB_URL=http://localhost:8910
+      - WENDY_PUBLIC_URL=http://localhost:8910
 
   web:
     build:

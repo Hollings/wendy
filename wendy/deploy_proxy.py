@@ -131,7 +131,10 @@ async def handle_game_logs(request: web.Request) -> web.Response:
     name = request.match_info["name"]
     if not _GAME_NAME_RE.match(name):
         return web.json_response({"error": "Invalid game name"}, status=400)
-    lines = int(request.query.get("lines", "100"))
+    try:
+        lines = int(request.query.get("lines", "100"))
+    except ValueError:
+        return web.json_response({"error": "lines must be an integer"}, status=400)
 
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:

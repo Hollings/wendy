@@ -344,11 +344,14 @@ async def handle_check_messages(request: web.Request) -> web.Response:
             status=403,
         )
 
-    limit = min(int(request.query.get("limit", "10")), MAX_MESSAGE_LIMIT)
+    try:
+        limit = min(int(request.query.get("limit", "10")), MAX_MESSAGE_LIMIT)
+        count_param = request.query.get("count")
+        count = min(int(count_param), MAX_MESSAGE_LIMIT) if count_param else None
+    except ValueError:
+        return web.json_response({"error": "limit and count must be integers"}, status=400)
     all_messages = request.query.get("all_messages", "").lower() == "true"
     peek = request.query.get("peek", "").lower() == "true"
-    count_param = request.query.get("count")
-    count = min(int(count_param), MAX_MESSAGE_LIMIT) if count_param else None
 
     channel_name = get_channel_name(channel_id)
     messages: list[dict] = []

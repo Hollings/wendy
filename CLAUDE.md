@@ -204,11 +204,14 @@ No circular imports. `paths.py`, `models.py`, and `config.py` are leaf modules �
 
 Active hooks:
 - **PreToolUse `Task`**: blocked — Wendy must use `bd` instead
-- **PostToolUse `Read`**: `remind_analyze_file.sh`
-- **PostToolUse `Bash`** (async): `log_bash_tool.sh`
-- **Stop**: `journal_stop_check.sh` (15 turns + 3h min interval), `prompt_bookkeeping.sh` (25 turns + 2h min interval)
+- **PostToolUse `Read`**: `remind_analyze_file.sh` (suggest analyze_file for user images)
+- **PostToolUse `Bash`** (async): `log_bash_tool.sh` (logs commands to SQLite)
+- **PreCompact**: `pre_compact.sh` (writes a session-scoped `.compacted_<id>` flag for the next nudge)
+- **Stop** (in order): `unread_messages_stop_check.sh` (blocks if unread real messages remain), `journal_stop_check.sh` (15 turns + 3h min interval, skipped if a journal write happened within the interval), `prompt_bookkeeping.sh` (25 turns + 2h min interval)
 
-`stop_hook_active = true` prevents infinite block loops.
+`stop_hook_active = true` prevents infinite block loops. The Stop hooks and
+counters are main-session only — they bail when `WENDY_CHANNEL_ID` is unset,
+which is how beads agents (same cwd, same settings.json) are excluded.
 
 ---
 
@@ -392,7 +395,6 @@ docker exec wendy ls -lt /root/.claude/projects/-data-wendy-channels-coding/ | h
 | `ORCHESTRATOR_CONCURRENCY` | Max concurrent beads agents | `3` |
 | `ORCHESTRATOR_POLL_INTERVAL` | Seconds between beads task polls | `30` |
 | `ORCHESTRATOR_AGENT_TIMEOUT` | Max beads agent runtime (seconds) | `14400` |
-| `JOURNAL_NUDGE_INTERVAL` | Invocations between journal nudges | `10` |
 | `WENDY_WEB_URL` | Internal endpoint of the wendy-web service (deploy proxy) | `http://localhost:8910` |
 | `WENDY_PUBLIC_URL` | Public base URL (system prompt `{web_url}`, webhook URLs) | `https://wendy.monster` |
 | `WENDY_BOT_NAME` | Bot display name (used in prompts) | `Wendy` |

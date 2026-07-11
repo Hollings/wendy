@@ -196,3 +196,37 @@ def test_stream_event_overloaded_precision():
     assert not _stream_event_is_overloaded({"type": "result", "is_error": False})
     assert _stream_event_is_overloaded({"type": "result", "is_error": True})
     assert _stream_event_is_overloaded({"type": "assistant", "isApiErrorMessage": True})
+
+
+# =========================================================================
+# CLI subprocess environment
+# =========================================================================
+
+
+def test_build_cli_env_strips_sensitive_but_keeps_auth(monkeypatch):
+    """SENSITIVE_ENV_VARS are stripped from the CLI env, but the CLI auth
+    token is explicitly re-added -- this exact path has silently broken
+    production auth before."""
+    from wendy.cli import _build_cli_env
+
+    monkeypatch.setenv("DISCORD_TOKEN", "super-secret")
+    monkeypatch.setenv("GEMINI_API_KEY", "also-secret")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-token-value")
+    monkeypatch.setenv("SOME_HARMLESS_VAR", "keep-me")
+
+    env = _build_cli_env("general", 123, beads_enabled=False)
+
+    assert "DISCORD_TOKEN" not in env
+    assert "GEMINI_API_KEY" not in env
+    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-token-value"
+    assert env["SOME_HARMLESS_VAR"] == "keep-me"
+    assert env["WENDY_CHANNEL_ID"] == "123"
+    assert "WENDY_ENRICHMENT" not in env
+
+
+def test_build_cli_env_beads_and_enrichment(monkeypatch):
+    from wendy.cli import _build_cli_env
+
+    env = _build_cli_env("coding", 456, beads_enabled=True, enrichment=True)
+    assert env["BEADS_DIR"].endswith(".beads")
+    assert env["WENDY_ENRICHMENT"] == "1"

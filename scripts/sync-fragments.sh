@@ -114,9 +114,17 @@ while IFS= read -r rel; do
         case "$choice" in
             r)
                 echo "  -> Pushing repo version to server..."
+                # people/ files must stay wendy-writable (uid 1000) -- Wendy
+                # edits them at runtime. Everything else is root-owned
+                # read-only, matching the entrypoint's ownership split.
+                if [[ "$rel" == people/* ]]; then
+                    OWNER="1000:1000"
+                else
+                    OWNER="root:root"
+                fi
                 scp -q "$LOCAL_DIR/$rel" "$SERVER:/tmp/_frag_sync_$$"
                 remote "docker cp /tmp/_frag_sync_$$ $CONTAINER:$REMOTE_DIR/$rel && \
-                        docker exec $CONTAINER chown root:root '$REMOTE_DIR/$rel' && \
+                        docker exec $CONTAINER chown $OWNER '$REMOTE_DIR/$rel' && \
                         rm /tmp/_frag_sync_$$"
                 echo "  Done."
                 break
