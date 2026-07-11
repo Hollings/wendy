@@ -72,6 +72,27 @@ def parse_frontmatter(text: str) -> tuple[dict | None, str]:
         return None, text
 
 
+# Parse cache: fragment files are read and parsed on every turn (the system
+# prompt build and the nudge roster both scan the directory), and person files
+# can grow large. Keyed by (mtime_ns, size) so runtime edits invalidate.
+_PARSE_CACHE: dict[Path, tuple[tuple[int, int], Fragment | None]] = {}
+
+
+def _cached(path: Path, parser) -> Fragment | None:
+    """Run *parser(path)* with an (mtime_ns, size)-keyed cache."""
+    try:
+        st = path.stat()
+        stamp = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return parser(path)
+    hit = _PARSE_CACHE.get(path)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    frag = parser(path)
+    _PARSE_CACHE[path] = (stamp, frag)
+    return frag
+
+
 def parse_fragment(path: Path) -> Fragment | None:
     """Read a file, parse frontmatter, validate, return Fragment."""
     try:
@@ -209,45 +230,48 @@ def matches_context(fragment: Fragment, messages: list[dict],
 # ---------------------------------------------------------------------------
 
 
-def _load_people_dir(people_dir: Path) -> list[Fragment]:
-    """Auto-load .md files from a people/ subdir as person fragments.
+def _parse_people_file(f: Path) -> Fragment | None:
+    """Parse one people/ file: frontmatter if valid, else auto-derive.
 
-    Files with valid frontmatter are parsed normally. Files without are
-    auto-derived as person fragments with keywords from the filename stem.
+    Auto-derived files become person fragments with keywords from the
+    filename stem and match_authors enabled.
     """
+    try:
+        text = f.read_text(encoding="utf-8")
+    except OSError as e:
+        _LOG.warning("Failed to read people file %s: %s", f, e)
+        return None
+
+    meta, _ = parse_frontmatter(text)
+    if meta is not None and meta.get("type") in VALID_TYPES:
+        return parse_fragment(f)
+
+    # Auto-derive: no valid frontmatter -- treat whole file as person entry
+    stem = f.stem
+    parts = re.split(r"[_\-\s]+", stem)
+    keywords = list(dict.fromkeys([stem] + [p for p in parts if p]))
+    return Fragment(
+        path=f,
+        type="person",
+        order=50,
+        channel="",
+        keywords=keywords,
+        match_authors=True,
+        select="",
+        content=text.strip(),
+        sticky=None,
+    )
+
+
+def _load_people_dir(people_dir: Path) -> list[Fragment]:
+    """Auto-load .md files from a people/ subdir as person fragments."""
     frags = []
     for f in people_dir.iterdir():
         if not f.is_file() or not f.name.endswith(".md"):
             continue
-        try:
-            text = f.read_text(encoding="utf-8")
-        except OSError as e:
-            _LOG.warning("Failed to read people file %s: %s", f, e)
-            continue
-
-        meta, _ = parse_frontmatter(text)
-        if meta is not None and meta.get("type") in VALID_TYPES:
-            frag = parse_fragment(f)
-            if frag is not None:
-                frags.append(frag)
-            continue
-
-        # Auto-derive: no valid frontmatter -- treat whole file as person entry
-        stem = f.stem
-        parts = re.split(r"[_\-\s]+", stem)
-        keywords = list(dict.fromkeys([stem] + [p for p in parts if p]))
-        frags.append(Fragment(
-            path=f,
-            type="person",
-            order=50,
-            channel="",
-            keywords=keywords,
-            match_authors=True,
-            select="",
-            content=text.strip(),
-            sticky=None,
-        ))
-
+        frag = _cached(f, _parse_people_file)
+        if frag is not None:
+            frags.append(frag)
     return frags
 
 
@@ -261,7 +285,7 @@ def scan_fragments(frag_dir: Path | None = None) -> list[Fragment]:
     for f in d.iterdir():
         if not f.is_file() or not f.name.endswith(".md"):
             continue
-        frag = parse_fragment(f)
+        frag = _cached(f, parse_fragment)
         if frag is not None:
             fragments.append(frag)
 

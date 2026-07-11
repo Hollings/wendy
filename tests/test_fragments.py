@@ -317,3 +317,17 @@ def test_get_present_context_frontmatterless_person(tmp_path):
     msgs = [{"author": "bob", "author_id": 0, "content": "hi"}]
     people, _topics = get_present_context(msgs, frag_dir=tmp_path)
     assert people == ["bob"]
+
+def test_parse_cache_invalidates_on_edit(tmp_path):
+    """Cached fragments are re-parsed when the file changes on disk."""
+    f = tmp_path / "topic_cache.md"
+    f.write_text("---\ntype: topic\nkeywords: [caching]\n---\nOriginal.")
+
+    frags = scan_fragments(tmp_path)
+    assert any(fr.content == "Original." for fr in frags)
+
+    # Runtime edit (Wendy edits fragments live) must be picked up.
+    f.write_text("---\ntype: topic\nkeywords: [caching]\n---\nEdited content here.")
+    frags2 = scan_fragments(tmp_path)
+    assert any(fr.content == "Edited content here." for fr in frags2)
+    assert not any(fr.content == "Original." for fr in frags2)
