@@ -81,7 +81,7 @@ Built fresh each invocation in `prompt.py:build_system_prompt()`:
 
 1. `config/system_prompt.txt` — base personality + tool docs (supports `<!-- FULL_ONLY_START -->..<!-- FULL_ONLY_END -->` blocks stripped in `chat` mode)
 2. Channel fragments (`common_*.md` + `{channel_id}_*.md`)
-3. Person fragments (contextual, based on who's talking)
+3. Person/topic awareness (a compact roster line in the per-turn nudge prompt, not the system prompt)
 4. `TOOL_INSTRUCTIONS_TEMPLATE` — how to use `msg`/`react` commands and the internal API
 5. Journal section — lists journal files, emits nudge if overdue
 6. Beads warning — active background task count

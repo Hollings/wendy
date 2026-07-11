@@ -7,12 +7,11 @@ from textwrap import dedent
 from wendy.fragments import (
     Fragment,
     execute_select,
-    get_new_context_introductions,
+    get_present_context,
     load_fragments,
     matches_context,
     parse_fragment,
     parse_frontmatter,
-    reset_introductions,
     scan_fragments,
 )
 
@@ -273,128 +272,48 @@ def test_load_fragments_includes_behavioral_topics(tmp_path):
     assert "Behavioral topic content." in result["topics"]
 
 
-def test_get_new_context_introductions_person(tmp_path):
-    """First mention of a person yields an intro; second mention does not."""
+def test_get_present_context_person_and_topic(tmp_path):
+    """Roster matching: people by author/keyword, non-behavioral topics by keyword."""
     people_dir = tmp_path / "people"
     people_dir.mkdir()
     (people_dir / "alice.md").write_text(
         "---\ntype: person\norder: 50\nkeywords: [alice]\nmatch_authors: true\n"
         "description: a friendly server regular\n---\nAlice info."
     )
-
-    state_dir = tmp_path / "state"
-    state_dir.mkdir()
-
-    msgs = [{"author": "alice", "author_id": 0, "content": "hello"}]
-
-    # First call: alice not yet introduced
-    intros = get_new_context_introductions(
-        "test", "session-abc", msgs, frag_dir=tmp_path, state_dir=state_dir
-    )
-    assert len(intros) == 1
-    assert "alice" in intros[0]
-    assert "a friendly server regular" in intros[0]
-    assert "Full profile:" in intros[0]
-
-    # Second call: alice already introduced -- no repeat
-    intros2 = get_new_context_introductions(
-        "test", "session-abc", msgs, frag_dir=tmp_path, state_dir=state_dir
-    )
-    assert intros2 == []
-
-
-def test_get_new_context_introductions_session_reset(tmp_path):
-    """Session change clears introduced list -- person gets re-introduced."""
-    people_dir = tmp_path / "people"
-    people_dir.mkdir()
-    (people_dir / "bob.md").write_text("Bob is around.")
-
-    state_dir = tmp_path / "state"
-    state_dir.mkdir()
-
-    msgs = [{"author": "bob", "author_id": 0, "content": "hi"}]
-
-    intros1 = get_new_context_introductions(
-        "test", "session-1", msgs, frag_dir=tmp_path, state_dir=state_dir
-    )
-    assert len(intros1) == 1
-
-    # Same session: no re-introduction
-    intros2 = get_new_context_introductions(
-        "test", "session-1", msgs, frag_dir=tmp_path, state_dir=state_dir
-    )
-    assert intros2 == []
-
-    # New session: re-introduction fires
-    intros3 = get_new_context_introductions(
-        "test", "session-2", msgs, frag_dir=tmp_path, state_dir=state_dir
-    )
-    assert len(intros3) == 1
-
-
-def test_get_new_context_introductions_skips_behavioral(tmp_path):
-    """behavioral: true topic fragments are not injected via this function."""
-    (tmp_path / "topic_style.md").write_text(
-        "---\ntype: topic\norder: 10\nkeywords: [magic]\nbehavioral: true\n---\nBehavioral content."
-    )
-
-    state_dir = tmp_path / "state"
-    state_dir.mkdir()
-
-    msgs = [{"author": "user", "author_id": 0, "content": "magic is here"}]
-    intros = get_new_context_introductions(
-        "test", "session-abc", msgs, frag_dir=tmp_path, state_dir=state_dir
-    )
-    assert intros == []
-
-
-def test_get_new_context_introductions_non_behavioral_topic(tmp_path):
-    """Non-behavioral topic fragments are injected when keywords match."""
     (tmp_path / "topic_info.md").write_text(
         "---\ntype: topic\norder: 10\nkeywords: [pokemon]\n"
         "description: relates to the GBA project\n---\nPokemon info."
     )
 
-    state_dir = tmp_path / "state"
-    state_dir.mkdir()
+    msgs = [{"author": "alice", "author_id": 0, "content": "let's talk about pokemon"}]
+    people, topics = get_present_context(msgs, frag_dir=tmp_path)
+    assert people == ["alice"]
+    assert topics == ["topic_info.md"]
 
-    msgs = [{"author": "user", "author_id": 0, "content": "let's talk about pokemon"}]
-    intros = get_new_context_introductions(
-        "test", "session-abc", msgs, frag_dir=tmp_path, state_dir=state_dir
+    # No matches -> empty roster
+    msgs2 = [{"author": "someone", "author_id": 0, "content": "unrelated"}]
+    people2, topics2 = get_present_context(msgs2, frag_dir=tmp_path)
+    assert people2 == []
+    assert topics2 == []
+
+
+def test_get_present_context_skips_behavioral(tmp_path):
+    """behavioral: true topics live in the system prompt -- not in the roster."""
+    (tmp_path / "topic_style.md").write_text(
+        "---\ntype: topic\norder: 10\nkeywords: [magic]\nbehavioral: true\n---\nBehavioral."
     )
-    assert len(intros) == 1
-    assert "pokemon" in intros[0].lower()
-    assert "relates to the GBA project" in intros[0]
-    assert "Reference:" in intros[0]
+    msgs = [{"author": "user", "author_id": 0, "content": "magic is here"}]
+    people, topics = get_present_context(msgs, frag_dir=tmp_path)
+    assert people == []
+    assert topics == []
 
 
-def test_reset_introductions(tmp_path):
-    """reset_introductions clears introduced keys but keeps session_id."""
+def test_get_present_context_frontmatterless_person(tmp_path):
+    """people/ files without frontmatter still match by filename-derived keywords."""
     people_dir = tmp_path / "people"
     people_dir.mkdir()
-    (people_dir / "carol.md").write_text("Carol info.")
+    (people_dir / "bob.md").write_text("Bob is around.")
 
-    state_dir = tmp_path / "state"
-    state_dir.mkdir()
-
-    msgs = [{"author": "carol", "author_id": 0, "content": "hi"}]
-
-    # Introduce carol
-    get_new_context_introductions(
-        "test", "session-xyz", msgs, frag_dir=tmp_path, state_dir=state_dir
-    )
-
-    # Verify carol is introduced (second call yields nothing)
-    intros = get_new_context_introductions(
-        "test", "session-xyz", msgs, frag_dir=tmp_path, state_dir=state_dir
-    )
-    assert intros == []
-
-    # Reset (simulating compaction)
-    reset_introductions("test", state_dir=state_dir)
-
-    # After reset: same session, carol should be re-introduced
-    intros_after = get_new_context_introductions(
-        "test", "session-xyz", msgs, frag_dir=tmp_path, state_dir=state_dir
-    )
-    assert len(intros_after) == 1
+    msgs = [{"author": "bob", "author_id": 0, "content": "hi"}]
+    people, _topics = get_present_context(msgs, frag_dir=tmp_path)
+    assert people == ["bob"]

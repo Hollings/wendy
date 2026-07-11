@@ -12,10 +12,11 @@ Assembly order:
   [6] Topics section (behavioral: true topic fragments only)
   [7] Anchors section (anchor_*.md fragments)
 
-Person fragments and non-behavioral topic fragments are injected as synthetic
-messages before each CLI invocation (see discord_client.py) rather than
-inline in the system prompt. This keeps the system prompt stable across turns
-so Claude's cache prefix is not invalidated by who is in the conversation.
+Person fragments and non-behavioral topic fragments are surfaced as a compact
+roster line in the per-turn nudge prompt (get_context_roster_for_nudge) rather
+than inline in the system prompt. This keeps the system prompt stable across
+turns so Claude's cache prefix is not invalidated by who is in the
+conversation.
 """
 from __future__ import annotations
 
@@ -191,6 +192,35 @@ BACKGROUND TASK SYSTEM (bd):
 Full reference: /app/config/docs/bd_usage.md
 ---
 """
+
+
+def get_context_roster_for_nudge(channel_id: int) -> str:
+    """Compact context roster for the nudge prompt, or empty string.
+
+    Lists people in the recent conversation who have saved profiles, and any
+    matching non-behavioral topic notes. One line each, rebuilt every turn --
+    no state files, no synthetic messages.
+    """
+    from .fragments import get_present_context, get_recent_messages
+
+    try:
+        messages = get_recent_messages(channel_id)
+        people, topics = get_present_context(messages, channel_id=str(channel_id))
+    except Exception as e:
+        _LOG.warning("Context roster failed: %s", e)
+        return ""
+
+    lines = []
+    if people:
+        lines.append(
+            f"[People here with saved profiles: {', '.join(people)} -- read "
+            f"/data/wendy/claude_fragments/people/<name>.md if you need background]"
+        )
+    if topics:
+        lines.append(
+            f"[Possibly relevant notes in /data/wendy/claude_fragments/: {', '.join(topics)}]"
+        )
+    return "\n".join(lines)
 
 
 def get_beads_warning_for_nudge(channel_name: str) -> str:

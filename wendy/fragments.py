@@ -303,12 +303,12 @@ def load_fragments(
 
     Returns dict with keys: "persons", "channel", "topics", "anchors".
 
-    "persons" is always empty string -- person context is injected via
-    synthetic messages using get_new_context_introductions().
+    "persons" is always empty string -- person context reaches Wendy via the
+    nudge roster line (see get_present_context()), not the system prompt.
 
     Topics only include behavioral: true fragments -- non-behavioral topics
-    are also injected via synthetic messages on first match per session.
-    Behavioral topics use sticky loading to keep the system prompt stable.
+    are surfaced through the nudge roster instead. Behavioral topics use
+    sticky loading to keep the system prompt stable.
     """
     msgs = messages or []
     auths = authors or [m.get("author", "").lower() for m in msgs]
@@ -432,124 +432,37 @@ def _format_anchors(frags: list[Fragment]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Context introduction injection (cache-stable dynamic context)
+# Present-context roster (person/topic awareness for the nudge prompt)
 # ---------------------------------------------------------------------------
 
-_INTRODUCED_FILE = ".introduced.json"
 
-
-def _load_introduced(chan_dir: Path) -> tuple[str, list[str]]:
-    """Load .introduced.json, returning (session_id, introduced_keys)."""
-    path = chan_dir / _INTRODUCED_FILE
-    try:
-        data = json.loads(path.read_text())
-        return str(data.get("session_id", "")), list(data.get("introduced", []))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return "", []
-
-
-def _save_introduced(chan_dir: Path, session_id: str, introduced: list[str]) -> None:
-    path = chan_dir / _INTRODUCED_FILE
-    try:
-        path.write_text(json.dumps({"session_id": session_id, "introduced": introduced}))
-    except OSError as e:
-        _LOG.warning("Failed to save introduced state: %s", e)
-
-
-def _fragment_key(frag: Fragment) -> str:
-    """Return a stable string key for a fragment (used in .introduced.json)."""
-    if frag.path.parent.name == "people":
-        return f"people/{frag.path.name}"
-    return frag.path.name
-
-
-def _make_intro_string(frag: Fragment) -> str:
-    """Build the synthetic intro message text for a newly-relevant fragment."""
-    frag_path = str(frag.path)
-    if frag.type == "person":
-        name = frag.path.stem
-        if frag.description:
-            return (
-                f"[Context] {name} is in this conversation -- {frag.description}. "
-                f"Full profile: {frag_path}"
-            )
-        return f"[Context] {name} is in this conversation. Full profile: {frag_path}"
-    if frag.type == "topic":
-        kw = frag.keywords[0] if frag.keywords else frag.path.stem
-        if frag.description:
-            return (
-                f'[Context] "{kw}" was just mentioned -- {frag.description}. '
-                f"Reference: {frag_path}"
-            )
-        return f'[Context] "{kw}" was just mentioned. Reference: {frag_path}'
-    return ""
-
-
-def get_new_context_introductions(
-    channel_name: str,
-    session_id: str,
+def get_present_context(
     messages: list[dict],
     channel_id: str = "",
     frag_dir: Path | None = None,
-    state_dir: Path | None = None,
-) -> list[str]:
-    """Return intro strings for person/topic fragments newly relevant this session.
+) -> tuple[list[str], list[str]]:
+    """Return (person names, non-behavioral topic filenames) matching *messages*.
 
-    Runs fragment matching logic and cross-references .introduced.json to find
-    non-behavioral person/topic fragments that match the current messages but
-    haven't been introduced yet in this session. Updates .introduced.json as a
-    side effect.
-
-    Returns a list of synthetic intro message strings ready for insertion.
+    Replaces the old synthetic context-introduction system: instead of
+    stateful one-shot intro messages (which the msgs display filter swallowed
+    anyway), the nudge prompt carries a one-line roster built from this every
+    turn. behavioral: true topics stay in the system prompt and are excluded.
     """
-    chan_dir = state_dir or channel_dir(channel_name)
-    stored_session_id, introduced_keys = _load_introduced(chan_dir)
-
-    # If session changed, reset introduced list
-    if stored_session_id != session_id:
-        introduced_keys = []
-
     authors = [m.get("author", "").lower() for m in messages]
-    all_frags = scan_fragments(frag_dir)
+    people: list[str] = []
+    topics: list[str] = []
 
-    new_intros: list[str] = []
-    newly_introduced = list(introduced_keys)
-
-    for frag in all_frags:
-        if frag.type not in ("person", "topic"):
+    for frag in scan_fragments(frag_dir):
+        if frag.behavioral or not frag.content:
             continue
-        # behavioral: true fragments stay in the system prompt -- skip here
-        if frag.behavioral:
-            continue
-        if not frag.content:
-            continue
-        if not matches_context(frag, messages, authors, channel_id):
-            continue
+        if frag.type == "person":
+            if matches_context(frag, messages, authors, channel_id):
+                people.append(frag.path.stem)
+        elif frag.type == "topic":
+            if matches_context(frag, messages, authors, channel_id):
+                topics.append(frag.path.name)
 
-        key = _fragment_key(frag)
-        if key in introduced_keys:
-            continue
-
-        intro = _make_intro_string(frag)
-        if intro:
-            new_intros.append(intro)
-            newly_introduced.append(key)
-
-    if new_intros or stored_session_id != session_id:
-        _save_introduced(chan_dir, session_id, newly_introduced)
-
-    return new_intros
-
-
-def reset_introductions(channel_name: str, state_dir: Path | None = None) -> None:
-    """Clear the introduced list for a channel (called after session compaction).
-
-    Keeps the session_id but resets the introduced keys to [] so context
-    gets re-introduced via synthetic messages on the next turn.
-    """
-    chan_dir = state_dir or channel_dir(channel_name)
-    stored_session_id, _ = _load_introduced(chan_dir)
-    _save_introduced(chan_dir, stored_session_id, [])
+    return sorted(set(people)), sorted(set(topics))
 
 
 # ---------------------------------------------------------------------------

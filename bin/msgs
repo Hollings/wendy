@@ -24,16 +24,15 @@ DISPLAY_TZ = ZoneInfo("America/Los_Angeles")
 
 
 def filter_messages(messages: list[dict], bot_id: str = "0") -> list[dict]:
-    """Drop context-replay messages, then strip leading messages from the bot.
+    """Strip leading messages from the bot; keep everything else.
 
     Synthetic system messages (task completions, self-wakes, webhooks -- IDs at
     or above SYNTHETIC_THRESHOLD) are KEPT: they are often the entire reason
-    Wendy was woken. Only "Context..." replay messages are hidden. Leading bot
-    messages are dropped because Wendy already knows what she just said; bot
-    messages that follow a human message are kept so she sees the context she
-    was replying to.
+    Wendy was woken. Leading bot messages are dropped because Wendy already
+    knows what she just said; bot messages that follow a human message are kept
+    so she sees the context she was replying to.
     """
-    real = [m for m in messages if not m.get("author", "").startswith("Context")]
+    real = list(messages)
     while real and str(real[0].get("author_id", "")) == bot_id:
         real.pop(0)
     return real

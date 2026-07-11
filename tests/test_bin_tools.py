@@ -148,11 +148,6 @@ def test_filter_messages_keeps_synthetic():
     assert [m["message_id"] for m in out] == [1, msgs.SYNTHETIC_THRESHOLD, msgs.SYNTHETIC_THRESHOLD + 5]
 
 
-def test_filter_messages_drops_context_author():
-    messages = [{"message_id": 1, "author": "Context (restored)", "author_id": "10"}]
-    assert msgs.filter_messages(messages, bot_id="0") == []
-
-
 def test_filter_messages_strips_leading_bot_messages():
     messages = [
         {"message_id": 1, "author": "wendy", "author_id": "42"},

@@ -238,11 +238,11 @@ def build_cli_command(
 
 
 def build_nudge_prompt(
-    channel_id: int,
     is_thread: bool = False,
     thread_name: str | None = None,
     journal_note: str = "",
     beads_note: str = "",
+    roster_note: str = "",
     was_compacted: bool = False,
 ) -> str:
     """Build the nudge prompt sent to Claude CLI via stdin."""
@@ -266,7 +266,7 @@ def build_nudge_prompt(
         "After this, go back to plain `msgs` with no flags -- "
         "do not use -n unless you have a specific reason.>"
     ) if was_compacted else ""
-    extras = "\n".join(x for x in [journal_note, beads_note, compacted_note] if x)
+    extras = "\n".join(x for x in [roster_note, journal_note, beads_note, compacted_note] if x)
     return base + ("\n" + extras if extras else "")
 
 
@@ -769,21 +769,25 @@ async def run_cli(
         effort_args=effort_args, max_turns=max_turns,
     )
 
-    from .prompt import get_beads_warning_for_nudge, get_journal_listing_for_nudge
+    from .prompt import (
+        get_beads_warning_for_nudge,
+        get_context_roster_for_nudge,
+        get_journal_listing_for_nudge,
+    )
     journal_note = get_journal_listing_for_nudge(channel_name)
-    beads_note = get_beads_warning_for_nudge(channel_name) if beads_enabled else ""
+    roster_note = get_context_roster_for_nudge(channel_id)
+    # bd is an external subprocess -- keep it off the event loop.
+    beads_note = await asyncio.to_thread(get_beads_warning_for_nudge, channel_name) if beads_enabled else ""
 
     compacted_flag = channel_dir(channel_name) / ".compacted"
     was_compacted = compacted_flag.exists()
     if was_compacted:
         compacted_flag.unlink(missing_ok=True)
-        from .fragments import reset_introductions
-        reset_introductions(channel_name)
 
     nudge_prompt = nudge_override or build_nudge_prompt(
-        channel_id, is_thread=is_thread, thread_name=thread_name,
+        is_thread=is_thread, thread_name=thread_name,
         journal_note=journal_note, beads_note=beads_note,
-        was_compacted=was_compacted,
+        roster_note=roster_note, was_compacted=was_compacted,
     )
 
     # Ensure filesystem prerequisites.

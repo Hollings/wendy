@@ -846,22 +846,6 @@ class WendyBot(commands.Bot):
             resolved_model = resolve_model(channel_config.get("model") or "sonnet")
             effort_args = _get_current_effort(resolved_model)
 
-            # Inject context introductions for newly relevant persons/topics.
-            channel_name = _folder_for_config(channel_config)
-            session_info = sessions.get_session(channel.id)
-            if session_info:
-                from .fragments import get_new_context_introductions
-                from .fragments import get_recent_messages as _get_recent_msgs
-                recent_msgs = _get_recent_msgs(channel.id)
-                intros = get_new_context_introductions(
-                    channel_name=channel_name,
-                    session_id=session_info.session_id,
-                    messages=recent_msgs,
-                    channel_id=str(channel.id),
-                )
-                for intro in intros:
-                    self._insert_synthetic_message(channel.id, "Context", intro)
-
             if job.is_enrichment:
                 remaining = max(60.0, job.enrichment_end_timestamp - time.time())
                 if job.enrichment_continuation:
