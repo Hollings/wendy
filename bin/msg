@@ -18,6 +18,20 @@ import sys
 import urllib.request
 
 
+def format_error_output(result):
+    """Render an error response, keeping any delivered messages visible.
+
+    A blocked send consumes the pending messages server-side -- this error
+    response is their ONLY delivery. A follow-up `msgs` reports nothing new,
+    so dropping new_messages/guidance here loses the messages permanently.
+    Returns the full JSON payload when extra context exists, otherwise a
+    plain one-line error.
+    """
+    if result.get("new_messages") or result.get("guidance"):
+        return json.dumps(result, indent=2)
+    return f"Error: {result['error']}"
+
+
 def build_body(channel_id, content, file=None, reply=None, force=False):
     """Assemble the /api/send_message request body, omitting unset fields."""
     body = {"channel_id": channel_id, "content": content}
@@ -69,7 +83,7 @@ def main():
         resp = urllib.request.urlopen(req)
         result = json.loads(resp.read().decode())
         if result.get("error"):
-            print(f"Error: {result['error']}", file=sys.stderr)
+            print(format_error_output(result), file=sys.stderr)
             sys.exit(1)
         # Echo back what Discord actually delivered
         msg_id = result.get("message_id", "?")

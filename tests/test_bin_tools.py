@@ -133,6 +133,36 @@ def test_build_body_full():
 
 
 # --------------------------------------------------------------------------- #
+# bin/msg -- error rendering (blocked-send delivery)
+# --------------------------------------------------------------------------- #
+
+def test_format_error_output_plain_error():
+    out = msg.format_error_output({"error": "Channel 5 not found"})
+    assert out == "Error: Channel 5 not found"
+
+
+def test_format_error_output_blocked_send_includes_new_messages():
+    # A blocked send consumes the messages server-side; the error response is
+    # their only delivery. The full payload must be shown or they are lost
+    # (a follow-up `msgs` reports nothing new).
+    result = {
+        "error": "Send blocked: new messages arrived since your last check.",
+        "new_messages": [{"message_id": 123, "author": "alice", "content": "hey wendy"}],
+        "guidance": "Prefer sending ONE message that responds to all users at once.",
+    }
+    out = msg.format_error_output(result)
+    assert "hey wendy" in out
+    assert "alice" in out
+    assert "guidance" in out
+
+
+def test_format_error_output_guidance_without_messages_still_shown():
+    result = {"error": "blocked", "new_messages": [], "guidance": "do the thing"}
+    out = msg.format_error_output(result)
+    assert "do the thing" in out
+
+
+# --------------------------------------------------------------------------- #
 # bin/msgs -- filtering and formatting
 # --------------------------------------------------------------------------- #
 

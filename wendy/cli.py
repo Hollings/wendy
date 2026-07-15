@@ -63,7 +63,10 @@ REAL-TIME CHANNEL TOOLS (Channel ID: {channel_id})
    Reply to a specific message (use sparingly - only when referencing a specific post for context):
    msg -r MESSAGE_ID 'great point'
 
-   If the API returns an error about new messages, check them and incorporate into your reply. If you've already checked and want to send anyway:
+   If the send is blocked because new messages arrived, the blocked response itself
+   contains them in "new_messages" -- read them from that output. Do NOT run msgs
+   afterward: the blocked response is the delivery, so msgs will report nothing new.
+   Incorporate them and retry. If you've already seen them and want to send anyway:
    msg --force 'your message'
 
    The response includes a "new_messages" array with any messages that arrived while you were working. Check it -- if there are new messages, respond to them too before finishing.

@@ -273,7 +273,12 @@ async def handle_send_message(request: web.Request) -> web.Response:
         if new_messages:
             _consume_delivered_messages(channel_id, new_messages)
             return web.json_response({
-                "error": "New messages received since your last check. Review them and retry.",
+                "error": (
+                    "Send blocked: new messages arrived since your last check. "
+                    "They are included below in new_messages -- this response is their "
+                    "only delivery, so do NOT run msgs (it will report nothing new). "
+                    "Address them and retry your send."
+                ),
                 "new_messages": new_messages,
                 "guidance": (
                     "Prefer sending ONE message that responds to all users at once, "
