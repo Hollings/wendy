@@ -210,3 +210,37 @@ def test_consume_delivered_messages_unblocks_retry(tmp_path, monkeypatch):
     # The synthetic is marked delivered, not deleted (commit/rollback later).
     rows = sm.fetch_messages(channel, since_id=2002)
     assert rows == []
+
+
+def test_check_for_new_messages_includes_attachments(tmp_path, monkeypatch):
+    """The blocked-send payload is the ONLY delivery of the messages it
+    carries, so an image-only message must include its attachment paths --
+    otherwise Wendy sees empty content and has no way to find the file."""
+    from wendy import api_server
+    from wendy.state import StateManager
+
+    sm = StateManager(db_path=tmp_path / "t.db")
+    sm._get_conn()
+    monkeypatch.setattr(api_server, "state_manager", sm)
+    monkeypatch.setattr(api_server, "get_channel_name", lambda cid: "chat")
+
+    att = ["/data/wendy/channels/chat/attachments/msg_3001_0_cat.png"]
+    monkeypatch.setattr(
+        api_server, "find_attachments_for_message",
+        lambda mid, name: att if mid == 3001 else [],
+    )
+
+    channel = 7
+    sm.insert_message(
+        message_id=3000, channel_id=channel, guild_id=1, author_id=42,
+        author_nickname="user", is_bot=False, content="hi", timestamp=1,
+    )
+    sm.update_last_seen(channel, 3000)
+    sm.insert_message(
+        message_id=3001, channel_id=channel, guild_id=1, author_id=42,
+        author_nickname="user", is_bot=False, content="", timestamp=2,
+    )
+
+    pending = api_server.check_for_new_messages(channel)
+    assert [m["message_id"] for m in pending] == [3001]
+    assert pending[0]["attachments"] == att

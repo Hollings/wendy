@@ -79,14 +79,24 @@ def check_for_new_messages(channel_id: int) -> list[dict]:
     """Return new *real* messages since the last ``check_messages`` call.
 
     Thin wrapper around ``state_manager.check_for_new_messages`` that passes
-    the bot user ID and config constants.
+    the bot user ID and config constants, and enriches results with local
+    attachment paths. Attachments matter here: a blocked send consumes these
+    messages, so this payload is their only delivery -- an image-only message
+    would otherwise arrive as empty content with no way to see the file.
     """
-    return state_manager.check_for_new_messages(
+    messages = state_manager.check_for_new_messages(
         channel_id,
         bot_user_id=_config.WENDY_BOT_ID,
         synthetic_id_threshold=SYNTHETIC_ID_THRESHOLD,
         max_limit=MAX_MESSAGE_LIMIT,
     )
+    if messages:
+        channel_name = get_channel_name(channel_id)
+        for m in messages:
+            paths = find_attachments_for_message(m["message_id"], channel_name)
+            if paths:
+                m["attachments"] = paths
+    return messages
 
 
 def _consume_delivered_messages(channel_id: int, messages: list[dict]) -> None:
