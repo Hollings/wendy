@@ -29,3 +29,7 @@ services/web/brain-ui/node_modules/
 # Polecat/agent private instructions (never checked in)
 CLAUDE.local.md
 wendy/_version.txt
+
+# Beads redirect is a per-machine dev artifact (points into the local rig);
+# shipping it poisons bd database discovery inside the container.
+.beads/redirect

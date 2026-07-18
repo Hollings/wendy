@@ -1066,6 +1066,8 @@ class WendyBot(commands.Bot):
                 notification_ids.append(notif.id)
                 if notif.type == "task_completion":
                     self._handle_task_notification(notif, channels_to_wake)
+                elif notif.type == "task_started":
+                    self._handle_task_started_notification(notif)
                 elif notif.type == "webhook":
                     self._handle_webhook_notification(notif)
 
@@ -1175,15 +1177,36 @@ class WendyBot(commands.Bot):
         task_id = payload.get("task_id", "unknown")
         status = payload.get("status", "completed")
         duration = payload.get("duration", "")
+        summary = (payload.get("summary") or "").strip()
 
         author = "Task System"
         content = f"[{author}] Background task {task_id} ({notif.title}) {status}"
         if duration:
             content += f" in {duration}"
-        content += ". YOU MUST send a message to the channel announcing this completion."
+        content += "."
+        if summary:
+            content += f"\nAgent report: {summary}"
+        content += (
+            "\nVerify the output actually exists (check any paths in the report), "
+            "then send a brief message updating the channel. If nobody was waiting "
+            "on this task, keep the announcement short and low-key."
+        )
 
         self._insert_synthetic_message(channel_id, author, content)
         channels_to_wake.add(channel_id)
+
+    def _handle_task_started_notification(self, notif) -> None:
+        """Insert a synthetic message noting an agent started (does not wake the bot)."""
+        channel_id = self._resolve_notification_channel(notif.channel_id)
+        if not channel_id:
+            return
+        payload = notif.payload or {}
+        task_id = payload.get("task_id", "unknown")
+        author = "Task System"
+        self._insert_synthetic_message(
+            channel_id, author,
+            f"[{author}] Background task {task_id} ({notif.title}) started -- an agent is working on it now.",
+        )
 
     def _handle_webhook_notification(self, notif) -> None:
         """Insert a synthetic message for a webhook (does not wake the bot)."""

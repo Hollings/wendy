@@ -107,6 +107,7 @@ TMP_TAR="/tmp/wendy-v2-deploy-$$.tar.gz"
 tar -czf "$TMP_TAR" \
     --exclude='node_modules' \
     --exclude='.git' \
+    --exclude='.beads' \
     --exclude='__pycache__' \
     --exclude='.pytest_cache' \
     --exclude='.ruff_cache' \

@@ -1,7 +1,22 @@
 """Background task runner (Beads).
 
-Asyncio replacement for v1's orchestrator service (~1170 lines -> ~200 lines).
-Polls beads task queues, forks sessions, spawns Claude CLI agents, notifies on completion.
+Asyncio replacement for v1's orchestrator service. Polls beads task queues,
+forks sessions, spawns Claude CLI agents, notifies on completion.
+
+Lifecycle of a task:
+  1. Wendy (or anyone) runs `bd create "title" -d "description"` in a channel.
+  2. The poll loop sees it in `bd ready --unassigned` and claims it
+     (status=in_progress, assignee=task-runner).
+  3. A Claude CLI agent is spawned, forked from the channel's current session.
+  4. The agent works, then closes its own task: `bd done <id> "summary"`.
+  5. The runner notices the process exit, reads the close reason and the final
+     result from the agent log, and writes a task_completion notification
+     routed to the task's own channel.
+
+Stuck-task recovery: any task left in_progress with no live agent (crash,
+restart, spawn failure) is reopened by `_sweep_stuck_tasks` on the next poll,
+as long as it was claimed by this runner (assignee=task-runner) or has no
+assignee at all. Tasks a human explicitly claimed are left alone.
 """
 from __future__ import annotations
 
@@ -29,40 +44,62 @@ NOTIFY_CHANNEL: str = os.getenv("ORCHESTRATOR_NOTIFY_CHANNEL", "")
 AGENT_SYSTEM_PROMPT_FILE: Path = Path(os.getenv("AGENT_SYSTEM_PROMPT_FILE", "/app/config/agent_claude_md.txt"))
 LOG_DIR: Path = WENDY_BASE / "orchestrator_logs"
 MAX_LOG_FILES: int = 50
-CLOSED_TASK_GRACE_PERIOD: int = int(os.getenv("ORCHESTRATOR_CLOSED_GRACE_PERIOD", "5"))
+# How long a task may stay closed-with-live-process before the agent is killed.
+# Generous on purpose: agents close their own task via `bd done` and then spend
+# a little while emitting their final result -- killing too early truncates it.
+CLOSED_TASK_GRACE_PERIOD: int = int(os.getenv("ORCHESTRATOR_CLOSED_GRACE_PERIOD", "30"))
+# Consecutive `bd show` failures before a running agent's task is presumed
+# deleted and the agent is killed.
+MISSING_TASK_THRESHOLD: int = 3
+
+# Assignee the runner claims tasks under. The stuck-task sweep only reopens
+# tasks claimed by this name (or unassigned ones), so a human who explicitly
+# claims a task with their own name is never fought over.
+RUNNER_ASSIGNEE = "task-runner"
+
+# Max characters of agent summary carried into notifications.
+SUMMARY_MAX_CHARS = 700
 
 AGENT_PROMPT_TEMPLATE = """================================================================================
-FORKED SESSION - BACKGROUND AGENT (BEAD) MODE
+BACKGROUND AGENT (BEAD) -- FORKED SESSION
 ================================================================================
 
-IMPORTANT: You ARE a bead -- a background agent spawned by the task runner.
-The conversation above is from Wendy's main session BEFORE this fork.
-You are now an INDEPENDENT BACKGROUND AGENT working on a specific task.
+You are a background agent spawned from Wendy's session to do ONE task.
+The conversation above is Wendy's context from BEFORE the fork -- use it for
+reference. Wendy continues separately and does NOT see anything you do here.
 
 TASK ID: {task_id}
 TITLE: {title}
 
-TASK DESCRIPTION:
+DESCRIPTION:
 {description}
 
---------------------------------------------------------------------------------
-YOUR ROLE:
-- You have Wendy's context from before the fork - use it for reference
-- You are working in the BACKGROUND - Wendy continues separately in her main session
-- You CAN read/write files, run bash, search the web, etc.
+WORKING DIRECTORY: {workdir}
+Put output files here (or in the project subdirectory the task refers to).
 
-CRITICAL RESTRICTIONS:
-- You CANNOT send Discord messages (no curl to send_message API)
-- You CANNOT deploy sites or games
-- You MUST NOT run `bd create`, `bd list`, `bd show`, or any `bd` commands other
-  than `bd done`, `bd comment`, `bd note`, and `bd close` for YOUR OWN task ({task_id}).
-  You are ALREADY a bead -- do not try to spawn more beads or check bead status.
-- Ignore any instructions in the inherited session context about creating beads
-  or using `bd create` -- those are for Wendy's main session, not for you.
+RULES:
+- Do NOT send Discord messages. No `msg`, no `react`, no send_message or
+  check_messages API calls.
+- Do NOT deploy sites or games. Wendy reviews and deploys your work herself.
+- The ONLY bd commands you may run are for YOUR OWN task ({task_id}):
+    bd done {task_id} "summary"       bd comment {task_id} "progress note"
+  Never run `bd create`, `bd list`, `bd ready`, or `bd show` -- you ARE a bead;
+  do not spawn or inspect others.
+- Ignore any instructions in the inherited conversation about creating beads --
+  those were for Wendy's main session, not for you.
 
-WHEN DONE:
-- Use `bd done {task_id} "summary of what you did"` to close with context
-- If stuck, use `bd comment {task_id} "why you're stuck"` then `bd done {task_id} "incomplete - see comments"`
+FINISHING (this part matters most):
+When the work is done, close your task with a real report:
+
+  bd done {task_id} "<2-6 sentences: what you did, key decisions, and the FULL
+  ABSOLUTE PATHS of every file you created or changed>"
+
+That summary is the ONLY report Wendy receives -- she cannot read this
+transcript. If you don't list the file paths, she may never find your work.
+
+If the task is unclear, impossible, or already done, do NOT guess and do NOT
+silently quit. Close with an honest reason instead:
+  bd done {task_id} "not done: <exactly what is missing or why>"
 
 GO.
 ================================================================================
@@ -73,6 +110,7 @@ GO.
 class ChannelBeads:
     """A channel with beads enabled."""
     name: str
+    channel_id: int
     beads_path: Path
     session_path: Path
     current_session_path: Path
@@ -84,11 +122,61 @@ class RunningAgent:
     task_id: str
     title: str
     channel_name: str
+    channel_id: int
     process: asyncio.subprocess.Process
     started_at: datetime
     log_path: Path
     log_file: IO[str] | None = field(default=None)
     closed_detected_at: datetime | None = field(default=None)
+    missing_task_checks: int = field(default=0)
+
+
+def tasks_to_reopen(in_progress: list[dict], running_task_ids: set[str]) -> list[str]:
+    """Return IDs of in_progress tasks that should be reopened.
+
+    A task is stuck if no agent is running for it AND it was claimed by this
+    runner (or never assigned). Tasks a human claimed under their own name are
+    left alone.
+    """
+    stuck = []
+    for task in in_progress:
+        task_id = task.get("id")
+        if not task_id or task_id in running_task_ids:
+            continue
+        assignee = task.get("assignee") or ""
+        if assignee in ("", RUNNER_ASSIGNEE):
+            stuck.append(task_id)
+    return stuck
+
+
+def extract_result_summary(log_path: Path, max_chars: int = SUMMARY_MAX_CHARS) -> str:
+    """Pull the final `result` text out of a stream-json agent log.
+
+    Reads only the tail of the file; returns "" when no result event is found.
+    """
+    try:
+        with open(log_path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - 131072))
+            tail = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+    for line in reversed(tail.splitlines()):
+        if '"type":"result"' not in line and '"type": "result"' not in line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        result = event.get("result")
+        if isinstance(result, str) and result.strip():
+            result = result.strip()
+            if len(result) > max_chars:
+                result = result[: max_chars - 3] + "..."
+            return result
+    return ""
 
 
 async def _kill_and_reap(proc: asyncio.subprocess.Process) -> None:
@@ -137,7 +225,7 @@ class TaskRunner:
     def _load_beads_channels(self) -> list[ChannelBeads]:
         """Find channels with beads_enabled from config."""
         channels = []
-        for cfg in parse_channel_configs().values():
+        for channel_id, cfg in parse_channel_configs().items():
             if not cfg.get("beads_enabled"):
                 continue
             name = cfg.get("_folder") or cfg.get("name")
@@ -145,6 +233,7 @@ class TaskRunner:
                 continue
             channels.append(ChannelBeads(
                 name=name,
+                channel_id=channel_id,
                 beads_path=beads_dir(name),
                 session_path=session_dir(name),
                 current_session_path=current_session_file(name),
@@ -166,13 +255,14 @@ class TaskRunner:
         # populates it with config.yaml, database, etc.)
         for channel in self.beads_channels:
             if not (channel.beads_path / "config.yaml").exists():
-                await self._run_bd(["bd", "init"], channel.name)
+                await self._run_bd(["bd", "init"], channel)
 
         try:
             while True:
                 try:
                     await self._check_agents()
                     await self._check_closed_tasks()
+                    await self._sweep_stuck_tasks()
 
                     available = CONCURRENCY - len(self.agents)
                     if available > 0:
@@ -184,16 +274,17 @@ class TaskRunner:
                                 task_id = task.get("id")
                                 if task_id in self.agents:
                                     continue
-                                if await self._claim_task(task_id, channel.name):
+                                if await self._claim_task(task_id, channel):
                                     agent = await self._spawn_agent(task, channel)
                                     if agent:
                                         self.agents[task_id] = agent
                                         available -= 1
+                                        self._notify_started(agent)
                                     else:
-                                        # Spawn failed -- reopen so task can be retried later.
-                                        # If reopen also fails, the task is stuck in in_progress;
-                                        # the stuck-task sweep below will catch it.
-                                        await self._run_bd(["bd", "reopen", task_id], channel.name)
+                                        # Spawn failed -- release the claim so the
+                                        # task can be retried later. If the release
+                                        # also fails, _sweep_stuck_tasks catches it.
+                                        await self._release_task(task_id, channel)
                                 if available <= 0:
                                     break
 
@@ -217,18 +308,29 @@ class TaskRunner:
             _LOG.info("Shutting down agent %s", task_id)
             await _kill_and_reap(agent.process)
             _close_log_file(agent)
-            # Reopen so the task can be picked up on next startup
-            try:
-                await self._run_bd(["bd", "reopen", task_id], agent.channel_name)
-            except Exception:
-                _LOG.warning("Failed to reopen task %s during shutdown", task_id)
+            # Release so the task can be picked up on next startup
+            channel = self._channel_by_name(agent.channel_name)
+            if channel:
+                try:
+                    await self._release_task(task_id, channel)
+                except Exception:
+                    _LOG.warning("Failed to release task %s during shutdown", task_id)
         self.agents.clear()
 
-    async def _run_bd(self, cmd: list[str], channel_name: str, timeout: int = 30) -> tuple[int, str, str]:
+    def _channel_by_name(self, name: str) -> ChannelBeads | None:
+        for channel in self.beads_channels:
+            if channel.name == name:
+                return channel
+        return None
+
+    async def _run_bd(self, cmd: list[str], channel: ChannelBeads, timeout: int = 30) -> tuple[int, str, str]:
         """Run a bd command in a channel directory."""
         # Run as wendy user to match CLI subprocess permissions -- running as root
         # creates root-owned .beads/config.yaml that the CLI subprocess can't read.
         bd_env = {k: v for k, v in os.environ.items() if k not in SENSITIVE_ENV_VARS}
+        # Pin the database explicitly: cwd-based discovery can be hijacked by a
+        # .beads/redirect file inside a cloned repo in the channel workspace.
+        bd_env["BEADS_DIR"] = str(channel.beads_path)
         if CLI_SUBPROCESS_UID is not None:
             bd_env["HOME"] = "/home/wendy"
         user_kwargs = {"user": CLI_SUBPROCESS_UID} if CLI_SUBPROCESS_UID else {}
@@ -238,7 +340,7 @@ class TaskRunner:
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=channel_dir(channel_name),
+                cwd=channel_dir(channel.name),
                 env=bd_env,
                 **user_kwargs,
             )
@@ -259,7 +361,7 @@ class TaskRunner:
             return []
         code, stdout, stderr = await self._run_bd(
             ["bd", "ready", "--unassigned", "--sort", "priority", "--json"],
-            channel.name,
+            channel,
         )
         if code != 0 or not stdout.strip():
             return []
@@ -271,14 +373,53 @@ class TaskRunner:
         except json.JSONDecodeError:
             return []
 
-    async def _claim_task(self, task_id: str, channel_name: str) -> bool:
-        """Claim a task by marking it in_progress."""
-        code, _, _ = await self._run_bd(["bd", "update", task_id, "--status", "in_progress"], channel_name, timeout=10)
+    async def _claim_task(self, task_id: str, channel: ChannelBeads) -> bool:
+        """Claim a task: in_progress + assigned to the runner.
+
+        The assignee marks the claim as OURS so the stuck-task sweep can later
+        distinguish runner-claimed tasks from ones a human is working on.
+        """
+        code, _, _ = await self._run_bd(
+            ["bd", "update", task_id, "--status", "in_progress", "--assignee", RUNNER_ASSIGNEE],
+            channel, timeout=10,
+        )
         return code == 0
 
-    async def _get_task_details(self, task_id: str, channel_name: str) -> dict | None:
+    async def _release_task(self, task_id: str, channel: ChannelBeads) -> None:
+        """Reopen a task and clear the runner's claim so it can be re-picked."""
+        await self._run_bd(
+            ["bd", "update", task_id, "--status", "open", "--assignee", ""],
+            channel, timeout=10,
+        )
+
+    async def _sweep_stuck_tasks(self) -> None:
+        """Reopen in_progress tasks that have no live agent.
+
+        Catches every way a claim can leak: bot crash mid-run, spawn failure
+        whose release also failed, container kill without graceful shutdown.
+        Without this, an orphaned in_progress task is invisible to
+        `bd ready` forever and looks 'stuck' from Discord.
+        """
+        running = set(self.agents.keys())
+        for channel in self.beads_channels:
+            if not (channel.beads_path / "config.yaml").exists():
+                continue
+            code, stdout, _ = await self._run_bd(
+                ["bd", "list", "--status", "in_progress", "--json"], channel, timeout=10,
+            )
+            if code != 0 or not stdout.strip():
+                continue
+            try:
+                in_progress = json.loads(stdout)
+            except json.JSONDecodeError:
+                continue
+            for task_id in tasks_to_reopen(in_progress, running):
+                _LOG.warning("Reopening stuck task %s (in_progress, no live agent)", task_id)
+                await self._release_task(task_id, channel)
+
+    async def _get_task_details(self, task_id: str, channel: ChannelBeads) -> dict | None:
         """Get full task details."""
-        code, stdout, _ = await self._run_bd(["bd", "show", task_id, "--json"], channel_name, timeout=10)
+        code, stdout, _ = await self._run_bd(["bd", "show", task_id, "--json"], channel, timeout=10)
         if code != 0:
             return None
         try:
@@ -294,7 +435,7 @@ class TaskRunner:
         channel_name = channel.name
 
         # Get full details
-        details = await self._get_task_details(task_id, channel_name)
+        details = await self._get_task_details(task_id, channel)
         description = (details or task).get("description", "")
         labels = (details or task).get("labels", [])
 
@@ -306,12 +447,16 @@ class TaskRunner:
                 break
         model = resolve_model(model or "opus")
 
-        # Escape braces in user-controlled fields so they are not interpreted
-        # as .format() placeholders (e.g., a task title of "{task_id}" would
-        # otherwise cause a KeyError or leak internal variable names).
-        safe_title = title.replace("{", "{{").replace("}", "}}")
-        safe_description = description.replace("{", "{{").replace("}", "}}")
-        prompt = AGENT_PROMPT_TEMPLATE.format(task_id=task_id, title=safe_title, description=safe_description)
+        # Note: str.format only interprets braces in the template itself, not in
+        # substituted values -- title/description need no escaping.
+        if not description.strip():
+            description = ("(no description was provided -- work from the title and the "
+                           "inherited conversation context; if that is not enough to act "
+                           "confidently, close the task asking for a proper description)")
+        prompt = AGENT_PROMPT_TEMPLATE.format(
+            task_id=task_id, title=title, description=description,
+            workdir=str(channel_dir(channel_name)),
+        )
 
         # Create log file
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -364,6 +509,11 @@ class TaskRunner:
 
             # Build env for CLI subprocess isolation
             agent_env = {k: v for k, v in os.environ.items() if k not in SENSITIVE_ENV_VARS}
+            # Pin bd to this channel's database. Without this, an agent that
+            # cd's into a cloned repo containing .beads/redirect would silently
+            # talk to the wrong (or nonexistent) database and its `bd done`
+            # would never close the real task.
+            agent_env["BEADS_DIR"] = str(channel.beads_path)
             # Pass auth and sync tokens explicitly so the CLI can authenticate even though
             # they're stripped from the general env (to keep them out of `env` output).
             if oauth_token := os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
@@ -400,6 +550,7 @@ class TaskRunner:
                 task_id=task_id,
                 title=title,
                 channel_name=channel_name,
+                channel_id=channel.channel_id,
                 process=proc,
                 started_at=datetime.now(),
                 log_path=log_path,
@@ -427,6 +578,54 @@ class TaskRunner:
                 await _kill_and_reap(agent.process)
         _close_log_file(agent)
 
+    async def _finish_agent(self, agent: RunningAgent) -> None:
+        """Handle a completed (exited) agent: report honestly what happened.
+
+        The agent is supposed to close its own task via `bd done <id> "summary"`;
+        that summary (the close reason) is the primary report. Fall back to the
+        final result text from the stream-json log. A clean exit with the task
+        still open is NOT reported as success -- that is exactly the 'agent
+        ended the task without doing any work' failure mode.
+        """
+        exit_code = agent.process.returncode
+        duration = datetime.now() - agent.started_at
+        await self._cleanup_agent(agent)
+
+        channel = self._channel_by_name(agent.channel_name)
+        details = await self._get_task_details(agent.task_id, channel) if channel else None
+        task_status = (details or {}).get("status", "")
+        close_reason = ((details or {}).get("close_reason") or "").strip()
+        log_result = extract_result_summary(agent.log_path)
+
+        if task_status == "closed" and close_reason:
+            summary = close_reason
+            if exit_code == 0:
+                status = "completed"
+            else:
+                status = "completed"
+                summary += f" (note: agent process then exited with code {exit_code})"
+        elif exit_code == 0:
+            # Agent exited cleanly but never closed its task. Close it here so
+            # it doesn't go stale, but report the gap instead of claiming success.
+            if channel:
+                await self._run_bd(
+                    ["bd", "close", agent.task_id, "-r", "agent exited without closing the task"],
+                    channel,
+                )
+            status = "finished WITHOUT closing its task (verify the work before trusting it)"
+            summary = log_result or "no summary available -- check the task output manually"
+        else:
+            if channel and task_status != "closed":
+                await self._run_bd(
+                    ["bd", "close", agent.task_id, "-r", f"agent process exited with code {exit_code}"],
+                    channel,
+                )
+            status = f"failed (exit code {exit_code})"
+            summary = log_result
+
+        _LOG.info("Agent %s %s after %s", agent.task_id, status, duration)
+        self._notify_completion(agent, status, str(duration).split(".")[0], summary)
+
     async def _check_agents(self) -> None:
         """Check running agents for completion or timeout."""
         finished = []
@@ -438,47 +637,33 @@ class TaskRunner:
             if agent.process.returncode is None and secs > AGENT_TIMEOUT:
                 _LOG.warning("Agent %s timed out after %s", task_id, duration)
                 await self._cleanup_agent(agent, kill=True)
-                # Comment on the task with timeout info before closing as failed
-                await self._run_bd(
-                    ["bd", "comment", task_id, f"Agent timed out after {duration}"],
-                    agent.channel_name,
-                )
-                await self._run_bd(["bd", "close", task_id], agent.channel_name)
-                self._notify_completion(task_id, agent.title, False, f"{duration} (TIMEOUT)")
+                channel = self._channel_by_name(agent.channel_name)
+                if channel:
+                    await self._run_bd(
+                        ["bd", "close", task_id, "-r", f"agent timed out after {duration}"],
+                        channel,
+                    )
+                self._notify_completion(agent, "timed out", str(duration).split(".")[0],
+                                        extract_result_summary(agent.log_path))
                 finished.append(task_id)
                 continue
 
             # Check completion -- process has exited
             if agent.process.returncode is not None:
-                exit_code = agent.process.returncode
-                success = exit_code == 0
-                _LOG.info("Agent %s %s (exit=%d) after %s",
-                          task_id,
-                          "completed" if success else "failed",
-                          exit_code,
-                          duration)
-                await self._cleanup_agent(agent)
-
-                if success:
-                    # Agent exited cleanly -- it should have already called `bd close`
-                    # itself, but close it here as a safety net.
-                    await self._run_bd(["bd", "close", task_id], agent.channel_name)
-                    self._notify_completion(task_id, agent.title, True, str(duration))
-                else:
-                    # Agent crashed or errored -- mark as failed, not completed
-                    await self._run_bd(
-                        ["bd", "comment", task_id, f"Agent process exited with code {exit_code}"],
-                        agent.channel_name,
-                    )
-                    await self._run_bd(["bd", "close", task_id], agent.channel_name)
-                    self._notify_completion(task_id, agent.title, False, f"{duration} (exit code {exit_code})")
+                await self._finish_agent(agent)
                 finished.append(task_id)
 
         for tid in finished:
             del self.agents[tid]
 
     async def _check_closed_tasks(self) -> None:
-        """Kill agents whose tasks were closed externally."""
+        """Kill agents whose tasks were closed or deleted externally.
+
+        This is the cancellation path: Wendy runs `bd close <id> -r "reason"`
+        and the agent is killed after a grace period. The grace period also
+        protects agents that just closed their OWN task and are still writing
+        their final output -- _check_agents handles them once they exit.
+        """
         to_kill = []
         for task_id, agent in self.agents.items():
             if agent.process.returncode is not None:
@@ -486,38 +671,80 @@ class TaskRunner:
                 agent.closed_detected_at = None
                 continue
 
-            details = await self._get_task_details(task_id, agent.channel_name)
-            if details and details.get("status") == "closed":
+            channel = self._channel_by_name(agent.channel_name)
+            if channel is None:
+                continue
+            details = await self._get_task_details(task_id, channel)
+
+            if details is None:
+                # bd show failed -- could be lock contention, could be a deleted
+                # task. Only act after several consecutive misses.
+                agent.missing_task_checks += 1
+                if agent.missing_task_checks >= MISSING_TASK_THRESHOLD:
+                    to_kill.append((task_id, "task no longer exists (deleted?)"))
+                continue
+            agent.missing_task_checks = 0
+
+            if details.get("status") == "closed":
                 now = datetime.now()
                 if agent.closed_detected_at is None:
                     agent.closed_detected_at = now
-                    _LOG.info("Task %s closed externally, grace period %ds", task_id, CLOSED_TASK_GRACE_PERIOD)
+                    _LOG.info("Task %s closed while agent running, grace period %ds",
+                              task_id, CLOSED_TASK_GRACE_PERIOD)
                 elif (now - agent.closed_detected_at).total_seconds() >= CLOSED_TASK_GRACE_PERIOD:
-                    to_kill.append(task_id)
+                    reason = (details.get("close_reason") or "").strip()
+                    to_kill.append((task_id, reason))
 
-        for task_id in to_kill:
+        for task_id, reason in to_kill:
             agent = self.agents[task_id]
             _LOG.info("Killing agent for externally-closed task %s", task_id)
             await self._cleanup_agent(agent, kill=True)
             duration = datetime.now() - agent.started_at
-            self._notify_completion(task_id, agent.title, False, f"{duration} (CANCELLED)")
+            summary = f"close reason: {reason}" if reason else ""
+            self._notify_completion(agent, "cancelled (task closed while agent was running; agent killed)",
+                                    str(duration).split(".")[0], summary)
             del self.agents[task_id]
 
-    def _notify_completion(self, task_id: str, title: str, success: bool, duration: str) -> None:
-        """Write completion notification to SQLite."""
-        status = "completed" if success else "failed"
-        channel_id = int(NOTIFY_CHANNEL) if NOTIFY_CHANNEL else None
+    def _resolve_notify_channel(self, agent: RunningAgent) -> int | None:
+        """Route notifications to the task's own channel unless overridden."""
+        if NOTIFY_CHANNEL:
+            try:
+                return int(NOTIFY_CHANNEL)
+            except ValueError:
+                pass
+        return agent.channel_id or None
+
+    def _notify_started(self, agent: RunningAgent) -> None:
+        """Write a low-key start notification so Wendy can answer 'is it running?'."""
+        try:
+            state_manager.add_notification(
+                type="task_started",
+                source="task_runner",
+                title=agent.title,
+                channel_id=self._resolve_notify_channel(agent),
+                payload={"task_id": agent.task_id},
+            )
+        except Exception:
+            _LOG.exception("Failed to write start notification for %s", agent.task_id)
+
+    def _notify_completion(self, agent: RunningAgent, status: str, duration: str, summary: str = "") -> None:
+        """Write completion notification to SQLite, routed to the task's channel."""
         try:
             state_manager.add_notification(
                 type="task_completion",
                 source="task_runner",
-                title=title,
-                channel_id=channel_id,
-                payload={"task_id": task_id, "status": status, "duration": duration},
+                title=agent.title,
+                channel_id=self._resolve_notify_channel(agent),
+                payload={
+                    "task_id": agent.task_id,
+                    "status": status,
+                    "duration": duration,
+                    "summary": summary,
+                },
             )
             state_manager.cleanup_old_notifications(keep_count=100)
         except Exception:
-            _LOG.exception("Failed to write completion notification for %s", task_id)
+            _LOG.exception("Failed to write completion notification for %s", agent.task_id)
 
     async def _write_beads_snapshot(self) -> None:
         """Write a combined beads snapshot for the web dashboard.
@@ -532,7 +759,7 @@ class TaskRunner:
                 if not (channel.beads_path / "config.yaml").exists():
                     continue
                 code, stdout, _ = await self._run_bd(
-                    ["bd", "list", "--json"], channel.name, timeout=10,
+                    ["bd", "list", "--json"], channel, timeout=10,
                 )
                 if code != 0 or not stdout.strip():
                     continue

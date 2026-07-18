@@ -1,127 +1,116 @@
 # Task System (bd) - Full Reference
 
-You have a background task queue for delegating work to forked agents. Use this instead of Claude Code's built-in Task/subagent system (which is incompatible with your Discord interface).
+You have a background task queue for delegating work to forked agents. Use this
+instead of Claude Code's built-in Task/subagent system (which is incompatible
+with your Discord interface).
+
+## The One Command That Matters
+
+```bash
+bd create "short title" -d "full description: goal, exact file paths, constraints, how to verify"
+```
+
+**The `-d` description is required in practice.** `bd create "some text"` puts
+ALL of the text into the *title* and leaves the description empty -- the agent
+then receives a task with no actionable content and will (correctly) close it
+without doing anything. Title = one line for humans; description = the actual
+instructions.
 
 ## Workflow
 
-1. **Create a task** with `bd create "detailed description"`
-2. **Move on** - the orchestrator automatically forks your session and spawns a background agent
-3. **Get notified** - when the task finishes, you'll see a notification in your next message check
+1. **Create a task** with `bd create "title" -d "description"`
+2. **Move on** -- the runner picks it up within ~30 seconds, forks your session,
+   and spawns a background agent. You'll see a `[Task System] ... started`
+   message on your next message check.
+3. **Get notified** -- when the task finishes you get a message containing the
+   agent's own summary (what it did + file paths). Verify the files exist,
+   review the work, then update the channel.
 
-Don't poll or check on tasks - notifications are automatic.
+Don't poll or babysit tasks -- start/finish notifications are automatic.
+(`bd show <id>` / `bd list --status in_progress` are fine if someone asks.)
 
-## How It Works (Session Forking)
+## What the Agent Can and Cannot See
 
-When you run `bd create`, the system:
-1. Captures your current session state (context, recent files, conversation)
-2. Creates a task in the queue
-3. The orchestrator picks it up and **forks your session**
-4. The forked agent works in the background with your context
+The agent is a fork of your session **frozen at the moment the runner picks the
+task up**. It has your conversation context up to that point.
 
-The agent is you, frozen at the moment you created the task.
+- It CANNOT see anything you do after creation.
+- **`bd comment` does NOT reach the agent.** Never use comments to deliver
+  specs or corrections to a running or queued task. If you need to change a
+  task that hasn't finished: `bd close <id> -r "superseded"`, then create a new
+  one with a corrected description.
+- For large specs, write a spec file FIRST, then reference it:
+  ```bash
+  # 1. write the spec
+  #    /data/wendy/channels/<channel>/myproject/SPEC.md
+  # 2. create the task pointing at it
+  bd create "build myproject per spec" -d "Read /data/wendy/channels/<channel>/myproject/SPEC.md first, then implement it. Output goes in that directory."
+  ```
 
-## Commands
+## Cancelling a Task
 
 ```bash
-bd create "description"              # Create task (default: Opus, P2)
-bd create "description" -p 1         # Higher priority (P0=highest, P4=lowest)
-bd create "description" -l model:haiku  # Haiku for simple/cheap tasks
-bd create "description" -p 0 -l model:opus  # Urgent, most capable
+bd close <task-id> -r "why you're cancelling"
 ```
 
-### Priority Levels
-- **P0** Critical/urgent
-- **P1** High priority
-- **P2** Normal (default)
-- **P3** Low priority
-- **P4** Backlog
+- Queued task: it simply never runs.
+- Running task: the agent is killed within about a minute and you get a
+  cancellation notification. There is no `bd cancel` -- closing IS cancelling.
 
-### Model Selection
-Default is **Opus**. Use `-l model:haiku` for:
-- Simple file edits
-- Straightforward bug fixes
-- Tasks with clear, narrow scope
+## Where Agents Work
 
-## Writing Good Task Descriptions
+Agents run in your channel workspace: `/data/wendy/channels/<channel>/`.
+Tell them (in the description) exactly which subdirectory to use, and expect
+their completion summary to list the paths they touched. Agents cannot deploy
+sites/games or send Discord messages -- you review and deploy after they finish.
 
-Agents inherit your context up to when you create the task. They can't see what you do after.
+## Options
 
-Include:
-- **Goal**: What should exist when this is done?
-- **Specifics**: Key requirements, constraints, preferences
-- **References**: Point to files/code you discussed
-
-### Bad
-```
-bd create "make it better"
+```bash
+bd create "title" -d "..." -p 1              # priority: P0 highest .. P4 backlog (default P2)
+bd create "title" -d "..." -l model:haiku    # cheap model for simple, narrow tasks
+bd create "title" -d "..." -l model:opus     # default is opus; label is optional
 ```
 
-### Good
+## Closing Your Own Review Loop
+
+When a task finishes you'll get the agent's summary automatically. To dig
+deeper:
+
+```bash
+bd show <task-id>          # description, status, close reason
+bd comments <task-id>      # progress notes the agent left along the way
 ```
-bd create "Fix the performance issue in the snake game we discussed.
-
-Optimize the rendering loop in game.js - the 60fps target and the
-segment redraw approach we talked about.
-
-Test that it feels smooth even with 50+ segments."
-```
-
-The agent knows which snake game, where it lives, and what the issue is from your conversation context.
 
 ## Task Dependencies
 
-Multiple tasks can run concurrently (up to 3). Use dependencies when order matters:
+Up to 3 tasks run concurrently. Use dependencies when order matters:
 
 ```bash
-bd create "Set up database schema" -p 1
-# Returns: Created task bd-abc123
-
-bd create "Write API endpoints using the schema" -p 1
-# Returns: Created task bd-def456
-
-bd dep add bd-def456 bd-abc123   # def456 waits for abc123
+bd create "set up database schema" -d "..." -p 1     # -> returns id A
+bd create "write API endpoints" -d "uses the schema from task A" -p 1   # -> id B
+bd dep add B A                                        # B waits for A
 ```
 
-### Dependency Commands
-- `bd dep add <child> <parent>` - child waits for parent
-- `bd dep list <task-id>` - show dependencies
+## Threads
 
-## New Commands
-
-### Quick Close with Reason
-```bash
-bd done <task-id> "summary of what was accomplished"
-```
-Shorthand for closing a task with a reason in one command (instead of `bd comment` + `bd close`).
-
-### Notes
-```bash
-bd note <task-id> "quick note text"
-```
-Lighter than `bd comment` -- for quick status updates or breadcrumbs.
-
-### Additional Flags
-- `bd close <task-id> --claim-next` -- auto-claims the next highest priority task after closing
-- `bd list --exclude-type <type>` -- filter out specific issue types
-- `bd ready --exclude-type <type>` -- same for ready queue
-- `bd list --status open,in_progress` -- comma-separated status filter
+Creating a task from inside a Discord thread works: it lands in the parent
+channel's queue and the agent forks the thread's session context.
 
 ## When to Use Tasks
 
-**Use tasks for:**
-- Building new projects or features (games, sites, tools)
-- Complex multi-file changes
-- Work that takes more than a few minutes
-- Things you want to hand off completely
+**Use tasks for:** building projects/features, complex multi-file changes,
+work that takes more than a few minutes, things you want to hand off fully.
 
-**Don't use tasks for:**
-- Quick fixes you can do yourself in under a minute
-- Reading files or exploring code
-- Simple questions or lookups
+**Don't use tasks for:** quick fixes you can do yourself in under a minute,
+reading files, simple questions.
 
-## Important Notes
+## Good vs Bad
 
-- Agents work in `/data/wendy/coding/`
-- Agents cannot deploy sites or send Discord messages - you do that after reviewing their work
-- Agents use `bd comment <task_id> "notes"` to leave context about their work
-- Task created = session forked. The agent won't see anything you do after creating the task
+```bash
+# BAD -- everything in the title, no description; agent gets nothing to act on
+bd create "make the snake game better"
+
+# GOOD
+bd create "fix snake game rendering perf" -d "In /data/wendy/channels/coding/snake/game.js, the render loop redraws every segment every frame and drops below 60fps past ~50 segments. Only redraw changed segments (head + cleared tail). Verify by logging frame time with 60+ segments. Don't change gameplay."
+```

@@ -188,7 +188,10 @@ def _get_beads_instructions() -> str:
     return """
 ---
 BACKGROUND TASK SYSTEM (bd):
-`bd` is your background agent queue. Use `bd create "description"` to fork your current session and run longer work independently. You'll be notified via check_messages when tasks finish.
+`bd` is your background agent queue for longer work. ALWAYS give a task both a short title and a full description:
+  bd create "short title" -d "full instructions: goal, exact file paths, constraints, how to verify"
+The agent forks your current session -- it has your conversation context up to the moment of creation but sees NOTHING after it, and `bd comment` does NOT reach it. For big specs, write a spec file first and reference its path in -d.
+You'll get a message when the task starts and when it finishes (with the agent's summary). To cancel a queued or running task: bd close <id> -r "reason".
 Full reference: /app/config/docs/bd_usage.md
 ---
 """

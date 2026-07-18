@@ -511,15 +511,18 @@ def _build_cli_env(
     channel_id: int,
     beads_enabled: bool,
     enrichment: bool = False,
+    beads_folder: str | None = None,
 ) -> dict[str, str]:
     """Build the environment dict for the CLI subprocess.
 
     Strips sensitive variables, optionally sets BEADS_DIR, and points
     HOME at the wendy user when running with privilege separation.
+    ``beads_folder`` overrides which channel's .beads BEADS_DIR points at
+    (threads use their parent channel's queue).
     """
     cli_env = {k: v for k, v in os.environ.items() if k not in SENSITIVE_ENV_VARS}
     if beads_enabled:
-        cli_env["BEADS_DIR"] = str(beads_dir(channel_name))
+        cli_env["BEADS_DIR"] = str(beads_dir(beads_folder or channel_name))
     # Channel context for helper scripts (msg, react)
     cli_env["WENDY_CHANNEL_ID"] = str(channel_id)
     cli_env["WENDY_PROXY_PORT"] = str(PROXY_PORT)
@@ -767,6 +770,12 @@ async def run_cli(
     # For threads, sessions live in the parent's project directory.
     session_cwd_folder = parent_folder if (is_thread and parent_folder) else channel_name
 
+    # Beads are per-CHANNEL, never per-thread: the task runner only polls
+    # configured channels, so a thread must point BEADS_DIR (and the fork
+    # pointer) at its parent's queue or its tasks would sit in an
+    # uninitialized .beads/ nobody ever reads.
+    beads_folder = session_cwd_folder
+
     session_id, is_new_session, fork_mode = _resolve_session(
         channel_id, channel_config, session_cwd_folder, force_new_session,
     )
@@ -790,7 +799,7 @@ async def run_cli(
     journal_note = get_journal_listing_for_nudge(channel_name)
     roster_note = get_context_roster_for_nudge(channel_id)
     # bd is an external subprocess -- keep it off the event loop.
-    beads_note = await asyncio.to_thread(get_beads_warning_for_nudge, channel_name) if beads_enabled else ""
+    beads_note = await asyncio.to_thread(get_beads_warning_for_nudge, beads_folder) if beads_enabled else ""
 
     # The compaction flag is written by pre_compact.sh into the CLI's cwd
     # (the parent folder for threads) and is session-scoped -- a bare
@@ -812,13 +821,18 @@ async def run_cli(
     # Ensure filesystem prerequisites.
     WENDY_BASE.mkdir(parents=True, exist_ok=True)
     setup_wendy_scripts()
-    setup_channel_folder(channel_name, beads_enabled=beads_enabled)
+    # Threads never get their own .beads dir -- they use the parent's queue.
+    setup_channel_folder(channel_name, beads_enabled=beads_enabled and not is_thread)
 
     session_action = "starting new" if is_new_session else "resuming"
     _LOG.info("CLI: %s session %s for channel %d (model=%s)", session_action, session_id[:8], channel_id, effective_model)
 
     if beads_enabled:
-        _write_current_session_file(channel_name, session_id)
+        # The fork pointer tracks the most recent session in the channel's
+        # workspace (thread sessions included -- they share the parent cwd, so
+        # their JSONLs are forkable from the same project dir). A bead created
+        # in a thread forks the thread's own context.
+        _write_current_session_file(beads_folder, session_id)
 
     proc = None
     idle_timeout = CLAUDE_CLI_IDLE_TIMEOUT
@@ -832,7 +846,7 @@ async def run_cli(
             stderr=asyncio.subprocess.STDOUT,
             limit=10 * 1024 * 1024,
             cwd=channel_dir(session_cwd_folder),
-            env=_build_cli_env(channel_name, channel_id, beads_enabled, enrichment=enrichment),
+            env=_build_cli_env(channel_name, channel_id, beads_enabled, enrichment=enrichment, beads_folder=beads_folder),
             **user_kwargs,
         )
 
@@ -898,7 +912,7 @@ async def run_cli(
                 sessions.create_session(channel_id, session_cwd_folder, session_id=forked_id)
                 _LOG.info("Thread fork complete: parent=%s -> forked=%s", session_id[:8], forked_id[:8])
                 if beads_enabled:
-                    _write_current_session_file(channel_name, forked_id)
+                    _write_current_session_file(beads_folder, forked_id)
 
         if usage:
             sessions.update_stats(channel_id, usage)
