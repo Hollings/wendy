@@ -289,6 +289,9 @@ export function parseFrame(raw, key) {
     case 'system':    return [parseSystem(event, base(0))]
     case 'rate_limit_event': {
       const info = event.rate_limit_info ?? {}
+      // Fires on every request, and "allowed" is the null case -- only a
+      // limit that is actually biting (or overage burn) is worth a row.
+      if (info.status === 'allowed' && !info.isUsingOverage) return []
       return [{
         ...base(0),
         kind: 'rate_limit',
@@ -296,7 +299,7 @@ export function parseFrame(raw, key) {
         limitType: info.rateLimitType ?? null,
         resetsAt: info.resetsAt ?? null,
         usingOverage: !!info.isUsingOverage,
-        // Fires once per request; collapse the identical repeats.
+        // Collapse the identical repeats.
         mergeKey: 'rate_limit',
         mergeOpen: true,
       }]
