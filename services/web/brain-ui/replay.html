@@ -1,0 +1,15 @@
+<!doctype html>
+<!-- Dev-only replay harness: renders the real Feed against a captured
+     production stream (stream-sample.jsonl in this directory, gitignored).
+     Open at /replay.html on the vite dev server. Not part of the build. -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>brain replay</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/dev/ReplayMain.jsx"></script>
+  </body>
+</html>

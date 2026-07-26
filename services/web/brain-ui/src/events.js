@@ -66,8 +66,19 @@ export const KINDS = {
     icon: 'Thinking',
     tone: 'thinking',
   },
-  speech:       { label: 'says',        icon: 'Speech',  tone: 'speech' },
-  tool:         { label: ev => ev.tool, icon: ev => ev.tool, tone: 'tool' },
+  // Assistant text blocks. The CLI runs headless, so this text never reaches
+  // Discord -- it is internal narration, not what users see. Actual delivery
+  // happens through the `msg` command, which renders as `discord` below.
+  speech:       { label: 'aside',       icon: 'Speech',  tone: 'speech' },
+  // An outgoing Discord action -- a `msg` send or a `react`. This is Wendy's
+  // real voice; parsed out of Bash tool_use blocks by classifyBashCommand().
+  discord: {
+    label: ev => (ev.sub === 'reaction' ? 'reacts' : 'says'),
+    icon: ev => (ev.sub === 'reaction' ? 'Reaction' : 'Discord'),
+    tone: ev => (ev.blocked ? 'error' : 'discord'),
+  },
+  tool:         { label: ev => (ev.flavor === 'msgs' ? 'checks messages' : ev.tool),
+                  icon: ev => (ev.flavor === 'msgs' ? 'Inbox' : ev.tool), tone: 'tool' },
   result:       { label: ev => (ev.isError ? 'tool error' : 'result'),
                   icon: 'Result', tone: ev => (ev.isError ? 'error' : 'result') },
   nudge:        { label: 'nudge',       icon: 'System',  tone: 'nudge' },
@@ -81,12 +92,17 @@ export const KINDS = {
   // Dividers -- turn/session boundaries, rendered as a labelled rule.
   // system/init fires once per `claude -p` invocation, i.e. once per turn --
   // not once per Claude session, which outlives many turns via --resume.
-  session_start: { label: ev => `turn start${ev.model ? ` · ${ev.model}` : ''}`,
+  session_start: { label: ev => `turn${ev.model ? ` · ${shortModel(ev.model)}` : ''}`,
                    icon: 'System', tone: 'system', divider: true },
   session_end:   { label: sessionEndLabel, icon: 'End',
                    tone: ev => (ev.isError ? 'error' : 'system'), divider: true },
   status:        { label: ev => ev.status || 'status', icon: 'Status', tone: 'system', divider: true },
   compact:       { label: compactLabel, icon: 'Compact', tone: 'system', divider: true },
+}
+
+/** "claude-sonnet-5" -> "sonnet-5"; keeps unknown IDs intact. */
+export function shortModel(model) {
+  return String(model).replace(/^claude-/, '').replace(/-\d{8}$/, '')
 }
 
 function sessionEndLabel(ev) {
@@ -122,7 +138,7 @@ const resolve = (v, ev) => (typeof v === 'function' ? v(ev) : v)
 // Feed filter groups: which kinds each filter chip controls.
 export const FILTER_GROUPS = [
   { id: 'thinking', label: 'thoughts', kinds: ['thinking'] },
-  { id: 'speech',   label: 'speech',   kinds: ['speech'] },
+  { id: 'speech',   label: 'speech',   kinds: ['speech', 'discord'] },
   { id: 'tool',     label: 'tools',    kinds: ['tool'] },
   { id: 'result',   label: 'results',  kinds: ['result'] },
   { id: 'task',     label: 'tasks',    kinds: ['task'] },
@@ -159,6 +175,92 @@ export function toolPreview(tool, input = {}) {
   if (!first) return ''
   const [k, v] = first
   return `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`
+}
+
+// ---------------------------------------------------------------------------
+// Discord command recognition. Wendy talks to Discord exclusively through the
+// bin/msg, bin/react, and bin/msgs shell helpers, so her actual visible
+// behavior arrives here as Bash tool_use blocks. Recognize those commands and
+// surface them as first-class rows instead of generic Bash calls.
+// ---------------------------------------------------------------------------
+
+/** Classify a Bash command as a Discord helper invocation, or null. */
+export function classifyBashCommand(command) {
+  const cmd = (command ?? '').trim()
+  if (/^msgs\b/.test(cmd)) return { flavor: 'msgs' }
+  const react = cmd.match(/^react\s+(\S+)\s+(\S+)/)
+  if (react) return { flavor: 'react', targetId: react[1], emoji: react[2] }
+  if (/^msg\b/.test(cmd) || /\|\s*msg(\s+\S+)*\s*$/.test(cmd)) {
+    return { flavor: 'msg', ...parseMsgCommand(cmd) }
+  }
+  return null
+}
+
+// Best-effort extraction of the message text from a `msg` invocation. Covers
+// the shapes Wendy actually uses: quoted args, heredocs, and pipes. When
+// parsing fails the text stays '' -- the paired result echoes back what was
+// delivered ("Sent (id=...): ...") and fills it in.
+function parseMsgCommand(cmd) {
+  const out = { text: '', replyTo: null, attachment: null }
+  const reply = cmd.match(/(?:^|\s)(?:-r|--reply)[= ](\S+)/)
+  if (reply) out.replyTo = reply[1]
+  const file = cmd.match(/(?:^|\s)(?:-f|--file)[= ]("[^"]+"|'[^']+'|\S+)/)
+  if (file) out.attachment = file[1].replace(/^['"]|['"]$/g, '')
+  const heredoc = cmd.match(/<<-?\s*['"]?(\w+)['"]?\s*\n([\s\S]*)\n\s*\1\s*$/)
+  if (heredoc) {
+    out.text = heredoc[2]
+    return out
+  }
+  const quoted = cmd.match(/\bmsg\b[^'"\n]*'([^']*)'/) || cmd.match(/\bmsg\b[^'"\n]*"((?:[^"\\]|\\.)*)"/)
+  if (quoted) out.text = quoted[1].replace(/\\(["$`\\])/g, '$1')
+  return out
+}
+
+// Subset of bin/react's name -> unicode map, for display only. Unknown names
+// pass through as text, exactly like the helper itself.
+const REACT_EMOJI = {
+  thumbsup: '👍', thumbsdown: '👎', fire: '🔥', heart: '❤️', laugh: '😂',
+  joy: '😂', crying: '😭', sob: '😭', eyes: '👀', thinking: '🤔', 100: '💯',
+  party: '🎉', tada: '🎉', rocket: '🚀', wave: '👋', clap: '👏', skull: '💀',
+  star: '⭐', sparkles: '✨', check: '✅', x: '❌', brain: '🧠', salute: '🫡',
+  moai: '🗿', pray: '🙏', muscle: '💪', bulb: '💡', lightbulb: '💡',
+}
+
+export function reactionEmoji(name) {
+  return REACT_EMOJI[name] ?? name
+}
+
+/**
+ * Parse the human-formatted output of the `msgs` helper into structured
+ * entries: {time, author, msgId, synthetic, text, attachments}. Returns null
+ * when the text is not msgs output. "(no new messages ...)" parses to [].
+ */
+export function parseMsgsOutput(text) {
+  const trimmed = (text ?? '').trim()
+  if (!trimmed) return null
+  if (/^\(no new messages/.test(trimmed)) return []
+  const header = /^\[(\d{2}:\d{2} [A-Z]{2,5})\] (.+?) (?:\((system)\)|\(id:(\d+)\))(?: \[replying to [^\]]*\])?: (.*)$/
+  if (!header.test(trimmed.split('\n', 1)[0])) return null
+  const entries = []
+  for (const line of trimmed.split('\n')) {
+    const m = header.exec(line)
+    if (m) {
+      entries.push({ time: m[1], author: m[2], synthetic: !!m[3], msgId: m[4] ?? null, text: m[5], attachments: [] })
+    } else if (/^\s+attachment: /.test(line) && entries.length) {
+      entries[entries.length - 1].attachments.push(line.trim().slice('attachment: '.length))
+    } else if (entries.length && !/^\(\+\d+ more unread/.test(line.trim())) {
+      entries[entries.length - 1].text += '\n' + line
+    }
+  }
+  return entries
+}
+
+/** Parse a `msg` helper result ("Sent (id=...): text") into delivered text, or null. */
+export function parseSentResult(text) {
+  const m = /^Sent \(id=\d+\):\s?([\s\S]*)$/.exec((text ?? '').trim())
+  if (!m) return null
+  // Attachment confirmations print after the delivered text; strip them.
+  return m[1].split(/\n\s+Attachment: /)[0]
 }
 
 // ---------------------------------------------------------------------------
@@ -236,9 +338,24 @@ function parseAssistant(event, base) {
         break
       }
       case 'tool_use':
-      case 'server_tool_use':
-        out.push({ ...base(i), kind: 'tool', tool: block.name ?? 'tool', input: block.input ?? {} })
+      case 'server_tool_use': {
+        const tool = block.name ?? 'tool'
+        const input = block.input ?? {}
+        const row = { ...base(i), kind: 'tool', tool, input, toolUseId: block.id ?? null }
+        const cls = tool === 'Bash' ? classifyBashCommand(input.command) : null
+        if (cls?.flavor === 'msg') {
+          out.push({ ...row, kind: 'discord', sub: 'message',
+                     text: cls.text, replyTo: cls.replyTo, attachment: cls.attachment })
+        } else if (cls?.flavor === 'react') {
+          out.push({ ...row, kind: 'discord', sub: 'reaction',
+                     emoji: cls.emoji, targetId: cls.targetId })
+        } else if (cls?.flavor === 'msgs') {
+          out.push({ ...row, flavor: 'msgs' })
+        } else {
+          out.push(row)
+        }
         break
+      }
       default:
         out.push(unknownRow(base(i), `assistant/${block.type}`, block))
     }
@@ -261,6 +378,7 @@ function parseUser(event, base) {
         kind: 'result',
         content: normalizeContent(block.content),
         isError: !!block.is_error,
+        toolUseId: block.tool_use_id ?? null,
       })
     } else if (block.type === 'text') {
       const text = (block.text ?? '').trim()
@@ -426,6 +544,10 @@ export function bodyText(ev) {
     }
     case 'result':
       return ev.content ?? ''
+    case 'discord':
+      return ev.sub === 'reaction'
+        ? `${reactionEmoji(ev.emoji)} on ${ev.targetId ?? '?'}`
+        : (ev.text || '(sending…)')
     case 'task':
       return [ev.taskId && `[${ev.taskId}]`, ev.text].filter(Boolean).join(' ')
     case 'rate_limit': {
@@ -484,7 +606,9 @@ export function formatDuration(ms) {
   const s = ms / 1000
   if (s < 60) return `${s.toFixed(1)}s`
   const m = Math.floor(s / 60)
-  return `${m}m ${Math.round(s % 60)}s`
+  if (m < 60) return `${m}m ${Math.round(s % 60)}s`
+  const h = Math.floor(m / 60)
+  return `${h}h ${m % 60}m`
 }
 
 export function agoShort(tsMs) {

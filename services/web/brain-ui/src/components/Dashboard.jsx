@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useBrainStore } from '../useBrainStore'
 import { FILTER_GROUPS } from '../events'
+import { deriveFeed } from '../derive'
 import TopBar from './TopBar'
 import Feed from './Feed'
 import SessionsPanel from './SessionsPanel'
@@ -30,12 +31,19 @@ export default function Dashboard({ onLogout }) {
     return kinds
   }, [hiddenKinds])
 
-  const visibleEvents = useMemo(() => events.filter(ev => {
+  // Source filters (channel / bead) apply first; kind filters apply inside
+  // deriveFeed, after result-pairing and turn accounting, so tool outputs
+  // still attach and turn summaries count what filters hide.
+  const sourceEvents = useMemo(() => events.filter(ev => {
     if (focusedBead && ev.bead_id !== focusedBead.id) return false
     if (ev.channel_id && hiddenChannels.has(ev.channel_id)) return false
-    if (hiddenKindSet.has(ev.kind)) return false
     return true
-  }), [events, focusedBead, hiddenChannels, hiddenKindSet])
+  }), [events, focusedBead, hiddenChannels])
+
+  const derived = useMemo(
+    () => deriveFeed(sourceEvents, hiddenKindSet),
+    [sourceEvents, hiddenKindSet],
+  )
 
   const toggleChannel = useCallback((id) => {
     setHiddenChannels(prev => {
@@ -69,7 +77,9 @@ export default function Dashboard({ onLogout }) {
       />
       <div className="main">
         <Feed
-          events={visibleEvents}
+          rows={derived.rows}
+          turns={derived.turns}
+          lastTurnBySource={derived.lastTurnBySource}
           totalCount={events.length}
           channelsMap={channelsMap}
           hiddenKinds={hiddenKinds}

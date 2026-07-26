@@ -41,6 +41,14 @@ export default function Icon({ name, size = 14 }) {
       return <svg {...common}><circle cx="8" cy="8" r="2" fill="currentColor" stroke="none"/><path d="M4.5 4.5a5 5 0 0 0 0 7M11.5 4.5a5 5 0 0 1 0 7M2.5 2.5a8 8 0 0 0 0 11M13.5 2.5a8 8 0 0 1 0 11"/></svg>
     case 'Speech':
       return <svg {...common}><path d="M2.5 4.5h11v6h-6l-3 2.5V10.5h-2z"/><path d="M5 7h6"/></svg>
+    case 'Discord':
+      return <svg {...common}><path d="M2.5 4h11v6.5h-6l-3 2.5V10.5h-2z"/><path d="M5.5 6.5L7.5 7.2 5.5 8"/><path d="M8.5 8.3h2.5"/></svg>
+    case 'Reaction':
+      return <svg {...common}><circle cx="8" cy="8" r="5"/><path d="M6 6.5h.01M10 6.5h.01"/><path d="M5.8 9.3a3 3 0 0 0 4.4 0"/></svg>
+    case 'Attach':
+      return <svg {...common}><path d="M10.5 4.5l-5 5a1.8 1.8 0 0 0 2.5 2.5l5-5a3 3 0 0 0-4.2-4.2l-5 5"/></svg>
+    case 'Inbox':
+      return <svg {...common}><path d="M2.5 9l1.5-5h8l1.5 5v3.5h-11z"/><path d="M2.5 9h3l1 1.5h3L10.5 9h3"/></svg>
     case 'Bell':
       return <svg {...common}><path d="M4.5 11V7.5a3.5 3.5 0 0 1 7 0V11l1 1.5h-9z"/><path d="M6.8 14h2.4"/></svg>
     case 'Limit':

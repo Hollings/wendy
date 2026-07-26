@@ -2,7 +2,9 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { getToken, tryReauth, authHeaders } from './auth'
 import { parseFrame, frameKey, frameUsage, frameModel, eventSnippet, appendEvents } from './events'
 
-const MAX_EVENTS = 300
+// Turn containers collapse old history to one line per turn, so a deeper
+// buffer costs little screen space and gives the collapsed timeline reach.
+const MAX_EVENTS = 600
 const MAX_SEEN = 4000
 const CHANNELS_POLL_MS = 30_000
 const STATS_POLL_MS = 60_000

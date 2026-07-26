@@ -54,11 +54,13 @@ ORCHESTRATOR_LOGS_DIR: Path = Path("/data/wendy/orchestrator_logs")
 BEADS_SNAPSHOT: Path = Path("/data/wendy/shared/beads_snapshot.json")
 """Beads snapshot written by wendy's TaskRunner every poll cycle."""
 
-MAX_HISTORY: int = 150
+MAX_HISTORY: int = 300
 """Number of recent events to send to newly connected clients.
 
 Roughly 40% of the stream is system/thinking_tokens counters (the UI collapses
-them into one live row per thought), so a 50-event replay showed very little
+them into one live row per thought), and the dashboard folds whole turns into
+one-line summaries -- so a deep replay renders compactly. A 50-event replay
+originally showed very little
 actual activity.
 """
 
