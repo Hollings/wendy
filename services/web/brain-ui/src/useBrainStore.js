@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { getToken, tryReauth, authHeaders } from './auth'
-import { parseFrame, frameKey, frameUsage, frameModel, eventSnippet } from './events'
+import { parseFrame, frameKey, frameUsage, frameModel, eventSnippet, appendEvents } from './events'
 
 const MAX_EVENTS = 300
 const MAX_SEEN = 4000
@@ -111,7 +111,7 @@ export function useBrainStore({ onAuthError }) {
     }
 
     setEvents(prev => {
-      const next = prev.concat(parsed)
+      const next = appendEvents(prev, parsed)
       return next.length > MAX_EVENTS ? next.slice(-MAX_EVENTS) : next
     })
   }, [refreshChannels])

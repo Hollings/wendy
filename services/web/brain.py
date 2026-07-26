@@ -54,8 +54,13 @@ ORCHESTRATOR_LOGS_DIR: Path = Path("/data/wendy/orchestrator_logs")
 BEADS_SNAPSHOT: Path = Path("/data/wendy/shared/beads_snapshot.json")
 """Beads snapshot written by wendy's TaskRunner every poll cycle."""
 
-MAX_HISTORY: int = 50
-"""Number of recent events to send to newly connected clients."""
+MAX_HISTORY: int = 150
+"""Number of recent events to send to newly connected clients.
+
+Roughly 40% of the stream is system/thinking_tokens counters (the UI collapses
+them into one live row per thought), so a 50-event replay showed very little
+actual activity.
+"""
 
 MAX_CLIENTS: int = 100
 """Maximum concurrent WebSocket connections allowed."""

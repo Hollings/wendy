@@ -39,6 +39,18 @@ export default function Icon({ name, size = 14 }) {
       return <svg {...common}><circle cx="8" cy="8" r="5"/><path d="M6 8h4"/></svg>
     case 'Live':
       return <svg {...common}><circle cx="8" cy="8" r="2" fill="currentColor" stroke="none"/><path d="M4.5 4.5a5 5 0 0 0 0 7M11.5 4.5a5 5 0 0 1 0 7M2.5 2.5a8 8 0 0 0 0 11M13.5 2.5a8 8 0 0 1 0 11"/></svg>
+    case 'Speech':
+      return <svg {...common}><path d="M2.5 4.5h11v6h-6l-3 2.5V10.5h-2z"/><path d="M5 7h6"/></svg>
+    case 'Bell':
+      return <svg {...common}><path d="M4.5 11V7.5a3.5 3.5 0 0 1 7 0V11l1 1.5h-9z"/><path d="M6.8 14h2.4"/></svg>
+    case 'Limit':
+      return <svg {...common}><path d="M4 3h8M4 13h8"/><path d="M5.5 3v2L8 7.5 10.5 5V3M5.5 13v-2L8 8.5 10.5 11v2"/></svg>
+    case 'Compact':
+      return <svg {...common}><path d="M3 3h10M3 13h10"/><path d="M8 5v2.5M8 11V8.5"/><path d="M6 6.5L8 4.5l2 2M6 9.5L8 11.5l2-2"/></svg>
+    case 'Status':
+      return <svg {...common}><circle cx="8" cy="8" r="5"/><path d="M8 5v3l2 1.5"/></svg>
+    case 'Unknown':
+      return <svg {...common}><circle cx="8" cy="8" r="5.5"/><path d="M6.4 6.4a1.6 1.6 0 1 1 1.9 1.9v1"/><path d="M8.3 11h0"/></svg>
     default:
       return <svg {...common}><circle cx="8" cy="8" r="3"/></svg>
   }

@@ -204,9 +204,14 @@ button {
   margin-top: 2px;
 }
 .row.tone-thinking .row-icon { color: oklch(0.75 0.12 305); }
+.row.tone-speech .row-icon { color: oklch(0.85 0.06 145); }
 .row.tone-tool .row-icon { color: var(--accent); }
 .row.tone-result .row-icon { color: oklch(0.75 0.1 220); }
 .row.tone-nudge .row-icon { color: var(--amber); }
+.row.tone-task .row-icon { color: oklch(0.78 0.13 40); }
+.row.tone-limit .row-icon { color: oklch(0.7 0.07 260); }
+.row.tone-error .row-icon { color: var(--rose); }
+.row.tone-unknown .row-icon { color: var(--text-faint); }
 
 .row-main { flex: 1; min-width: 0; }
 
@@ -224,6 +229,18 @@ button {
 }
 .row.tone-tool .row-label { color: var(--accent); }
 .row.tone-nudge .row-label { color: var(--amber); }
+.row.tone-task .row-label { color: oklch(0.78 0.13 40); }
+.row.tone-error .row-label { color: var(--rose); }
+.row.tone-speech .row-label { color: oklch(0.85 0.06 145); }
+
+/* A row still receiving updates (thinking-token counter, repeating rate-limit
+   ping) breathes so it reads as live rather than stalled. */
+.row.pending .row-icon { animation: pulse 1.6s ease-in-out infinite; }
+.row.pending .row-label { color: oklch(0.75 0.12 305); }
+@keyframes pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+  .row.pending .row-icon { animation: none; }
+}
 
 .source { font-family: var(--mono); font-size: 11.5px; }
 .source.bead { color: var(--amber); }
@@ -247,6 +264,10 @@ button {
 .row-body.clickable { cursor: pointer; }
 
 .row.tone-result .row-body { color: var(--text-dim); }
+.row.tone-limit .row-body,
+.row.tone-unknown .row-body { color: var(--text-faint); }
+.row.tone-error .row-body { color: color-mix(in oklab, var(--rose) 45%, var(--text)); }
+.row.tone-thinking .row-body { color: var(--text-dim); }
 
 .clamp-1 { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
 .clamp-4 { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
@@ -311,6 +332,9 @@ button {
 }
 .divider .rule { flex: 1; height: 1px; background: var(--border); }
 .divider .ts { margin-left: 0; }
+.divider .source { font-size: 11px; }
+.divider.tone-error { color: var(--rose); }
+.divider.tone-error .rule { background: color-mix(in oklab, var(--rose) 35%, var(--border)); }
 
 .jump-live {
   position: absolute;
