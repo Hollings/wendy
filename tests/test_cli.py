@@ -90,6 +90,22 @@ def test_build_cli_command_fork():
     assert "--session-id" not in cmd
 
 
+def test_build_cli_command_requests_summarized_thinking():
+    """Headless CLI runs leave thinking.display at the API default, which is
+    "omitted" on 5-generation models -- thinking blocks then arrive empty and
+    the brain feed has no thoughts to render. The flag must always be present.
+    """
+    cmd = build_cli_command(
+        cli_path="/usr/bin/claude",
+        session_id="abc-123",
+        is_new_session=True,
+        system_prompt="test prompt",
+        channel_config={"mode": "full", "_folder": "coding"},
+        model="claude-sonnet-5",
+    )
+    assert cmd[cmd.index("--thinking-display") + 1] == "summarized"
+
+
 def test_build_cli_command_no_system_prompt():
     cmd = build_cli_command(
         cli_path="/usr/bin/claude",

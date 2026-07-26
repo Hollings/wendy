@@ -496,6 +496,9 @@ class TaskRunner:
                 "--output-format", "stream-json",
                 "--verbose",
                 "--model", model,
+                # Surface reasoning in the agent log so the brain feed can show
+                # what a background agent is thinking -- see build_cli_command().
+                "--thinking-display", "summarized",
             ])
 
             # Append agent system prompt if available

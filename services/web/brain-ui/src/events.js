@@ -56,12 +56,13 @@ export function frameKey(rawString) {
 // ---------------------------------------------------------------------------
 
 export const KINDS = {
-  // A thought. On models that expose reasoning text this carries `text`; on
-  // models that return encrypted thinking (Sonnet 5+) only the running token
-  // count from system/thinking_tokens is available, so the row stays a
-  // counter and is marked `redacted` once the block closes.
+  // A thought. Normally carries the reasoning summary as `text`. If the CLI
+  // was run without --thinking-display summarized the block arrives empty on
+  // 5-generation models, and only the running token count from
+  // system/thinking_tokens survives -- the row then stays a counter and is
+  // marked `redacted` once the block closes.
   thinking: {
-    label: ev => (ev.mergeOpen ? 'thinking…' : ev.redacted ? 'thought · encrypted' : 'thought'),
+    label: ev => (ev.mergeOpen ? 'thinking…' : ev.redacted ? 'thought · hidden' : 'thought'),
     icon: 'Thinking',
     tone: 'thinking',
   },
@@ -216,9 +217,9 @@ function parseAssistant(event, base) {
       case 'thinking':
       case 'redacted_thinking': {
         const text = (block.thinking ?? '').trim()
-        // Closes whatever thinking row the token counters opened. Sonnet 5+
-        // returns encrypted thinking (signature only, empty text), so the
-        // counter is the whole story -- say so rather than dropping the block.
+        // Closes whatever thinking row the token counters opened. An empty
+        // block means no reasoning summary came back -- say so rather than
+        // dropping the block, so a regression in the CLI flag is visible.
         out.push({
           ...base(i),
           kind: 'thinking',
@@ -421,7 +422,7 @@ export function bodyText(ev) {
       if (ev.text) return ev.text
       const tokens = `${formatTokens(ev.tokens)} tokens`
       if (ev.mergeOpen) return `${tokens}…`
-      return ev.redacted ? `${tokens} · contents not exposed by this model` : tokens
+      return ev.redacted ? `${tokens} · no summary returned` : tokens
     }
     case 'result':
       return ev.content ?? ''

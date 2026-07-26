@@ -217,6 +217,13 @@ def build_cli_command(
         "--verbose",
         "--model", model,
         "--strict-mcp-config",
+        # Without this, thinking blocks arrive with an empty `thinking` field on
+        # 5-generation models and the brain feed has no thoughts to show. The
+        # CLI only defaults to "summarized" in interactive mode; headless (-p)
+        # leaves it at the API default of "omitted". Costs nothing extra --
+        # the model thinks and is billed the same either way, this only
+        # controls whether a readable summary comes back with it.
+        "--thinking-display", "summarized",
     ]
     if effort_args:
         cmd.extend(effort_args)
