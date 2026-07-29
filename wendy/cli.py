@@ -591,7 +591,7 @@ async def _watch_session_for_overloaded(
     session_jsonl: Path,
     proc: asyncio.subprocess.Process,
     poll_interval: float = 3.0,
-) -> None:
+) -> bool:
     """Poll the session JSONL for overloaded_error entries.
 
     The CLI swallows 529 overloaded errors internally and retries for
@@ -599,6 +599,11 @@ async def _watch_session_for_overloaded(
     the tail of the session file every *poll_interval* seconds.  When it
     spots an overloaded API error entry, it kills the subprocess so the
     caller can retry with a different model.
+
+    Returns True only when an overloaded error was detected (and the
+    process killed); False when the loop exits because the CLI ended on
+    its own.  The caller must use this return value, not task-completion
+    state, to decide whether an overload happened.
     """
     # Record the file size at start so we only scan new bytes.
     try:
@@ -630,7 +635,8 @@ async def _watch_session_for_overloaded(
         if any(_jsonl_line_is_overloaded(line) for line in lines):
             _LOG.warning("Session JSONL contains overloaded API error, killing CLI")
             _kill_process(proc)
-            return
+            return True
+    return False
 
 
 async def _stream_cli_output(
@@ -710,24 +716,19 @@ async def _stream_cli_output(
     finally:
         if watcher_task is not None:
             watcher_task.cancel()
+            # The watcher's return value is the ONLY reliable overload signal:
+            # it also finishes uncancelled (returning False) when the CLI
+            # exits on its own and the watcher's poll notices before we tear
+            # it down -- inferring from done()/cancelled() state misreported
+            # those successful turns as overloaded.
             try:
-                await watcher_task
+                if await watcher_task:
+                    overloaded_detected = True
             except asyncio.CancelledError:
                 pass
-
-    # If the watcher killed the process (EOF without overloaded in stream),
-    # check whether the watcher detected the error.  A cancelled task is
-    # also `done()`, so we must exclude that — cancellation means the CLI
-    # exited normally and the watcher was torn down, NOT that it found an
-    # overloaded error.
-    if (
-        not overloaded_detected
-        and watcher_task is not None
-        and watcher_task.done()
-        and not watcher_task.cancelled()
-    ):
-        # Watcher finished naturally (found overloaded and killed proc).
-        overloaded_detected = True
+            except Exception:
+                # A watcher crash must not fail an otherwise-good turn.
+                _LOG.warning("Overloaded watcher crashed", exc_info=True)
 
     if overloaded_detected:
         raise ClaudeCliError("API returned overloaded_error", overloaded=True)

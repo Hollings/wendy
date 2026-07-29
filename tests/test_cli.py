@@ -246,3 +246,121 @@ def test_build_cli_env_beads_and_enrichment(monkeypatch):
     env = _build_cli_env("coding", 456, beads_enabled=True, enrichment=True)
     assert env["BEADS_DIR"].endswith(".beads")
     assert env["WENDY_ENRICHMENT"] == "1"
+
+
+# =========================================================================
+# Stream output / overloaded watcher
+# =========================================================================
+
+
+class _FakeProc:
+    """Minimal stand-in for asyncio.subprocess.Process in stream tests."""
+
+    def __init__(self, stdout, returncode=None):
+        self.stdout = stdout
+        self.returncode = returncode
+        self.killed = False
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+
+async def test_stream_watcher_natural_exit_is_not_overloaded(tmp_path, monkeypatch):
+    """A watcher that finishes because the CLI exited on its own must NOT be
+    read as an overloaded error. Before the fix, done()-and-not-cancelled()
+    was treated as detection, so any turn where the process exited before the
+    watcher was cancelled raised a false ClaudeCliError -- rolling back and
+    re-running a perfectly successful turn."""
+    import asyncio
+
+    from wendy import cli
+
+    # Keep the stream log out of /data on dev machines.
+    monkeypatch.setattr(cli, "append_to_stream_log", lambda event, channel_id: None)
+
+    session_jsonl = tmp_path / "session.jsonl"
+    session_jsonl.write_text('{"type": "assistant", "message": {}}\n')
+
+    reader = asyncio.StreamReader()
+    reader.feed_data(b'{"type": "result", "usage": {"output_tokens": 7}}\n')
+
+    # returncode already set: the process exited, so the watcher's
+    # `while proc.returncode is None` loop ends immediately and the task
+    # completes uncancelled -- the exact shape of the false positive.
+    proc = _FakeProc(reader, returncode=0)
+
+    async def feed_eof_later():
+        # Yield so the watcher task runs to completion while the stream loop
+        # is blocked waiting for more stdout (as it is between real events).
+        await asyncio.sleep(0.05)
+        reader.feed_eof()
+
+    eof_task = asyncio.ensure_future(feed_eof_later())
+    events, usage = await cli._stream_cli_output(
+        proc, channel_id=1, idle_timeout=5, max_runtime=30,
+        session_jsonl=session_jsonl,
+    )
+    await eof_task
+
+    assert usage == {"output_tokens": 7}
+    assert [e["type"] for e in events] == ["result"]
+    assert not proc.killed
+
+
+async def test_stream_watcher_real_overload_still_raises(tmp_path, monkeypatch):
+    """The watcher's true-positive path still surfaces as ClaudeCliError."""
+    import asyncio
+    import json
+
+    import pytest
+
+    from wendy import cli
+
+    monkeypatch.setattr(cli, "append_to_stream_log", lambda event, channel_id: None)
+
+    session_jsonl = tmp_path / "session.jsonl"
+    session_jsonl.write_text("")
+
+    reader = asyncio.StreamReader()
+    proc = _FakeProc(reader, returncode=None)
+
+    async def grow_session_then_wait():
+        # Give the stream loop time to start, then append an overloaded entry.
+        await asyncio.sleep(0.05)
+        with open(session_jsonl, "a") as f:
+            f.write(json.dumps({
+                "type": "system",
+                "isApiErrorMessage": True,
+                "message": {"content": "API Error: 529 overloaded_error"},
+            }) + "\n")
+
+    # Speed the watcher's poll up for the test.
+    orig_watch = cli._watch_session_for_overloaded
+
+    def fast_watch(session, p, poll_interval=3.0):
+        return orig_watch(session, p, poll_interval=0.05)
+
+    monkeypatch.setattr(cli, "_watch_session_for_overloaded", fast_watch)
+
+    async def run_stream():
+        return await cli._stream_cli_output(
+            proc, channel_id=1, idle_timeout=5, max_runtime=30,
+            session_jsonl=session_jsonl,
+        )
+
+    async def close_stdout_on_kill():
+        # When the watcher kills the proc, unblock the readline with EOF.
+        while not proc.killed:
+            await asyncio.sleep(0.01)
+        reader.feed_eof()
+
+    writer = asyncio.ensure_future(grow_session_then_wait())
+    closer = asyncio.ensure_future(close_stdout_on_kill())
+    with pytest.raises(cli.ClaudeCliError) as excinfo:
+        await run_stream()
+    await writer
+    await closer
+
+    assert excinfo.value.overloaded
+    assert proc.killed
