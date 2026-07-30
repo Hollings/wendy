@@ -161,8 +161,9 @@ def _build_discord_send_kwargs(
 ) -> tuple[dict, str | None]:
     """Build ``channel.send()`` keyword arguments from a request body.
 
-    Handles content, attachment validation, and reply references.  Shared by
-    both single-message and batch-action ``send_message`` paths.
+    Handles content, attachment validation (single or multiple), and reply
+    references.  Shared by both single-message and batch-action
+    ``send_message`` paths.
 
     Returns ``(kwargs_dict, error_string)``.  *error_string* is ``None`` when
     the input is valid.
@@ -173,15 +174,23 @@ def _build_discord_send_kwargs(
     if len(text) > DISCORD_MAX_MESSAGE_LENGTH:
         return {}, f"Message too long ({len(text)} chars). Discord limit is {DISCORD_MAX_MESSAGE_LENGTH}."
 
-    att_path = body.get("file_path") or body.get("attachment")
-    if att_path:
-        err = _validate_attachment_path(att_path)
+    att_paths: list[str] = []
+    singular = body.get("file_path") or body.get("attachment")
+    if singular:
+        att_paths.append(singular)
+    plural = body.get("attachments")
+    if plural and isinstance(plural, list):
+        att_paths.extend(plural)
+    for p in att_paths:
+        err = _validate_attachment_path(p)
         if err:
             return {}, err
 
     kwargs: dict = {"content": text or None}
-    if att_path:
-        kwargs["file"] = _discord.File(att_path)
+    if len(att_paths) == 1:
+        kwargs["file"] = _discord.File(att_paths[0])
+    elif len(att_paths) > 1:
+        kwargs["files"] = [_discord.File(p) for p in att_paths]
 
     reply_to = body.get("reply_to")
     if reply_to:

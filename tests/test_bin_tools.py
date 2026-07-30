@@ -115,20 +115,30 @@ def test_build_body_minimal():
 
 
 def test_build_body_omits_unset_fields():
-    body = msg.build_body("123", "hi", file=None, reply=None, force=False)
+    body = msg.build_body("123", "hi", files=None, reply=None, force=False)
     assert "attachment" not in body
+    assert "attachments" not in body
     assert "reply_to" not in body
     assert "force" not in body
 
 
 def test_build_body_full():
-    body = msg.build_body("123", "hi", file="/x.png", reply="999", force=True)
+    body = msg.build_body("123", "hi", files=["/x.png"], reply="999", force=True)
     assert body == {
         "channel_id": "123",
         "content": "hi",
         "attachment": "/x.png",
         "reply_to": "999",
         "force": True,
+    }
+
+
+def test_build_body_multiple_files():
+    body = msg.build_body("123", "hi", files=["/x.png", "/y.png"])
+    assert body == {
+        "channel_id": "123",
+        "content": "hi",
+        "attachments": ["/x.png", "/y.png"],
     }
 
 
