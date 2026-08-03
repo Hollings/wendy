@@ -8,6 +8,7 @@ Assembly order:
   [2] Channel section (common_*.md + {channel_id}_*.md)
   [3] Tool instructions (TOOL_INSTRUCTIONS_TEMPLATE)
   [4] Journal section (file listing only)
+  [4b] Laurels (posts of hers people loved -- ambient, no action attached)
   [5] Thread context (parent channel info if in thread)
   [6] Topics section (behavioral: true topic fragments only)
   [7] Anchors section (anchor_*.md fragments)
@@ -28,6 +29,7 @@ from pathlib import Path
 from .cli import TOOL_INSTRUCTIONS_TEMPLATE
 from .config import PROXY_PORT, WENDY_BOT_NAME, WENDY_PUBLIC_URL
 from .fragments import get_recent_messages, load_fragments
+from .laurels import get_laurels_section
 from .paths import beads_dir, journal_dir
 
 _LOG = logging.getLogger(__name__)
@@ -69,6 +71,12 @@ def build_system_prompt(channel_id: int, channel_config: dict) -> str:
 
     # [4] Journal
     prompt += _get_journal_section(channel_name)
+
+    # [4b] Laurels -- ambient recognition, injected here so it is present for
+    # the whole session but never arrives as a notification (see laurels.py).
+    # Threads also see the parent channel's laurels.
+    laurel_channel_ids = [channel_id] + ([parent_channel_id] if parent_channel_id else [])
+    prompt += get_laurels_section(laurel_channel_ids)
 
     # [5] Thread context
     if is_thread and thread_name and thread_folder and parent_folder:

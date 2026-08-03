@@ -519,6 +519,79 @@ class WendyBot(commands.Bot):
             _LOG.error("Failed to update edited message %s: %s", payload.message_id, e)
 
     # ------------------------------------------------------------------
+    # Laurel reaction tracking (see laurels.py -- deliberately passive:
+    # these handlers only record state and never wake a generation)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _emoji_key(emoji: discord.PartialEmoji) -> str:
+        """Stable text key for an emoji: unicode char or custom-emoji name."""
+        return emoji.name or str(emoji)
+
+    def _is_own_message(self, payload: discord.RawReactionActionEvent) -> bool:
+        """Return True if the reacted-to message was authored by the bot.
+
+        Uses ``message_author_id`` when the discord.py version provides it
+        (2.4+), else falls back to the message cache -- Wendy's own sends are
+        persisted there by the API server.
+        """
+        author_id = getattr(payload, "message_author_id", None)
+        if author_id is not None:
+            return author_id == self.user.id
+        try:
+            return state_manager.get_message_author(payload.message_id) == self.user.id
+        except Exception as e:
+            _LOG.warning("Laurel author lookup failed for %s: %s", payload.message_id, e)
+            return False
+
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
+        """Record a human reaction to one of Wendy's own posts."""
+        if not payload.guild_id or payload.user_id == self.user.id:
+            return
+        if payload.channel_id not in self.channel_configs:
+            return
+        if payload.member is not None and payload.member.bot:
+            return
+        if not self._is_own_message(payload):
+            return
+        user_name = payload.member.display_name if payload.member else str(payload.user_id)
+        try:
+            state_manager.add_laurel_reaction(
+                message_id=payload.message_id,
+                channel_id=payload.channel_id,
+                emoji=self._emoji_key(payload.emoji),
+                user_id=payload.user_id,
+                user_name=user_name,
+            )
+        except Exception as e:
+            _LOG.error("Failed to record laurel reaction: %s", e)
+
+    async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent) -> None:
+        """Drop a tracked reaction when someone un-reacts (no-op if untracked)."""
+        if not payload.guild_id:
+            return
+        try:
+            state_manager.remove_laurel_reaction(
+                payload.message_id, self._emoji_key(payload.emoji), payload.user_id,
+            )
+        except Exception as e:
+            _LOG.error("Failed to remove laurel reaction: %s", e)
+
+    async def on_raw_reaction_clear(self, payload: discord.RawReactionClearEvent) -> None:
+        """Drop all tracked reactions when a message's reactions are cleared."""
+        try:
+            state_manager.clear_laurel_reactions(payload.message_id)
+        except Exception as e:
+            _LOG.error("Failed to clear laurel reactions: %s", e)
+
+    async def on_raw_reaction_clear_emoji(self, payload: discord.RawReactionClearEmojiEvent) -> None:
+        """Drop tracked reactions for one emoji when it is cleared from a message."""
+        try:
+            state_manager.clear_laurel_reactions(payload.message_id, self._emoji_key(payload.emoji))
+        except Exception as e:
+            _LOG.error("Failed to clear laurel emoji reactions: %s", e)
+
+    # ------------------------------------------------------------------
     # Channel / thread helpers
     # ------------------------------------------------------------------
 

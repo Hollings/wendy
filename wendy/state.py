@@ -137,6 +137,18 @@ class StateManager:
             CREATE INDEX IF NOT EXISTS idx_bash_tool_log_created
                 ON bash_tool_log(created_at);
 
+            CREATE TABLE IF NOT EXISTS laurel_reactions (
+                message_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                emoji TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                user_name TEXT,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (message_id, emoji, user_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_laurel_reactions_channel
+                ON laurel_reactions(channel_id, created_at);
+
             CREATE TABLE IF NOT EXISTS session_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 channel_id INTEGER NOT NULL,
@@ -660,6 +672,107 @@ class StateManager:
         except Exception as e:
             _LOG.error("Error checking pending messages: %s", e)
             return True
+
+    # =========================================================================
+    # Laurel Reactions (ambient recognition -- see laurels.py)
+    # =========================================================================
+
+    def add_laurel_reaction(
+        self,
+        message_id: int,
+        channel_id: int,
+        emoji: str,
+        user_id: int,
+        user_name: str | None,
+    ) -> None:
+        """Record one person's reaction to one of the bot's posts.
+
+        The (message, emoji, user) primary key makes re-adds idempotent, so a
+        user toggling a reaction can never inflate the count.
+        """
+        conn = self._get_conn()
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO laurel_reactions
+                (message_id, channel_id, emoji, user_id, user_name, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (message_id, channel_id, emoji, user_id, user_name, int(time.time()))
+        )
+        conn.commit()
+
+    def remove_laurel_reaction(self, message_id: int, emoji: str, user_id: int) -> None:
+        """Remove a reaction row. No-op if the reaction was never tracked."""
+        conn = self._get_conn()
+        conn.execute(
+            "DELETE FROM laurel_reactions WHERE message_id = ? AND emoji = ? AND user_id = ?",
+            (message_id, emoji, user_id)
+        )
+        conn.commit()
+
+    def clear_laurel_reactions(self, message_id: int, emoji: str | None = None) -> None:
+        """Remove all tracked reactions for a message (optionally one emoji only)."""
+        conn = self._get_conn()
+        if emoji is None:
+            conn.execute("DELETE FROM laurel_reactions WHERE message_id = ?", (message_id,))
+        else:
+            conn.execute(
+                "DELETE FROM laurel_reactions WHERE message_id = ? AND emoji = ?",
+                (message_id, emoji)
+            )
+        conn.commit()
+
+    def get_message_author(self, message_id: int) -> int | None:
+        """Return the cached author_id for a message, or None if unknown.
+
+        Fallback identity check for reaction events on discord.py versions
+        without ``message_author_id`` on the raw payload.
+        """
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT author_id FROM message_history WHERE message_id = ?",
+            (message_id,)
+        ).fetchone()
+        return row["author_id"] if row else None
+
+    def get_laurels(
+        self,
+        channel_ids: list[int],
+        threshold: int,
+        since_ts: int,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Return (message, emoji) groups where at least *threshold* people reacted.
+
+        Each row carries the reactor names, the reaction count, the latest
+        reaction time, and the message content/timestamp joined from
+        message_history (NULL if the message predates caching). Ordered by
+        most recent reaction first.
+        """
+        if not channel_ids:
+            return []
+        conn = self._get_conn()
+        placeholders = ",".join("?" * len(channel_ids))
+        rows = conn.execute(
+            f"""
+            SELECT lr.message_id, lr.channel_id, lr.emoji,
+                   COUNT(*) AS count,
+                   GROUP_CONCAT(lr.user_name, ', ') AS reactors,
+                   MAX(lr.created_at) AS latest_at,
+                   m.content AS content,
+                   m.timestamp AS message_ts
+            FROM laurel_reactions lr
+            LEFT JOIN message_history m ON m.message_id = lr.message_id
+            WHERE lr.channel_id IN ({placeholders})
+              AND lr.created_at >= ?
+            GROUP BY lr.message_id, lr.emoji
+            HAVING COUNT(*) >= ?
+            ORDER BY latest_at DESC
+            LIMIT ?
+            """,
+            (*channel_ids, since_ts, threshold, limit)
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     # =========================================================================
     # Notifications
