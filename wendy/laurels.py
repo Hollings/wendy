@@ -38,10 +38,22 @@ def _excerpt(content: str | None) -> str:
     return text
 
 
+def _coerce_ts(value) -> int | None:
+    """Epoch seconds as int, or None.
+
+    Long-lived production DBs predate this schema and store timestamps with
+    TEXT affinity, so values arrive as numeric strings like "1785800947".
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _format_line(entry: dict) -> str:
     """Render one laurel as a single prompt line."""
-    ts = entry.get("message_ts") or entry["latest_at"]
-    date = time.strftime("%b %d", time.gmtime(ts))
+    ts = _coerce_ts(entry.get("message_ts")) or _coerce_ts(entry.get("latest_at"))
+    date = time.strftime("%b %d", time.gmtime(ts)) if ts else "recently"
     emoji_parts = ", ".join(
         f"{emoji} x{count} ({reactors})" if reactors else f"{emoji} x{count}"
         for emoji, count, reactors in entry["emojis"]
@@ -57,31 +69,33 @@ def get_laurels_section(channel_ids: list[int], sm: StateManager | None = None) 
     """
     sm = sm or state
     since_ts = int(time.time()) - LAUREL_WINDOW_DAYS * 86400
+    # Laurels are decorative -- any failure here must degrade to "no section",
+    # never break the prompt build (and with it, message generation).
     try:
         rows = sm.get_laurels(
             channel_ids, LAUREL_THRESHOLD, since_ts, limit=LAUREL_MAX_SHOWN * 4,
         )
+        if not rows:
+            return ""
+
+        # Collapse per message: a post with several qualifying emojis is one
+        # laurel with a combined reaction summary, not several entries.
+        by_msg: dict[int, dict] = {}
+        for r in rows:
+            entry = by_msg.setdefault(r["message_id"], {
+                "content": r["content"],
+                "message_ts": r["message_ts"],
+                "latest_at": 0,
+                "emojis": [],
+            })
+            entry["emojis"].append((r["emoji"], r["count"], r["reactors"]))
+            entry["latest_at"] = max(entry["latest_at"], _coerce_ts(r["latest_at"]) or 0)
+
+        ordered = sorted(by_msg.values(), key=lambda e: e["latest_at"], reverse=True)
+        lines = "\n".join(_format_line(e) for e in ordered[:LAUREL_MAX_SHOWN])
     except Exception as e:
-        _LOG.warning("Laurel lookup failed: %s", e)
+        _LOG.warning("Laurel section failed: %s", e)
         return ""
-    if not rows:
-        return ""
-
-    # Collapse per message: a post with several qualifying emojis is one
-    # laurel with a combined reaction summary, not several entries.
-    by_msg: dict[int, dict] = {}
-    for r in rows:
-        entry = by_msg.setdefault(r["message_id"], {
-            "content": r["content"],
-            "message_ts": r["message_ts"],
-            "latest_at": 0,
-            "emojis": [],
-        })
-        entry["emojis"].append((r["emoji"], r["count"], r["reactors"]))
-        entry["latest_at"] = max(entry["latest_at"], r["latest_at"])
-
-    ordered = sorted(by_msg.values(), key=lambda e: e["latest_at"], reverse=True)
-    lines = "\n".join(_format_line(e) for e in ordered[:LAUREL_MAX_SHOWN])
 
     return f"""
 ---

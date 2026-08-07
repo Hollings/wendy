@@ -1,6 +1,7 @@
 """Tests for laurel reaction tracking (wendy.state) and rendering (wendy.laurels)."""
 from __future__ import annotations
 
+import sqlite3
 import time
 
 from wendy import laurels
@@ -202,6 +203,54 @@ def test_section_handles_untracked_message_content(tmp_path, monkeypatch):
 
     section = get_laurels_section([CHANNEL], sm=sm)
     assert "(no text" in section
+
+
+def test_section_handles_text_affinity_timestamps(tmp_path, monkeypatch):
+    """Prod DBs predate this schema: message_history.timestamp has TEXT
+    affinity there (v1 table survives CREATE TABLE IF NOT EXISTS), so
+    message_ts arrives as a numeric string. This was a live TypeError
+    (time.gmtime on a str) that blocked all generation."""
+    monkeypatch.setattr(laurels, "LAUREL_THRESHOLD", 1)
+    db = tmp_path / "test.db"
+    legacy = sqlite3.connect(db)
+    legacy.execute("""
+        CREATE TABLE message_history (
+            message_id INTEGER PRIMARY KEY, channel_id INTEGER NOT NULL,
+            guild_id INTEGER, timestamp TEXT NOT NULL, author_id INTEGER,
+            author_nickname TEXT, is_bot INTEGER DEFAULT 0,
+            is_webhook INTEGER DEFAULT 0, content TEXT, attachment_urls TEXT,
+            reply_to_id INTEGER, delivered INTEGER DEFAULT 0
+        )
+    """)
+    legacy.commit()
+    legacy.close()
+    sm = StateManager(db_path=db)
+    sm._get_conn()
+    _insert_bot_message(sm, 1001, "legacy schema post")
+    assert sm._get_conn().execute(
+        "SELECT typeof(timestamp) FROM message_history WHERE message_id = 1001"
+    ).fetchone()[0] == "text"
+    _react(sm, 1001, "star", 1)
+
+    section = get_laurels_section([CHANNEL], sm=sm)
+    assert "legacy schema post" in section
+    assert time.strftime("%b", time.gmtime(NOW)) in section
+
+
+def test_section_survives_garbage_timestamp(tmp_path, monkeypatch):
+    """Unparseable timestamps degrade to a dateless line, never an exception."""
+    monkeypatch.setattr(laurels, "LAUREL_THRESHOLD", 1)
+    sm = _make_sm(tmp_path)
+    _insert_bot_message(sm, 1001, "weird clock post")
+    conn = sm._get_conn()
+    conn.execute(
+        "UPDATE message_history SET timestamp = 'not-a-time' WHERE message_id = 1001"
+    )
+    conn.commit()
+    _react(sm, 1001, "star", 1)
+
+    section = get_laurels_section([CHANNEL], sm=sm)
+    assert "weird clock post" in section
 
 
 def test_section_caps_shown_laurels(tmp_path, monkeypatch):
