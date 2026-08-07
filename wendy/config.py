@@ -56,7 +56,7 @@ ENRICHMENT_DURATION: int = int(os.getenv("ENRICHMENT_DURATION", "900"))  # 15 mi
 DISCORD_MAX_MESSAGE_LENGTH: int = 2000
 # Laurels: ambient recognition from reaction pile-ons on Wendy's own posts
 # (see laurels.py). A laurel = one emoji reaching LAUREL_THRESHOLD reactors.
-LAUREL_THRESHOLD: int = int(os.getenv("WENDY_LAUREL_THRESHOLD", "3"))
+LAUREL_THRESHOLD: int = int(os.getenv("WENDY_LAUREL_THRESHOLD", "1"))
 LAUREL_MAX_SHOWN: int = int(os.getenv("WENDY_LAUREL_MAX_SHOWN", "5"))
 LAUREL_WINDOW_DAYS: int = int(os.getenv("WENDY_LAUREL_WINDOW_DAYS", "60"))
 WENDY_BOT_ID: int = int(os.getenv("WENDY_BOT_USER_ID", "0"))

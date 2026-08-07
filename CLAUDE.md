@@ -84,7 +84,7 @@ Built fresh each invocation in `prompt.py:build_system_prompt()`:
 3. Person/topic awareness (a compact roster line in the per-turn nudge prompt, not the system prompt)
 4. `TOOL_INSTRUCTIONS_TEMPLATE` — how to use `msg`/`react` commands and the internal API
 5. Journal section — lists journal files, emits nudge if overdue
-6. Laurels (`laurels.py`) — recent posts of Wendy's that got a reaction pile-on (threshold `WENDY_LAUREL_THRESHOLD`, default 3 reactors on one emoji). Deliberately Yegge-style ambient recognition: never a notification, never wakes her, no action attached — just present in the prompt all session. Reactions tracked by `on_raw_reaction_*` handlers into the `laurel_reactions` table.
+6. Laurels (`laurels.py`) — recent posts of Wendy's that got a reaction pile-on (threshold `WENDY_LAUREL_THRESHOLD`, default 1 reactor). Deliberately Yegge-style ambient recognition: never a notification, never wakes her, no action attached — just present in the prompt all session. Reactions tracked by `on_raw_reaction_*` handlers into the `laurel_reactions` table.
 7. Beads warning — active background task count
 8. Thread context (if in a thread)
 9. Topic fragments (keyword-triggered, sticky)
@@ -405,7 +405,7 @@ docker exec wendy ls -lt /root/.claude/projects/-data-wendy-channels-coding/ | h
 | `WENDY_GAMES_TOKEN` | Token for game deploys | falls back to `WENDY_DEPLOY_TOKEN` |
 | `GEMINI_API_KEY` | Gemini API for file analysis | — |
 | `MESSAGE_LOGGER_GUILDS` | Guild IDs for full message archival | — |
-| `WENDY_LAUREL_THRESHOLD` | Reactors (one emoji, one post) needed for a laurel | `3` |
+| `WENDY_LAUREL_THRESHOLD` | Reactors (one emoji, one post) needed for a laurel | `1` |
 | `WENDY_LAUREL_MAX_SHOWN` | Max laurels shown in the system prompt | `5` |
 | `WENDY_LAUREL_WINDOW_DAYS` | How far back laurels count | `60` |
 | `WENDY_DEV_MODE` | Set to `1` to enable dev mode | — |

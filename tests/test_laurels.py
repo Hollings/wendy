@@ -145,7 +145,8 @@ def test_get_message_author(tmp_path):
 # =========================================================================
 
 
-def test_section_empty_when_no_laurels(tmp_path):
+def test_section_empty_when_no_laurels(tmp_path, monkeypatch):
+    monkeypatch.setattr(laurels, "LAUREL_THRESHOLD", 3)
     sm = _make_sm(tmp_path)
     assert get_laurels_section([CHANNEL], sm=sm) == ""
     # Below threshold is also empty.
