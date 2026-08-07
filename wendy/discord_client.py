@@ -131,6 +131,13 @@ _MAX_TIMEOUT_CONTINUATIONS = 2
 _MAX_ENRICHMENT_CONTINUATIONS = 10
 """Max times an enrichment session will re-invoke before giving up."""
 
+_CURSOR_UNSNAPSHOTTED = object()
+"""Sentinel for ``saved_last_seen`` before the pre-CLI snapshot is taken.
+
+Distinct from None, which means "the snapshot ran and the channel had no
+watermark". Conflating the two made a pre-snapshot failure delete a real
+watermark (see _rollback_turn)."""
+
 
 class GenerationJob:
     """Tracks an active Claude CLI generation for a channel."""
@@ -918,7 +925,11 @@ class WendyBot(commands.Bot):
         # Seen-cursor position at the start of the turn. Restored on failure so a
         # crashed/interrupted turn re-reads what it consumed. Initialised before
         # the try so the failure handlers can reference it unconditionally.
-        saved_last_seen: int | None = None
+        # _CURSOR_UNSNAPSHOTTED (not None!) until the pre-CLI snapshot runs:
+        # a failure before that point must not touch the cursor at all, since
+        # None means "the channel genuinely had no watermark" and restoring it
+        # would delete a real watermark, hiding unread messages from catchup.
+        saved_last_seen: int | None | object = _CURSOR_UNSNAPSHOTTED
 
         try:
             from .config import resolve_model
@@ -1022,14 +1033,20 @@ class WendyBot(commands.Bot):
         except Exception as e:
             _LOG.error("Failed to commit turn for channel %s: %s", channel_id, e)
 
-    def _rollback_turn(self, channel_id: int, saved_last_seen: int | None) -> None:
+    def _rollback_turn(self, channel_id: int, saved_last_seen: int | None | object) -> None:
         """Roll back a failed turn: restore the seen cursor and re-arm the
         synthetics consumed this turn so they are re-read next turn."""
         try:
-            if saved_last_seen is not None:
+            if saved_last_seen is _CURSOR_UNSNAPSHOTTED:
+                # Failed before the pre-CLI snapshot: the CLI never ran, so
+                # this turn advanced nothing -- leave the cursor alone.
+                # (Deleting the watermark here orphaned unread messages once:
+                # a None watermark reads as "nothing unread" to catchup.)
+                pass
+            elif saved_last_seen is not None:
                 state_manager.update_last_seen(channel_id, saved_last_seen)
             else:
-                # No prior watermark -- clear any advance this turn made.
+                # Turn started with no watermark -- clear any advance it made.
                 state_manager.reset_last_seen(channel_id)
             state_manager.rollback_delivered_synthetics(channel_id)
         except Exception as e:
