@@ -158,6 +158,57 @@ def test_build_send_kwargs_valid_attachment(tmp_path):
             os.remove(real)
 
 
+def test_build_send_kwargs_multiple_attachments():
+    a, b = "/tmp/_wendy_att_multi_a.txt", "/tmp/_wendy_att_multi_b.txt"
+    try:
+        for p in (a, b):
+            with open(p, "w") as fh:
+                fh.write("data")
+        kwargs, err = _build_discord_send_kwargs(
+            {"content": "see files", "attachments": [a, b]}, 1,
+        )
+        assert err is None
+        assert "file" not in kwargs
+        assert "files" in kwargs
+        assert len(kwargs["files"]) == 2
+    finally:
+        for p in (a, b):
+            if os.path.exists(p):
+                os.remove(p)
+
+
+def test_build_send_kwargs_single_item_attachments_list_uses_singular_key():
+    real = "/tmp/_wendy_att_single_list.txt"
+    try:
+        with open(real, "w") as fh:
+            fh.write("data")
+        kwargs, err = _build_discord_send_kwargs(
+            {"content": "see file", "attachments": [real]}, 1,
+        )
+        assert err is None
+        assert "file" in kwargs
+        assert "files" not in kwargs
+    finally:
+        if os.path.exists(real):
+            os.remove(real)
+
+
+def test_build_send_kwargs_rejects_bad_attachment_in_list():
+    real = "/tmp/_wendy_att_valid_in_bad_list.txt"
+    try:
+        with open(real, "w") as fh:
+            fh.write("data")
+        kwargs, err = _build_discord_send_kwargs(
+            {"content": "hi", "attachments": [real, "/etc/shadow"]}, 1,
+        )
+        assert kwargs == {}
+        assert err is not None
+        assert "must be in" in err
+    finally:
+        if os.path.exists(real):
+            os.remove(real)
+
+
 # =========================================================================
 # _consume_delivered_messages -- the send-block retry loop fix
 # =========================================================================

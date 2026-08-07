@@ -4,6 +4,7 @@
 Usage:
     msg "hello world"
     msg -f /path/to/file.png "caption text"
+    msg -f /path/to/a.png -f /path/to/b.txt "multiple attachments"
     msg -r MESSAGE_ID "reply text"
     msg --force "send even if new messages arrived"
     msg <<'EOF'
@@ -32,11 +33,14 @@ def format_error_output(result):
     return f"Error: {result['error']}"
 
 
-def build_body(channel_id, content, file=None, reply=None, force=False):
+def build_body(channel_id, content, files=None, reply=None, force=False):
     """Assemble the /api/send_message request body, omitting unset fields."""
     body = {"channel_id": channel_id, "content": content}
-    if file:
-        body["attachment"] = file
+    if files:
+        if len(files) == 1:
+            body["attachment"] = files[0]
+        else:
+            body["attachments"] = files
     if reply:
         body["reply_to"] = reply
     if force:
@@ -47,7 +51,7 @@ def build_body(channel_id, content, file=None, reply=None, force=False):
 def main():
     p = argparse.ArgumentParser(description="Send a Discord message")
     p.add_argument("content", nargs="*", help="Message content (reads stdin if omitted)")
-    p.add_argument("-f", "--file", help="Attachment file path")
+    p.add_argument("-f", "--file", action="append", help="Attachment file path (repeatable)")
     p.add_argument("-r", "--reply", help="Reply to message ID")
     p.add_argument("--force", action="store_true", help="Skip new-message interrupt check")
     args = p.parse_args()
@@ -71,7 +75,7 @@ def main():
 
     port = os.environ.get("WENDY_PROXY_PORT", "8945")
 
-    body = build_body(channel_id, content, file=args.file, reply=args.reply, force=args.force)
+    body = build_body(channel_id, content, files=args.file, reply=args.reply, force=args.force)
 
     data = json.dumps(body).encode()
     req = urllib.request.Request(
