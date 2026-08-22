@@ -21,11 +21,11 @@ _LOG = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # Model is config-driven so it's a one-line bump and can't silently go
-# deprecated again. gemini-3.1-pro-preview is the strongest current multimodal
-# model (verified via the API model list, 2026-06) and handles image / audio /
-# video / document input. Override with WENDY_GEMINI_MODEL (e.g. gemini-pro-latest
-# to auto-track the newest pro).
-GEMINI_MODEL = os.getenv("WENDY_GEMINI_MODEL", "gemini-3.1-pro-preview")
+# deprecated again. gemini-3.5-flash is the best Gemini for image vision
+# (#1 on Roboflow Vision Evals, 2026-08 — the later 3.6/3.7 flashes regressed
+# on vision) and handles image / audio / video / document input. Override with
+# WENDY_GEMINI_MODEL (e.g. gemini-flash-latest to auto-track the newest flash).
+GEMINI_MODEL = os.getenv("WENDY_GEMINI_MODEL", "gemini-3.5-flash")
 GEMINI_MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB (inline_data limit; see Files-API TODO)
 GEMINI_MAX_VIDEO_DURATION = 5 * 60       # 5 minutes
 GEMINI_MAX_AUDIO_DURATION = 30 * 60      # 30 minutes
@@ -112,8 +112,8 @@ def _get_media_duration(content: bytes, media_type: str) -> float | None:
 def _get_gemini_model(media_type: str) -> str:
     """Return the configured Gemini model.
 
-    gemini-3.1-pro-preview is multimodal across image / audio / video / document
-    input, so a single model now serves every media type (no per-type split).
+    gemini-3.5-flash is multimodal across image / audio / video / document
+    input, so a single model serves every media type (no per-type split).
     The argument is kept for signature stability and future per-type overrides.
     """
     return GEMINI_MODEL

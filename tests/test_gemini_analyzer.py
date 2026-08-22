@@ -26,7 +26,7 @@ def test_get_gemini_model_uses_configured_model_for_all_media():
     assert ga._get_gemini_model("video/mp4") == ga.GEMINI_MODEL
     assert ga._get_gemini_model("image/png") == ga.GEMINI_MODEL
     assert ga._get_gemini_model("application/pdf") == ga.GEMINI_MODEL
-    assert ga.GEMINI_MODEL == "gemini-3.1-pro-preview"
+    assert ga.GEMINI_MODEL == "gemini-3.5-flash"
 
 
 def test_document_types_supported():
