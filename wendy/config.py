@@ -27,13 +27,19 @@ if os.name == "posix" and os.getuid() == 0:
 
 # =============================================================================
 # Model Map (single definition, used everywhere)
+#
+# Values are what gets passed to ``claude --model``. A bare CLI alias
+# (``opus``/``sonnet``/``haiku``) resolves to the newest release of that
+# family at run time, so it never goes stale. ``fable`` stays pinned on
+# purpose: the daily task quota is keyed on that family and
+# config/docs/bd_usage.md documents the explicit ID.
 # =============================================================================
 
 MODEL_MAP: dict[str, str] = {
     "fable": "claude-fable-5",
-    "opus": "claude-opus-4-6",
-    "sonnet": "claude-sonnet-5",
-    "haiku": "claude-haiku-4-5-20251001",
+    "opus": "opus",      # latest Opus (claude-opus-5 as of 2026-09-08)
+    "sonnet": "sonnet",  # latest Sonnet (claude-sonnet-5 as of 2026-09-08)
+    "haiku": "haiku",    # latest Haiku (claude-haiku-4-5 as of 2026-09-08)
 }
 
 # =============================================================================
@@ -158,7 +164,11 @@ def parse_channel_configs() -> dict[int, dict]:
 
 
 def resolve_model(model_shorthand: str | None, *, allow_env_override: bool = True) -> str:
-    """Resolve a model shorthand to a full model ID."""
+    """Resolve a model shorthand to the value passed to ``claude --model``.
+
+    Family shorthands map through MODEL_MAP (a pinned ID or a CLI alias);
+    anything else -- e.g. a full model ID -- passes through unchanged.
+    """
     # Global override: force all channels to a specific model via the
     # WENDY_MODEL_OVERRIDE env var (e.g. "fable"). Bypassed when an explicit
     # model_override is passed (e.g. the overload-retry path), so fallbacks
