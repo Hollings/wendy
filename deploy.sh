@@ -7,7 +7,8 @@
 #   ./deploy.sh               # Deploy bot only (most common)
 #   ./deploy.sh web            # Deploy web service only
 #   ./deploy.sh all            # Deploy both
-#   ./deploy.sh --restart-only # Restart without uploading/rebuilding
+#   ./deploy.sh --restart-only # Recreate container from the current image (no upload/rebuild;
+#                              #   picks up bot.env / sites.env changes, unlike "compose restart")
 #   ./deploy.sh --logs         # Tail logs
 #
 set -euo pipefail
@@ -57,8 +58,10 @@ if $LOGS_ONLY; then
 fi
 
 if $RESTART_ONLY; then
-    echo "==> Restarting $SERVICES..."
-    remote "$COMPOSE restart $SERVICES"
+    echo "==> Recreating $SERVICES from current image (no upload/rebuild)..."
+    # "compose restart" reuses the old container and never re-reads env_file,
+    # so edits to /srv/secrets/wendy/*.env would silently not apply.
+    remote "$COMPOSE up -d --no-build --force-recreate $SERVICES"
     sleep 3
     remote "$COMPOSE logs --tail=15 $SERVICES"
     exit 0
