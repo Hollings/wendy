@@ -489,7 +489,7 @@ class WendyBot(commands.Bot):
         # Interrupt: "WENDY" in all caps cancels the running generation.
         existing_job = self._active_generations.get(message.channel.id)
         if message.content.strip() == "WENDY" and self._job_is_running(existing_job):
-            self._interrupt_channel(message, existing_job, channel_config)
+            self._interrupt_channel(message, existing_job)
             return
 
         # If a generation is already running: enrich sessions suppress new messages,
@@ -760,11 +760,12 @@ class WendyBot(commands.Bot):
         if self._paused:
             _LOG.info("Paused: skipping generation for channel %s", channel.id)
             return
-        model_override = channel_config.get("model")
+        # model_override is reserved for the overload fallback. run_cli reads the
+        # channel's configured model itself, and resolve_model only honours
+        # WENDY_MODEL_OVERRIDE when model_override is None -- passing the channel
+        # model here silently exempted every channel with an explicit model.
         job = GenerationJob()
-        task = self.loop.create_task(
-            self._generate_response(channel, job, model_override=model_override)
-        )
+        task = self.loop.create_task(self._generate_response(channel, job))
         job.task = task
         self._active_generations[channel.id] = job
 
@@ -772,7 +773,6 @@ class WendyBot(commands.Bot):
         self,
         message: discord.Message,
         existing_job: GenerationJob,
-        channel_config: dict,
     ) -> None:
         """Cancel the running generation and start a fresh one.
 
@@ -795,10 +795,7 @@ class WendyBot(commands.Bot):
             f"Whatever you were doing may not be finished.]",
         )
 
-        model_override = channel_config.get("model")
-        new_task = self.loop.create_task(
-            self._generate_response(message.channel, new_job, model_override=model_override)
-        )
+        new_task = self.loop.create_task(self._generate_response(message.channel, new_job))
         new_job.task = new_task
 
     async def _maybe_update_presence(self, force: bool = False) -> None:
@@ -1109,13 +1106,12 @@ class WendyBot(commands.Bot):
                 "[Your CLI session was interrupted because it hit the time limit. "
                 "Pick up where you left off -- check messages first.]",
             )
-            channel_config = self.channel_configs.get(channel.id, {})
             new_job = GenerationJob()
             new_job.continuation_count = job.continuation_count + 1
             # Carry over pending flag so messages aren't lost.
             new_job.new_message_pending = job.new_message_pending
             new_task = self.loop.create_task(
-                self._generate_response(channel, new_job, model_override=channel_config.get("model"))
+                self._generate_response(channel, new_job)
             )
             new_job.task = new_task
             self._active_generations[channel.id] = new_job
@@ -1236,14 +1232,11 @@ class WendyBot(commands.Bot):
         )
         end_time_str = fake_end_dt.strftime("%H:%M")
 
-        model_override = channel_config.get("model")
         job = GenerationJob()
         job.is_enrichment = True
         job.enrichment_end_time = end_time_str
         job.enrichment_end_timestamp = time.time() + ENRICHMENT_DURATION
-        task = self.loop.create_task(
-            self._generate_response(channel, job, model_override=model_override)
-        )
+        task = self.loop.create_task(self._generate_response(channel, job))
         job.task = task
         self._active_generations[channel_id] = job
         _LOG.info("Enrichment started for channel %d (manual=%s, until=%s UTC)", channel_id, manual, end_time_str)
