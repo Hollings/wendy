@@ -34,7 +34,7 @@ def _snap(content="", attachments=(), embeds=(), stickers=(), created_at=None):
 
 def _msg(content="", attachments=(), snapshots=None, mentions=()):
     return types.SimpleNamespace(
-        content=content, attachments=list(attachments), snapshots=snapshots,
+        content=content, attachments=list(attachments), message_snapshots=snapshots,
         mentions=list(mentions), id=555, reference=None, webhook_id=None,
         channel=types.SimpleNamespace(id=42),
         guild=types.SimpleNamespace(id=7),
@@ -55,7 +55,7 @@ def test_plain_message_is_untouched():
 
 
 def test_snapshots_attr_missing_is_tolerated():
-    """Older discord.py builds have no ``snapshots`` attribute at all."""
+    """Older discord.py builds have no ``message_snapshots`` attribute at all."""
     m = types.SimpleNamespace(content="", attachments=[])
     assert not is_forward(m)
     assert not has_visible_payload(m)
@@ -198,3 +198,50 @@ def test_save_attachments_noop_without_files(tmp_path, monkeypatch):
 def test_forwards_module_tolerates_empty_snapshot_lists(snapshots):
     m = _msg(content="", snapshots=snapshots)
     assert not forwards.is_forward(m)
+
+
+# ---------------------------------------------------------------------------
+# Against the real discord.py Message class (guards the attribute name)
+# ---------------------------------------------------------------------------
+
+def _real_forward_message():
+    from unittest.mock import MagicMock
+
+    import discord
+
+    state = MagicMock()
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 42
+    data = {
+        "id": "555", "channel_id": "42", "content": "", "tts": False,
+        "mention_everyone": False, "attachments": [], "embeds": [],
+        "edited_timestamp": None, "type": 0, "pinned": False, "mentions": [],
+        "mention_roles": [], "timestamp": "2026-01-01T00:00:00+00:00",
+        "author": {"id": "9", "username": "john", "discriminator": "0",
+                   "avatar": None, "global_name": "john"},
+        "flags": 16384,
+        "message_reference": {"type": 1, "message_id": "1", "channel_id": "2", "guild_id": "3"},
+        "message_snapshots": [{"message": {
+            "content": "forwarded body",
+            "timestamp": "2025-03-04T05:06:00+00:00", "edited_timestamp": None,
+            "type": 0, "flags": 0, "mentions": [], "mention_roles": [], "embeds": [],
+            "attachments": [{"id": "77", "filename": "pic.png", "size": 3,
+                             "url": "https://cdn/pic.png", "proxy_url": "https://cdn/pic.png"}],
+        }}],
+    }
+    return discord.Message(state=state, channel=channel, data=data)
+
+
+def test_real_discord_message_forward_is_detected():
+    m = _real_forward_message()
+    assert m.content == ""
+    assert is_forward(m)
+    assert has_visible_payload(m)
+
+
+def test_real_discord_message_forward_renders_text_and_files():
+    m = _real_forward_message()
+    out = render_forwarded_content(m, m.content)
+    assert "forwarded body" in out
+    assert "originally sent 2025-03-04 05:06 UTC" in out
+    assert [a.filename for a in all_attachments(m)] == ["pic.png"]

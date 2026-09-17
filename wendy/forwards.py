@@ -2,7 +2,7 @@
 
 A Discord *forward* arrives as a message with empty ``content`` and a
 ``reference`` of type ``forward``. The forwarded text, embeds and attachments
-live in ``message.snapshots`` (``discord.MessageSnapshot``), not on the message
+live in ``message.message_snapshots`` (``discord.MessageSnapshot``), not on the message
 itself. This module flattens those snapshots so the rest of the bot can treat a
 forward like an ordinary message: text goes into the ``content`` column and
 snapshot attachments are downloaded alongside the message's own.
@@ -24,8 +24,9 @@ def is_forward(message: Any) -> bool:
 
 
 def _snapshots(message: Any) -> list[Any]:
-    # ``snapshots`` was added in discord.py 2.5; older builds simply lack it.
-    return list(getattr(message, "snapshots", None) or [])
+    # discord.py exposes forwards as ``Message.message_snapshots`` (added in
+    # 2.5; older builds simply lack the attribute).
+    return list(getattr(message, "message_snapshots", None) or [])
 
 
 def snapshot_attachments(message: Any) -> list[Any]:
