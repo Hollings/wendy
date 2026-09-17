@@ -33,6 +33,7 @@ from .config import (
     parse_channel_configs,
 )
 from .enrichment import build_enrichment_continue_nudge, build_enrichment_end_nudge, build_enrichment_nudge
+from .forwards import all_attachments, has_visible_payload, render_forwarded_content
 from .paths import (
     attachments_dir,
     claude_md_path,
@@ -471,7 +472,8 @@ class WendyBot(commands.Bot):
             await self.process_commands(message)
             return
 
-        if not message.content.strip() and not message.attachments:
+        # Forwards carry their text/files in snapshots, not content/attachments.
+        if not has_visible_payload(message):
             return
 
         # Cache to SQLite if not already logged by guild-wide logging above.
@@ -651,7 +653,7 @@ class WendyBot(commands.Bot):
             author_id=message.author.id,
             author_nickname=message.author.display_name,
             is_bot=message.author.bot,
-            content=self._resolve_mentions(message),
+            content=render_forwarded_content(message, self._resolve_mentions(message)),
             timestamp=int(message.created_at.timestamp()),
             attachment_urls=attachment_urls,
             reply_to_id=reply_to_id,
@@ -661,17 +663,20 @@ class WendyBot(commands.Bot):
     async def _save_attachments(self, message: discord.Message, channel_name: str) -> list[str]:
         """Download message attachments to the channel's attachments directory.
 
+        Includes attachments carried by forwarded-message snapshots, indexed
+        after the message's own so ``find_attachments_for_message`` sees them.
         Returns a list of saved file paths. Retries existence checks to handle
         filesystem flush delays on network mounts.
         """
-        if not message.attachments:
+        attachments = all_attachments(message)
+        if not attachments:
             return []
 
         att_dir = attachments_dir(channel_name)
         att_dir.mkdir(parents=True, exist_ok=True)
         saved: list[str] = []
 
-        for i, attachment in enumerate(message.attachments):
+        for i, attachment in enumerate(attachments):
             try:
                 filepath = att_dir / f"msg_{message.id}_{i}_{attachment.filename}"
                 data = await attachment.read()
