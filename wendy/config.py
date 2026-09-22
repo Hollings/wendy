@@ -36,8 +36,11 @@ if os.name == "posix" and os.getuid() == 0:
 # =============================================================================
 
 MODEL_MAP: dict[str, str] = {
-    "fable": "claude-fable-5",
-    "opus": "opus",      # latest Opus (claude-opus-5 as of 2026-09-08)
+    "fable": "claude-fable-5-1",
+    # Pinned: the CLI's bare "opus" alias lagged a release behind (2.1.263 still
+    # resolved it to claude-opus-5 after Opus 5.5 shipped on 2026-09-22), so the
+    # explicit ID is the only way to guarantee which Opus runs. Bump on release.
+    "opus": "claude-opus-5-5",
     "sonnet": "sonnet",  # latest Sonnet (claude-sonnet-5 as of 2026-09-08)
     "haiku": "haiku",    # latest Haiku (claude-haiku-4-5 as of 2026-09-08)
 }
@@ -60,11 +63,6 @@ ENRICHMENT_HOUR_UTC: int = int(os.getenv("ENRICHMENT_HOUR_UTC", "21"))   # 1pm P
 ENRICHMENT_MINUTE_UTC: int = int(os.getenv("ENRICHMENT_MINUTE_UTC", "0"))
 ENRICHMENT_DURATION: int = int(os.getenv("ENRICHMENT_DURATION", "900"))  # 15 min
 DISCORD_MAX_MESSAGE_LENGTH: int = 2000
-# Laurels: ambient recognition from reaction pile-ons on Wendy's own posts
-# (see laurels.py). A laurel = one emoji reaching LAUREL_THRESHOLD reactors.
-LAUREL_THRESHOLD: int = int(os.getenv("WENDY_LAUREL_THRESHOLD", "1"))
-LAUREL_MAX_SHOWN: int = int(os.getenv("WENDY_LAUREL_MAX_SHOWN", "5"))
-LAUREL_WINDOW_DAYS: int = int(os.getenv("WENDY_LAUREL_WINDOW_DAYS", "60"))
 WENDY_BOT_ID: int = int(os.getenv("WENDY_BOT_USER_ID", "0"))
 WENDY_BOT_NAME: str = os.getenv("WENDY_BOT_NAME", "Wendy")
 # Public-facing base URL (system prompt, webhook URLs). Distinct from

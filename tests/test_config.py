@@ -18,9 +18,10 @@ def test_model_map_keys():
 
 
 def test_resolve_model_shorthand():
-    # opus/sonnet/haiku pass the bare CLI alias through so the CLI picks the
-    # newest release of the family; fable is deliberately pinned to an ID.
-    assert resolve_model("opus") == "opus"
+    # sonnet/haiku pass the bare CLI alias through so the CLI picks the newest
+    # release of the family. opus and fable are deliberately pinned to IDs: the
+    # CLI alias lagged a release behind when Opus 5.5 shipped.
+    assert resolve_model("opus") == "claude-opus-5-5"
     assert resolve_model("sonnet") == "sonnet"
     assert resolve_model("haiku") == "haiku"
     assert resolve_model("fable").startswith("claude-fable-")
@@ -28,8 +29,8 @@ def test_resolve_model_shorthand():
 
 def test_resolve_model_env_override():
     with mock.patch.dict(os.environ, {"WENDY_MODEL_OVERRIDE": "opus"}, clear=False):
-        assert resolve_model("sonnet") == "opus"
-        assert resolve_model(None) == "opus"
+        assert resolve_model("sonnet") == "claude-opus-5-5"
+        assert resolve_model(None) == "claude-opus-5-5"
         # The overload-retry path opts out of the override.
         assert resolve_model("sonnet", allow_env_override=False) == "sonnet"
     with mock.patch.dict(os.environ, {"WENDY_MODEL_OVERRIDE": "claude-opus-5"}, clear=False):
