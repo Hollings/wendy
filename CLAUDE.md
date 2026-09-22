@@ -75,20 +75,32 @@ Session lifecycle: `sessions.py` manages create/resume/reset. `state.py` handles
 
 ---
 
-## Prompt Assembly (10 layers)
+## Prompt Assembly
 
 Built fresh each invocation in `prompt.py:build_system_prompt()`:
 
-1. `config/system_prompt.txt` — base personality + tool docs (supports `<!-- FULL_ONLY_START -->..<!-- FULL_ONLY_END -->` blocks stripped in `chat` mode)
-2. Channel fragments (`common_*.md` + `{channel_id}_*.md`)
-3. Person/topic awareness (a compact roster line in the per-turn nudge prompt, not the system prompt)
-4. `TOOL_INSTRUCTIONS_TEMPLATE` — how to use `msg`/`react` commands and the internal API
-5. Journal section — lists journal files, emits nudge if overdue
-6. Laurels (`laurels.py`) — recent posts of Wendy's that got a reaction pile-on (threshold `WENDY_LAUREL_THRESHOLD`, default 1 reactor). Deliberately Yegge-style ambient recognition: never a notification, never wakes her, no action attached — just present in the prompt all session. Reactions tracked by `on_raw_reaction_*` handlers into the `laurel_reactions` table.
-7. Beads warning — active background task count
-8. Thread context (if in a thread)
-9. Topic fragments (keyword-triggered, sticky)
-10. Anchor fragments (behavioral reinforcement, always last)
+1. `config/system_prompt.txt` — identity, boundaries, operating principles and specialist reference paths. `FULL_ONLY` blocks are stripped in `chat` mode.
+2. Common and channel fragments, selected by frontmatter type and channel ID.
+3. `TOOL_INSTRUCTIONS_TEMPLATE` — compact messaging, wake and `wenv` guide. Detailed examples live in `config/docs/conversation_tools.md`; environment semantics in `config/docs/environment.md`.
+4. The `wtask` guide, only when tasks are enabled. Runtime model limits come from `wtask models` and the nudge, not a hardcoded prompt quota.
+5. One static memory policy for journals and people profiles. Optional reminders ride on natural turns, never blocking Stop.
+7. Thread context, then matching behavioral topic fragments.
+8. Anchor fragments, always last. **Preserve the personality text in `common_10_behavior.md` (type: anchor) and the override/headless anchors when simplifying operational instructions.**
+
+The per-turn nudge separately carries the people/topic roster, journal filenames,
+task status/quota feedback and optional compaction notice. In manual delivery mode,
+reading messages is optional even after compaction. `msgs` is the instructed route
+for message retrieval; this is a behavioral rule, not a database access restriction.
+
+Workers receive `config/agent_claude_md.txt` with the task contract and recovery
+instructions. Website/game examples are loaded on demand from
+`config/docs/project_templates.md`.
+
+This repository's CLAUDE.md is a developer guide, not a section explicitly appended
+by `build_system_prompt`. Existing channel CLAUDE.md files may still exist, and
+thread setup copies a parent's file when creating a new thread. Audit those files
+and native CLI memory loading before changing that behavior; do not delete them
+or overwrite runtime fragments as part of a prompt cleanup.
 
 ---
 
@@ -110,7 +122,7 @@ Fragments are `.md` files in `/data/wendy/claude_fragments/` with YAML frontmatt
 
 **`select` field**: arbitrary Python expression evaluated against recent messages for conditional loading.
 
-**Seeding vs runtime**: `fragment_setup.py` copies `config/claude_fragments/` to `/data/wendy/claude_fragments/` on startup but **never overwrites** existing files. This means Wendy can edit fragments at runtime and her changes persist. However, repo updates to existing fragments won't propagate automatically. Use `scripts/sync-fragments.sh` to compare and resolve differences between repo and server.
+**Seeding vs runtime**: `fragment_setup.py` copies `config/claude_fragments/` to `/data/wendy/claude_fragments/` on startup but **never overwrites** existing files. Runtime copies can differ from repository seeds. Wendy can write people profiles; the other fragments are protected. Repo updates to existing fragments won't propagate automatically. Use `scripts/sync-fragments.sh` to compare and resolve differences between repo and server, preserving runtime instructions.
 
 ---
 
@@ -154,7 +166,6 @@ state.py                          (imports: paths, models)
          |
          v
 fragments.py                      (imports: paths, state)
-laurels.py                        (imports: state, config)
 fragment_setup.py                 (imports: paths)
 sessions.py                       (imports: paths, state, config)
          |
@@ -187,29 +198,46 @@ No circular imports. `paths.py`, `models.py`, and `config.py` are leaf modules �
 
 **Synthetic messages**: notifications (task completions, webhooks) are inserted into SQLite with IDs starting at `9_000_000_000_000_000_000` so they appear in `check_messages` responses and Wendy sees them naturally.
 
+**API outage recovery**: a turn that dies on a transient API error (529 overloaded or any 5xx, see `is_transient_api_failure` in `cli.py`) first walks the in-turn ladder (retry on opus after 10s, once more after 60s). If that gives up, `_finalize_generation` hands the channel to `OutageRecovery` (`recovery.py`): a per-channel timer with doubling backoff (`WENDY_RECOVERY_BASE_DELAY`, default 120s, capped at `WENDY_RECOVERY_MAX_DELAY`, default 1800s) re-runs the queue once unread messages still exist. The first retry of an outage posts a short notice to the channel. A successful turn resets the backoff; a human-triggered turn cancels the armed timer but keeps the attempt count so repeated failures keep backing off. The failed turn's watermark rollback is what makes the retry re-read the queued messages.
+
 ---
 
-## Beads Background Tasks (`wendy/tasks.py`)
+## Background Tasks (`wtask` + BD)
 
-**`bd` is an external Go binary** ([github.com/steveyegge/beads](https://github.com/steveyegge/beads)) installed in the Docker image -- it is NOT part of this repo. It provides a lightweight issue tracker backed by a `.beads/` directory (SQLite + JSONL). Wendy's code interfaces with bd exclusively through subprocess calls; it never imports or modifies bd's internals.
+`bin/wtask` calls the scoped `/api/tasks` endpoint. `wendy/tasks.py` schedules work,
+`beads.py` wraps pinned BD 0.63.3 subprocesses, `task_store.py` owns durable attempts,
+mailboxes, quotas and notifications in the existing SQLite DB, and `worker_runtime.py`
+owns Claude processes, persistent sessions and append-only logs.
 
-**How Wendy connects to bd:**
-- `TaskRunner._run_bd()` in `tasks.py` executes `bd` subcommands (init, ready, update, show, close, comment) as the wendy user via `asyncio.create_subprocess_exec`
-- The CLI subprocess (Wendy in Discord) runs `bd create`, `bd list`, etc. directly from the shell -- the `BEADS_DIR` env var (set by `_build_cli_env()` in `cli.py`) tells bd where the channel's `.beads/` directory is
-- Both paths must run as the wendy user (UID 1000) so file ownership stays consistent
+Workers use the existing shared channel workspace; one worker per channel and up to
+ORCHESTRATOR_CONCURRENCY globally. No worktrees, checkout resets or automatic deletion
+of worker output/logs. Restarts hold unfinished work for explicit resume/retry.
+Task briefs and origin threads are captured at submission, not via .current_session.
 
-`bd create "description"` forks the current Claude session (`--fork-session`) to run a background agent. The `TaskRunner` polls `beads_dir/issues.jsonl` and emits `task_completion` notifications when tasks finish. Up to `ORCHESTRATOR_CONCURRENCY` (default 3) agents run concurrently.
+Fable defaults to `claude-fable-5-1`, with 3 new attempts/day globally, resetting at
+midnight America/Los_Angeles. Environment: WENDY_TASK_MODEL_LIMITS (JSON, default
+{"fable":3}), WENDY_TASK_QUOTA_TIMEZONE, WENDY_TASK_DEFAULT_MODEL (default opus).
+Worker model choices are independent of the conversational WENDY_MODEL_OVERRIDE.
+
+Worker completion requires a structured result. Only success closes BD; other
+outcomes keep dependencies blocked. Notifications remain pending until consumed by
+a successful Wendy turn. Read config/docs/bd_usage.md for commands and recovery.
+
+Controller API helpers carry WENDY_API_TOKEN. Workers carry WENDY_TASK_TOKEN and may
+only report/checkpoint/read/ack their own mailbox. Protected messaging/deploy/wake
+endpoints reject worker and anonymous calls. These capabilities are not an OS sandbox.
 
 ---
 
 ## Hooks (`config/claude_settings.json` → copied to each channel's `.claude/settings.json`)
 
 Active hooks:
-- **PreToolUse `Task`**: blocked — Wendy must use `bd` instead
+- **PreToolUse `Task` / `Agent`**: blocked — Wendy must use `wtask` instead. Public `bd` prints a deprecation warning without executing; the controller uses `/usr/local/libexec/wendy-bd` internally (`WENDY_BD_BINARY` can override it for development).
 - **PostToolUse `Read`**: `remind_analyze_file.sh` (suggest analyze_file for user images)
 - **PostToolUse `Bash`** (async): `log_bash_tool.sh` (logs commands to SQLite)
 - **PreCompact**: `pre_compact.sh` (writes a session-scoped `.compacted_<id>` flag for the next nudge)
-- **Stop** (in order): `unread_messages_stop_check.sh` (blocks if unread real messages remain), `journal_stop_check.sh` (15 turns + 3h min interval, skipped if a journal write happened within the interval), `prompt_bookkeeping.sh` (25 turns + 2h min interval)
+- **Conversation delivery**: `conversation_delivery.py` runs on UserPromptSubmit, PostToolUse, and Stop. `wenv messages manual` is the default: notices contain no contents, and Stop permits leaving messages unread. Opt-in `auto` delivers observations with acknowledgment and turn rollback. Send responses never include incoming message bodies.
+- **Stop bookkeeping**: `journal_stop_check.sh` (15 turns + 3h min interval, skipped if a journal write happened within the interval), `prompt_bookkeeping.sh` (25 turns + 2h min interval).
 
 `stop_hook_active = true` prevents infinite block loops. The Stop hooks and
 counters are main-session only — they bail when `WENDY_CHANNEL_ID` is unset,
@@ -405,10 +433,9 @@ docker exec wendy ls -lt /root/.claude/projects/-data-wendy-channels-coding/ | h
 | `WENDY_GAMES_TOKEN` | Token for game deploys | falls back to `WENDY_DEPLOY_TOKEN` |
 | `GEMINI_API_KEY` | Gemini API for file analysis | — |
 | `MESSAGE_LOGGER_GUILDS` | Guild IDs for full message archival | — |
-| `WENDY_LAUREL_THRESHOLD` | Reactors (one emoji, one post) needed for a laurel | `1` |
-| `WENDY_LAUREL_MAX_SHOWN` | Max laurels shown in the system prompt | `5` |
-| `WENDY_LAUREL_WINDOW_DAYS` | How far back laurels count | `60` |
 | `WENDY_DEV_MODE` | Set to `1` to enable dev mode | — |
+| `WENDY_RECOVERY_BASE_DELAY` | Seconds before the first queue retry after an API outage | `120` |
+| `WENDY_RECOVERY_MAX_DELAY` | Cap on the doubling retry backoff (seconds) | `1800` |
 
 ### wendy-web (sites + games + brain)
 
@@ -427,3 +454,29 @@ docker exec wendy ls -lt /root/.claude/projects/-data-wendy-channels-coding/ | h
 | `DOCKER_NETWORK` | Network game containers join | `wendy_web` |
 | `BASE_URL` | Public URL base | `https://wendy.monster` |
 | `WEBHOOK_SECRET` | HMAC secret for GitHub webhooks | — |
+
+
+## Hook and context efficiency
+
+`config/hooks/boundary.py` parses boundary events once and dispatches by role:
+main Wendy uses conversation delivery; workers use the task mailbox. Worker
+completion checks and opt-in automatic message delivery can still block Stop.
+Routine memory upkeep cannot. The image analysis hook remains unchanged:
+secondary analysis is encouraged for user images and trusted more for details.
+Bash logging remains asynchronous.
+
+`wendy/memory_reminders.py` tracks counters by conversation ID in a separate
+non-sensitive SQLite database. After at least 25 natural turns and three hours
+without a recorded write/reminder, a short optional reminder joins the next nudge.
+Successful Edit/Write operations on the conversation journal or people profiles
+reset its counter. Journal mtimes also recognize Bash writes; profile writes via
+Bash are not currently attributed automatically. Threads use their own journal
+path from WENDY_MEMORY_JOURNAL, even when Claude's cwd is the parent workspace.
+Enrichment/override turns do not consume the reminder counter.
+
+The journal nudge lists at most 12 recent filenames and a search path. Task nudges
+show at most eight active tasks, bounded titles, and a historical count; full
+history remains available through wtask list. No files or historical tasks are
+removed. Boundary hooks log role/event/duration to stderr without payloads.
+Client replacement logs distinguish process exit, session change, and prompt or
+configuration change. Existing transport timings report warm reuse and first event.

@@ -41,6 +41,7 @@ from .paths import (
     ensure_shared_dirs,
     session_dir,
 )
+from .recovery import OutageRecovery
 from .state import state as state_manager
 from .tasks import TaskRunner
 
@@ -154,6 +155,9 @@ class GenerationJob:
         self.timed_out: bool = False
         self.continuation_count: int = 0
         self.overload_retried: bool = False
+        self.recovery_needed: bool = False
+        """Set when the overload retry ladder gave up: finalize schedules an
+        outage-recovery retry instead of dropping the queued messages."""
 
 
 class WendyBot(commands.Bot):
@@ -184,6 +188,9 @@ class WendyBot(commands.Bot):
         self._enrichment_last_run_date: dict[int, datetime.date] = {}
         self._enrichment_notified: set[int] = set()
         self._pending_wakes: dict[int, asyncio.TimerHandle] = {}
+        # Retries queued messages after the Claude API errors out; see
+        # _schedule_recovery / _fire_recovery.
+        self._recovery = OutageRecovery(lambda: self.loop)
         self._startup_catchup_done: bool = False
 
         ensure_shared_dirs()
@@ -378,6 +385,19 @@ class WendyBot(commands.Bot):
 
     async def close(self) -> None:
         """Cleanup on shutdown: cancel the task runner so agents are killed cleanly."""
+        from .conversation_clients import clients
+        generations = [job.task for job in self._active_generations.values()
+                       if job.task and not job.task.done()]
+        self._paused = True
+        self._recovery.cancel_all()
+        for generation in generations:
+            generation.cancel()
+        await asyncio.gather(*generations, return_exceptions=True)
+        await clients.close()
+        presence_task = getattr(self, '_presence_refresh_task', None)
+        if presence_task and not presence_task.done():
+            presence_task.cancel()
+            await asyncio.gather(presence_task, return_exceptions=True)
         if hasattr(self, "_task_runner_task") and not self._task_runner_task.done():
             self._task_runner_task.cancel()
             try:
@@ -526,79 +546,6 @@ class WendyBot(commands.Bot):
             state_manager.update_message_content(payload.message_id, payload.data["content"])
         except Exception as e:
             _LOG.error("Failed to update edited message %s: %s", payload.message_id, e)
-
-    # ------------------------------------------------------------------
-    # Laurel reaction tracking (see laurels.py -- deliberately passive:
-    # these handlers only record state and never wake a generation)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _emoji_key(emoji: discord.PartialEmoji) -> str:
-        """Stable text key for an emoji: unicode char or custom-emoji name."""
-        return emoji.name or str(emoji)
-
-    def _is_own_message(self, payload: discord.RawReactionActionEvent) -> bool:
-        """Return True if the reacted-to message was authored by the bot.
-
-        Uses ``message_author_id`` when the discord.py version provides it
-        (2.4+), else falls back to the message cache -- Wendy's own sends are
-        persisted there by the API server.
-        """
-        author_id = getattr(payload, "message_author_id", None)
-        if author_id is not None:
-            return author_id == self.user.id
-        try:
-            return state_manager.get_message_author(payload.message_id) == self.user.id
-        except Exception as e:
-            _LOG.warning("Laurel author lookup failed for %s: %s", payload.message_id, e)
-            return False
-
-    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
-        """Record a human reaction to one of Wendy's own posts."""
-        if not payload.guild_id or payload.user_id == self.user.id:
-            return
-        if payload.channel_id not in self.channel_configs:
-            return
-        if payload.member is not None and payload.member.bot:
-            return
-        if not self._is_own_message(payload):
-            return
-        user_name = payload.member.display_name if payload.member else str(payload.user_id)
-        try:
-            state_manager.add_laurel_reaction(
-                message_id=payload.message_id,
-                channel_id=payload.channel_id,
-                emoji=self._emoji_key(payload.emoji),
-                user_id=payload.user_id,
-                user_name=user_name,
-            )
-        except Exception as e:
-            _LOG.error("Failed to record laurel reaction: %s", e)
-
-    async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent) -> None:
-        """Drop a tracked reaction when someone un-reacts (no-op if untracked)."""
-        if not payload.guild_id:
-            return
-        try:
-            state_manager.remove_laurel_reaction(
-                payload.message_id, self._emoji_key(payload.emoji), payload.user_id,
-            )
-        except Exception as e:
-            _LOG.error("Failed to remove laurel reaction: %s", e)
-
-    async def on_raw_reaction_clear(self, payload: discord.RawReactionClearEvent) -> None:
-        """Drop all tracked reactions when a message's reactions are cleared."""
-        try:
-            state_manager.clear_laurel_reactions(payload.message_id)
-        except Exception as e:
-            _LOG.error("Failed to clear laurel reactions: %s", e)
-
-    async def on_raw_reaction_clear_emoji(self, payload: discord.RawReactionClearEmojiEvent) -> None:
-        """Drop tracked reactions for one emoji when it is cleared from a message."""
-        try:
-            state_manager.clear_laurel_reactions(payload.message_id, self._emoji_key(payload.emoji))
-        except Exception as e:
-            _LOG.error("Failed to clear laurel emoji reactions: %s", e)
 
     # ------------------------------------------------------------------
     # Channel / thread helpers
@@ -765,6 +712,11 @@ class WendyBot(commands.Bot):
         if self._paused:
             _LOG.info("Paused: skipping generation for channel %s", channel.id)
             return
+        # A fresh turn re-reads everything unread, so a pending outage retry is
+        # redundant. The attempt counter is kept: if this turn fails too, the
+        # next retry backs off further instead of restarting the ladder.
+        if self._recovery.cancel(channel.id):
+            _LOG.info("Outage recovery timer for channel %s superseded by a new turn", channel.id)
         # model_override is reserved for the overload fallback. run_cli reads the
         # channel's configured model itself, and resolve_model only honours
         # WENDY_MODEL_OVERRIDE when model_override is None -- passing the channel
@@ -922,7 +874,10 @@ class WendyBot(commands.Bot):
         """
         channel_config = self.channel_configs.get(channel.id, {})
 
-        await self._maybe_update_presence()
+        # Presence/usage must never hold up a message wake.
+        presence_task = getattr(self, '_presence_refresh_task', None)
+        if presence_task is None or presence_task.done():
+            self._presence_refresh_task = asyncio.create_task(self._maybe_update_presence())
 
         # Seen-cursor position at the start of the turn. Restored on failure so a
         # crashed/interrupted turn re-reads what it consumed. Initialised before
@@ -969,8 +924,10 @@ class WendyBot(commands.Bot):
                 enrichment=job.is_enrichment,
             )
             _LOG.info("CLI completed for channel %s", channel.id)
-            # Turn succeeded: commit the synthetics the CLI consumed this turn.
+            # Turn succeeded: commit the synthetics the CLI consumed this turn
+            # and forget any outage backoff -- the API is clearly back.
             self._commit_turn(channel.id)
+            self._recovery.reset(channel.id)
 
         except ClaudeCliError as e:
             # Turn failed: roll back so messages/synthetics consumed this turn are
@@ -990,7 +947,10 @@ class WendyBot(commands.Bot):
                     await asyncio.sleep(60)
                     return await self._generate_response(channel, job, model_override="opus")
                 else:
-                    _LOG.error("All models overloaded for channel %s, giving up", channel.id)
+                    # Ladder exhausted. Don't drop the queue: finalize arms an
+                    # outage-recovery timer that retries once the API is back.
+                    job.recovery_needed = True
+                    _LOG.error("All models overloaded for channel %s, deferring to outage recovery", channel.id)
             self._handle_cli_error(channel, e)
 
         except asyncio.CancelledError:
@@ -1122,6 +1082,15 @@ class WendyBot(commands.Bot):
             self._active_generations[channel.id] = new_job
             return
 
+        # The API is erroring: starting another turn now would just fail the
+        # same way, even if messages arrived mid-turn. The recovery retry
+        # re-reads everything unread once the backoff elapses, so it covers
+        # the pending flag too.
+        if job.recovery_needed:
+            self._active_generations.pop(channel.id, None)
+            self._schedule_recovery(channel)
+            return
+
         if job.new_message_pending and self._has_pending_messages(channel.id):
             _LOG.info("New messages pending in channel %s, starting new generation", channel.id)
             new_job = GenerationJob()
@@ -1130,6 +1099,69 @@ class WendyBot(commands.Bot):
             self._active_generations[channel.id] = new_job
         else:
             self._active_generations.pop(channel.id, None)
+
+    # ------------------------------------------------------------------
+    # Outage recovery: retry queued messages after the Claude API errors out
+    # ------------------------------------------------------------------
+
+    def _schedule_recovery(self, channel: discord.TextChannel | discord.Thread) -> None:
+        """Arm a backoff retry for a channel whose turn died on an API outage.
+
+        Skipped when nothing is unread (nothing to retry). The first retry of
+        an outage also posts a short notice so the channel knows why Wendy
+        went quiet instead of finding out from the status page.
+        """
+        if not self._has_pending_messages(channel.id):
+            _LOG.info("Outage recovery: nothing unread in channel %s, not retrying", channel.id)
+            self._recovery.reset(channel.id)
+            return
+        first_of_outage = self._recovery.attempts(channel.id) == 0
+        delay = self._recovery.schedule(channel.id, self._fire_recovery)
+        _LOG.warning(
+            "Claude API unavailable for channel %s; retrying queued messages in %ds (attempt %d)",
+            channel.id, delay, self._recovery.attempts(channel.id),
+        )
+        if first_of_outage:
+            self.loop.create_task(self._send_outage_notice(channel, delay))
+
+    def _fire_recovery(self, channel_id: int) -> None:
+        """Timer callback: re-run the channel's queue if it still needs it."""
+        channel = self.get_channel(channel_id) or getattr(self, '_notification_routes', {}).get(channel_id)
+        if channel is None:
+            _LOG.warning("Outage recovery: channel %s not in cache, dropping retry", channel_id)
+            self._recovery.reset(channel_id)
+            return
+        if self._paused:
+            _LOG.info("Outage recovery: paused, dropping retry for channel %s", channel_id)
+            return
+        if self._job_is_running(self._active_generations.get(channel_id)):
+            # A human message already started a turn; it will read the queue.
+            _LOG.info("Outage recovery: turn already running in channel %s, standing down", channel_id)
+            return
+        if not self._has_pending_messages(channel_id):
+            _LOG.info("Outage recovery: queue for channel %s already drained", channel_id)
+            self._recovery.reset(channel_id)
+            return
+        _LOG.info(
+            "Outage recovery attempt %d for channel %s: retrying queued messages",
+            self._recovery.attempts(channel_id), channel_id,
+        )
+        self._start_generation(channel, self.channel_configs.get(channel_id, {}))
+
+    async def _send_outage_notice(
+        self, channel: discord.TextChannel | discord.Thread, delay: int,
+    ) -> None:
+        """Tell the channel the API is down and that retries are scheduled."""
+        minutes = max(1, round(delay / 60))
+        unit = "minute" if minutes == 1 else "minutes"
+        try:
+            await channel.send(
+                "anthropic's api is erroring on my end so i can't respond right now. "
+                f"i'll keep retrying (next try in about {minutes} {unit}) and pick up "
+                "everything in the queue once it recovers."
+            )
+        except Exception:
+            _LOG.exception("Failed to send outage notice")
 
     def _has_pending_messages(self, channel_id: int) -> bool:
         """Return True if the channel has user messages newer than last_seen."""
@@ -1154,13 +1186,17 @@ class WendyBot(commands.Bot):
             notification_ids: list[int] = []
 
             for notif in unseen:
-                notification_ids.append(notif.id)
                 if notif.type == "task_completion":
+                    await self._ensure_task_notification_channel(notif.channel_id)
                     self._handle_task_notification(notif, channels_to_wake)
                 elif notif.type == "task_started":
                     self._handle_task_started_notification(notif)
+                    notification_ids.append(notif.id)
                 elif notif.type == "webhook":
                     self._handle_webhook_notification(notif)
+                    notification_ids.append(notif.id)
+                else:
+                    notification_ids.append(notif.id)
 
             if notification_ids:
                 state_manager.mark_notifications_seen_by_wendy(notification_ids)
@@ -1255,6 +1291,32 @@ class WendyBot(commands.Bot):
                 return cid
         return next(iter(self.whitelist_channels), None)
 
+    async def _ensure_task_notification_channel(self, channel_id: int | None) -> None:
+        """Rehydrate a thread route after restart; never fall back to its parent."""
+        if not channel_id:
+            return
+        if channel_id in self.channel_configs and (self.get_channel(channel_id) or getattr(self, '_notification_routes', {}).get(channel_id)):
+            return
+        parent_id = state_manager.get_thread_parent(channel_id)
+        parent = self.channel_configs.get(parent_id)
+        if not parent:
+            return
+        try:
+            channel = self.get_channel(channel_id) or await self.fetch_channel(channel_id)
+        except discord.HTTPException:
+            return  # Notification stays unacknowledged and can be retried.
+        if not isinstance(channel, discord.Thread):
+            return
+        from types import SimpleNamespace
+        cfg = self._resolve_thread_config(SimpleNamespace(channel=channel))
+        if cfg:
+            self.channel_configs[channel_id] = cfg
+            if not hasattr(self, '_notification_routes'):
+                self._notification_routes = {}
+            self._notification_routes[channel_id] = channel
+            self._setup_thread_directory(cfg)
+            api_server.set_channel_configs(self.channel_configs)
+
     def _handle_task_notification(self, notif, channels_to_wake: set[int]) -> None:
         """Insert a synthetic message for a task completion and mark the channel for waking."""
         channel_id = self._resolve_notification_channel(notif.channel_id)
@@ -1280,8 +1342,8 @@ class WendyBot(commands.Bot):
             "on this task, keep the announcement short and low-key."
         )
 
-        self._insert_synthetic_message(channel_id, author, content)
-        channels_to_wake.add(channel_id)
+        if state_manager.materialize_task_notification(notif.id, channel_id, content):
+            channels_to_wake.add(channel_id)
 
     def _handle_task_started_notification(self, notif) -> None:
         """Insert a synthetic message noting an agent started (does not wake the bot)."""
@@ -1291,10 +1353,10 @@ class WendyBot(commands.Bot):
         payload = notif.payload or {}
         task_id = payload.get("task_id", "unknown")
         author = "Task System"
-        self._insert_synthetic_message(
-            channel_id, author,
-            f"[{author}] Background task {task_id} ({notif.title}) started -- an agent is working on it now.",
-        )
+        status = payload.get('status', 'started')
+        summary = payload.get('summary', '')
+        state_manager.materialize_task_notification(
+            notif.id, channel_id, f"[{author}] Task {task_id} ({notif.title}) {status}. {summary}")
 
     def _handle_webhook_notification(self, notif) -> None:
         """Insert a synthetic message for a webhook (does not wake the bot)."""
@@ -1316,9 +1378,11 @@ class WendyBot(commands.Bot):
     def _wake_channels(self, channel_ids: set[int]) -> None:
         """Start or flag a generation for each channel that needs waking."""
         for channel_id in channel_ids:
-            channel = self.get_channel(channel_id)
+            channel = self.get_channel(channel_id) or getattr(self, '_notification_routes', {}).get(channel_id)
             if not channel:
                 continue
+            if isinstance(channel, discord.Thread) and channel.archived:
+                continue  # Keep the result pending until the thread can receive it.
             existing_job = self._active_generations.get(channel_id)
             if self._job_is_running(existing_job):
                 existing_job.new_message_pending = True
