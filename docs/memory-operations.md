@@ -57,6 +57,19 @@ Requests also have fixed transport limits. Restart the memory service after
 changing limits. Research concurrency and pending ingestion default to two each,
 configurable with `WENDY_MEMORY_CONCURRENCY` and `WENDY_MEMORY_INGEST_CONCURRENCY`.
 
+`hindsight_state: pending` reports asynchronous semantic ingestion; original-source
+search is already available. Semantic recall is limited to five seconds per query
+call and falls back to originals after a timeout. The Gemini researcher reserves
+up to twelve seconds within the existing deadline for its final answer, uses the
+selected depth's answer/citation limits, and can repair a rejected answer twice.
+An exhausted search should finish with verified evidence or `no_evidence`, rather
+than continuing to request searches that the gateway can no longer perform.
+
+Unavailable results include a safe failure code in the MCP output and service logs.
+For example, `research_timeout` indicates the research deadline, while
+`invalid_answer_schema` or `answer_repair_limit` identifies answer validation.
+These diagnostics exclude questions, evidence text, provider bodies and credentials.
+
 ## Production setup
 
 The compose override is [`deploy/docker-compose.memory.yml`](../deploy/docker-compose.memory.yml).
@@ -230,6 +243,8 @@ research loop in the Linux image. No Discord messages or production data are use
 `--extended` adds missing-evidence and restricted-cutoff cases. `--out <path>` appends
 synthetic results with citations and usage as JSONL. Repeated cases also expose API
 cache behavior; they are not independent quality examples.
+Use `--depth standard --extended` to verify that answers, abstention and cutoffs
+also complete within the ordinary 25-second/eight-call query budget.
 
 For private quality evaluation, create a JSONL suite with one object per query:
 

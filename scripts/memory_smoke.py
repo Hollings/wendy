@@ -27,7 +27,7 @@ from services.memory.index import Index
 from services.memory.server import RESEARCHER, create_app
 
 
-async def exercise(url: str, repeats=1, extended=False, out=None):
+async def exercise(url: str, repeats=1, extended=False, out=None, depth='deep'):
     with tempfile.TemporaryDirectory(prefix='memory-smoke-') as directory:
         index = Index(Path(directory) / 'memory.db')
         sources = [Source(id=f'discord:{100 + i}', domain='channel:7', kind='chat', text=text,
@@ -76,7 +76,7 @@ async def exercise(url: str, repeats=1, extended=False, out=None):
                          scope.model_copy(update={'cutoffs': {'7': '100'}})),
                     ])
                 for case, question, case_scope in cases:
-                    result = await server.app[RESEARCHER].research(ResearchRequest(question=question, depth='deep'), case_scope)
+                    result = await server.app[RESEARCHER].research(ResearchRequest(question=question, depth=depth), case_scope)
                     report = {'case': case, **result}
                     print(json.dumps(report, indent=2), flush=True)
                     if out:
@@ -119,6 +119,7 @@ def main():
     parser.add_argument('--researcher', choices=['claude', 'gemini', 'deepseek'], default='gemini')
     parser.add_argument('--hindsight-provider', choices=['gemini', 'deepseek'], default='gemini')
     parser.add_argument('--repeats', type=int, choices=range(1, 6), default=1)
+    parser.add_argument('--depth', choices=['standard', 'deep'], default='deep')
     parser.add_argument('--extended', action='store_true', help='Also check missing evidence and a restricted history cutoff')
     parser.add_argument('--out', type=Path, help='Append synthetic results and token counts as JSONL')
     parser.add_argument('--url', default='http://127.0.0.1:18988')
@@ -164,9 +165,9 @@ def main():
                             '-e', 'WENDY_MEMORY_SERVICE_TOKEN', *mounts, args.research_image,
                             'python', '-m', 'scripts.memory_smoke', '--url',
                             'http://host.docker.internal:18988' if args.docker else args.url,
-                            '--researcher', args.researcher, '--repeats', str(args.repeats), *extra], check=True)
+                            '--researcher', args.researcher, '--repeats', str(args.repeats), '--depth', args.depth, *extra], check=True)
         else:
-            asyncio.run(exercise(args.url, args.repeats, args.extended, args.out))
+            asyncio.run(exercise(args.url, args.repeats, args.extended, args.out, args.depth))
     finally:
         if created:
             subprocess.run(['docker', 'rm', '-f', name], check=True, stdout=subprocess.DEVNULL)

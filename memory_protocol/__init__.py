@@ -102,6 +102,8 @@ def render(result: dict) -> str:
                      f"{source['locator']}\n{source['excerpt']}")
     if result.get('limitations'):
         lines.append('Limitations: ' + '; '.join(result['limitations']))
+    if result.get('failure_code'):
+        lines.append('Failure code: ' + result['failure_code'])
     coverage = result.get('coverage', {})
     lines.append(f"Index revision: {coverage.get('source_revision', '?')}; "
                  f"Hindsight: {coverage.get('hindsight_state', 'unknown')}")

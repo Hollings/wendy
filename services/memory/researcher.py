@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -16,12 +17,32 @@ from pathlib import Path
 from typing import Literal
 
 import aiohttp
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from memory_protocol import ResearchRequest, Scope, WireModel, read_limited
 
 from .gateway import Gateway
 from .index import Index
+
+_LOG = logging.getLogger(__name__)
+
+
+def safe_failure_code(exc: Exception) -> str:
+    if isinstance(exc, ResearchFailure):
+        return str(exc)
+    if isinstance(exc, ValidationError):
+        return 'invalid_answer_schema'
+    if isinstance(exc, TimeoutError):
+        return 'research_timeout'
+    if isinstance(exc, ValueError):
+        return {
+            'Answer budget exceeded': 'answer_budget_exceeded',
+            'Invalid citation references': 'invalid_citation_references',
+            'Answer has no original evidence': 'missing_original_citations',
+            'Source changed or was not read': 'source_changed_or_unread',
+            'Excerpt does not match retrieved original': 'excerpt_mismatch',
+        }.get(str(exc), 'invalid_research_response')
+    return type(exc).__name__
 
 
 class Citation(WireModel):
@@ -196,7 +217,9 @@ class Researcher:
         except (TimeoutError, OSError, ValueError, KeyError, aiohttp.ClientError) as exc:
             # An unfinished run never returns an unchecked model draft or raw trace.
             result['limitations'] = ['Research did not complete with a valid, current evidence-backed answer.']
-            result['failure_code'] = str(exc) if isinstance(exc, ResearchFailure) else type(exc).__name__
+            result['failure_code'] = safe_failure_code(exc)
+            _LOG.warning('Memory research failed: code=%s depth=%s calls=%d',
+                         result['failure_code'], request.depth, gateway.calls)
         finally:
             self.capabilities.pop(token, None)
             self.active -= 1

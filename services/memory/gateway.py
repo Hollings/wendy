@@ -1,6 +1,7 @@
 """Per-research retrieval capability and limits; never accepts scope from the LLM."""
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 
@@ -23,6 +24,7 @@ class Gateway:
         self.seen: dict[str, tuple[str, list[str]]] = {}
         self.events = []
         self.backend_unavailable = False
+        self.recall_timed_out = False
         self.usage = {}
 
     def source(self, source: Source, offset=0) -> dict:
@@ -55,7 +57,18 @@ class Gateway:
                         sources.update({s.id: s for s in self.index.neighbors(source, self.scope, count=1)})
             result = {'sources': [self.source(s, offset if s.id in ids else 0) for s in sources.values()]}
         elif tool == 'recall_memory':
-            result = await self.backend.recall(self.index, self.scope, str(args.get('query', ''))[:2000])
+            try:
+                if self.recall_timed_out:
+                    raise TimeoutError()
+                # Semantic recall must leave time for original-source fallback
+                # and a final answer, even while the backend is ingesting history.
+                seconds = min(5, max(0, self.expires - time.monotonic() - 12))
+                async with asyncio.timeout(seconds):
+                    result = await self.backend.recall(self.index, self.scope, str(args.get('query', ''))[:2000])
+            except TimeoutError:
+                self.recall_timed_out = True
+                result = {'leads': [], 'unavailable': True,
+                          'instruction': 'Semantic recall timed out. Use search_sources and read_sources for this question.'}
             self.backend_unavailable |= result.get('unavailable', False)
         else:
             raise ValueError('Unknown retrieval tool')

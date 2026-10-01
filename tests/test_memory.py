@@ -1,6 +1,7 @@
 """Memory boundaries, replay, citations, and the complete MCP-to-source path."""
 import asyncio
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -186,6 +187,29 @@ async def test_backend_modes_keep_evidence_reads_available(index):
     assert (await gateway.call('read_sources', {'source_ids': ['discord:101']}))['sources']
     gateway = Gateway(index, Backend(), scope(), 'standard', mode='sources')
     assert 'disabled' in await gateway.call('recall_memory', {'query': 'Postgres'})
+
+
+async def test_slow_semantic_recall_preserves_original_source_fallback(index):
+    index.ingest([source()], [])
+    started, cancelled = asyncio.Event(), asyncio.Event()
+
+    class SlowBackend:
+        async def recall(self, *args):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    gateway = Gateway(index, SlowBackend(), scope(), 'standard')
+    # The total query still has time left, but its recall slice has expired.
+    gateway.expires = time.monotonic() + 12
+    result = await gateway.call('recall_memory', {'query': 'Postgres'})
+    assert result['unavailable'] and gateway.backend_unavailable
+    assert started.is_set() and cancelled.is_set()
+    assert (await gateway.call('search_sources', {'query': 'Postgres'}))['sources']
+    assert (await gateway.call('read_sources', {'source_ids': ['discord:101']}))['sources']
+    assert (await gateway.call('recall_memory', {'query': 'Again'}))['unavailable']
 
 
 async def test_coverage_counts_are_not_source_receipts(index):
