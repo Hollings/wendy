@@ -1,7 +1,6 @@
 """Tests for wendy.prompt."""
 from __future__ import annotations
 
-import json
 from unittest import mock
 
 from wendy.prompt import (
@@ -84,35 +83,30 @@ def test_get_journal_listing_for_nudge_empty(tmp_path):
     assert result == ""
 
 
-def test_get_beads_warning_for_nudge_no_beads(tmp_path):
-    b_dir = tmp_path / ".beads"
-    b_dir.mkdir()
-    # No config.yaml -> not initialized -> should return empty
-    with mock.patch("wendy.prompt.beads_dir", return_value=b_dir):
+def test_get_beads_warning_for_nudge_includes_quota_when_idle():
+    store = mock.Mock()
+    store.list.return_value = []
+    store.models.return_value = {"models": [{"name": "fable", "remaining": 3, "limit": 3}],
+                                 "resets_at": "2026-09-07T00:00:00-07:00"}
+    with mock.patch("wendy.task_store.TaskStore", return_value=store):
         result = get_beads_warning_for_nudge("general")
-    assert result == ""
+    assert "none pending" in result
+    assert "fable: 3/3 remaining" in result
 
 
-def test_get_beads_warning_for_nudge_with_active_tasks(tmp_path):
-    b_dir = tmp_path / ".beads"
-    b_dir.mkdir()
-    (b_dir / "config.yaml").write_text("backend: dolt")
-
-    active_tasks = [
-        {"id": "task-1", "title": "Do something", "status": "in_progress"},
-        {"id": "task-3", "title": "Another task", "status": "in_progress"},
+def test_get_beads_warning_for_nudge_with_active_tasks():
+    store = mock.Mock()
+    store.list.return_value = [
+        {"bd_id": "task-1", "title": "Do something", "phase": "running"},
+        {"bd_id": "task-3", "title": "Another task", "phase": "quota_wait"},
     ]
-    mock_result = mock.Mock(returncode=0, stdout=json.dumps(active_tasks))
-
-    with (
-        mock.patch("wendy.prompt.beads_dir", return_value=b_dir),
-        mock.patch("subprocess.run", return_value=mock_result),
-    ):
+    store.models.return_value = {"models": [{"name": "fable", "remaining": 0, "limit": 3}],
+                                 "resets_at": "2026-09-07T00:00:00-07:00"}
+    with mock.patch("wendy.task_store.TaskStore", return_value=store):
         result = get_beads_warning_for_nudge("general")
-
-    assert "2 active bead(s)" in result
-    assert "task-1" in result
-    assert "task-3" in result
+    assert "task-1 running" in result
+    assert "task-3 quota_wait" in result
+    assert "fable: 0/3 remaining" in result
 
 
 def test_build_system_prompt_integration(tmp_path):

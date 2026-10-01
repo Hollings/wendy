@@ -432,7 +432,7 @@ def _format_channel(common: list[Fragment], channel: list[Fragment],
     if sections:
         result = (
             "\n\n---\n"
-            "CHANNEL INSTRUCTIONS (from /data/wendy/claude_fragments/ - you can edit these files):\n"
+            "CHANNEL INSTRUCTIONS (from protected /data/wendy/claude_fragments/):\n"
         )
         result += "\n".join(sections)
         result += "\n---"

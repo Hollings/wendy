@@ -382,6 +382,10 @@ class WendyBot(commands.Bot):
         self._cache_emojis_task = self.loop.create_task(self._cache_emojis())
         self._task_runner = TaskRunner()
         self._task_runner_task = self.loop.create_task(self._task_runner.run())
+        from .memory_export import enabled as memory_enabled
+        if memory_enabled():
+            from .memory_backfill import run as memory_backfill
+            self._memory_backfill_task = self.loop.create_task(memory_backfill(self, state_manager))
 
     async def close(self) -> None:
         """Cleanup on shutdown: cancel the task runner so agents are killed cleanly."""
@@ -394,6 +398,10 @@ class WendyBot(commands.Bot):
             generation.cancel()
         await asyncio.gather(*generations, return_exceptions=True)
         await clients.close()
+        memory_task = getattr(self, '_memory_backfill_task', None)
+        if memory_task:
+            memory_task.cancel()
+            await asyncio.gather(memory_task, return_exceptions=True)
         presence_task = getattr(self, '_presence_refresh_task', None)
         if presence_task and not presence_task.done():
             presence_task.cancel()
@@ -538,14 +546,25 @@ class WendyBot(commands.Bot):
         if not payload.guild_id:
             return
         in_logger_guild = bool(MESSAGE_LOGGER_GUILDS and payload.guild_id in MESSAGE_LOGGER_GUILDS)
-        if not in_logger_guild and payload.channel_id not in self.whitelist_channels:
+        if (not in_logger_guild and payload.channel_id not in self.whitelist_channels
+                and state_manager.get_thread_parent(payload.channel_id) not in self.whitelist_channels):
             return
-        if "content" not in payload.data:
+        if "content" not in payload.data and "attachments" not in payload.data:
             return
         try:
-            state_manager.update_message_content(payload.message_id, payload.data["content"])
+            if 'content' in payload.data:
+                state_manager.update_message_content(payload.message_id, payload.data['content'])
+            if 'attachments' in payload.data:
+                urls = [a['url'] for a in payload.data['attachments'] if a.get('url')]
+                state_manager.update_message_attachments(payload.message_id, json.dumps(urls) if urls else None)
         except Exception as e:
             _LOG.error("Failed to update edited message %s: %s", payload.message_id, e)
+
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
+        state_manager.delete_messages([payload.message_id])
+
+    async def on_raw_bulk_message_delete(self, payload: discord.RawBulkMessageDeleteEvent) -> None:
+        state_manager.delete_messages(list(payload.message_ids))
 
     # ------------------------------------------------------------------
     # Channel / thread helpers
@@ -582,7 +601,7 @@ class WendyBot(commands.Bot):
             content = content.replace(f"<@!{member.id}>", replacement)
         return content
 
-    def _cache_message(self, message: discord.Message) -> None:
+    def _cache_message(self, message: discord.Message, *, refresh: bool = False) -> None:
         """Persist a Discord message to SQLite for later retrieval by check_messages."""
         attachment_urls = (
             json.dumps([a.url for a in message.attachments])
@@ -605,6 +624,7 @@ class WendyBot(commands.Bot):
             attachment_urls=attachment_urls,
             reply_to_id=reply_to_id,
             is_webhook=bool(message.webhook_id),
+            refresh=refresh,
         )
 
     async def _save_attachments(self, message: discord.Message, channel_name: str) -> list[str]:

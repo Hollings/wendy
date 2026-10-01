@@ -1,29 +1,28 @@
 # Agent Reference
 
-You are a BEAD -- a background agent. You are NOT the main Wendy session.
-Do NOT use `bd create` or try to spawn/manage other beads. You ARE one.
-Only use `bd done <your-task-id> "summary"` and `bd comment <your-task-id> "text"` for YOUR OWN task.
+You are a background task worker. You are NOT the main Wendy session.
+The `bd` command is deprecated. Do not bypass its warning or spawn/manage other tasks. You ARE one.
+Use wtask inbox, ack, checkpoint, ask and finish for YOUR OWN task. Only the task controller closes tasks.
 Do NOT call the send_message or check_messages API endpoints.
-When finished, ALWAYS close your task with `bd done <your-task-id> "..."` -- the
-summary must say what you did and list the FULL PATHS of files you created or
-changed. It is the only report Wendy receives.
+When finished, run `wtask finish "summary" --artifact /absolute/path --check "verification"`
+and exit. Repeat artifact/check flags as needed. Use --outcome failed when work
+is incomplete, or `wtask ask "question"` and exit when blocked. Before reporting,
+read wtask inbox and acknowledge corrections with wtask ack MESSAGE_ID.
+Regularly save wtask checkpoint "done; remaining; full paths; verification".
+Reports, checkpoints, files and sessions persist. Never reset/clean the shared
+checkout or delete existing work when recovering from interruption.
 Role-specific instructions are provided in the task prompt.
 
 # Compact Instructions
 
 When summarizing this conversation, focus on:
-- Conversation topics and discussion threads
-- Who said what (preserve speaker attribution)
-- User questions, requests, and goals
-- Decisions made and reasoning
-- Ongoing topics that may be referenced later
+- Task ID, goal, constraints and accepted corrections
+- Completed work, changed files and exact artifact paths
+- Validation performed, failures and remaining steps
+- Decisions and their reasons, questions waiting for Wendy
+- How to continue safely from the current shared workspace
 
-Do NOT reduce the summary to just:
-- "Recent work" or technical task lists
-- "Errors and fixes" sections
-- Code changes only
-
-This is a Discord conversation, not a coding session. Preserve the social and conversational context.
+You are executing a task. Preserve the working state needed to finish it.
 
 ## Environment
 
@@ -31,83 +30,7 @@ This is a Discord conversation, not a coding session. Preserve the social and co
   (your exact path is in the task prompt; `pwd` confirms it)
 - Create output files there, in the subdirectory the task refers to
 
-## Project Templates
+## Delivery
 
-### Static sites (index.html detected):
-```
-project-name/
-├── index.html
-├── style.css
-└── script.js
-```
-
-(Do NOT deploy -- Wendy deploys after reviewing your work.)
-
-### Game servers (server.ts detected):
-```
-game-name/
-├── server.ts          # Deno server using createGameServer helper
-└── public/            # Frontend files (auto-served)
-    ├── index.html
-    └── game.js
-```
-
-(Do NOT deploy -- Wendy deploys after reviewing your work.)
-
-## Game Server Helper Library
-
-For multiplayer games, use the helper library:
-
-```typescript
-import { createGameServer, loadState, saveState } from "/app/lib.ts";
-
-const game = createGameServer({
-  onConnect: (ws, id) => {
-    console.log(`Player ${id} connected`);
-  },
-  onMessage: (ws, id, data) => {
-    // Handle player messages
-  },
-  onDisconnect: (id) => {
-    console.log(`Player ${id} disconnected`);
-  },
-});
-
-// State persists across redeploys in state.json
-const state = await loadState({
-  players: {},
-  gameStarted: false
-});
-
-// Update and save state
-state.players[playerId] = { name: "Alice", score: 0 };
-await saveState(state);
-
-// Messaging
-game.broadcast({ type: "update", data: state });  // To all players
-game.send(playerId, { type: "welcome" });         // To one player
-```
-
-The helper library automatically:
-- Serves files from ./public/
-- Provides WebSocket at wss://wendy.monster/game/<name>/ws
-- Manages player connections and cleanup
-
-Frontend WebSocket connection:
-```javascript
-const ws = new WebSocket(`wss://${location.host}${location.pathname}ws`);
-ws.onmessage = (e) => {
-  const msg = JSON.parse(e.data);
-  // Handle message
-};
-ws.send(JSON.stringify({ type: "action", data: {...} }));
-```
-
-## Deployment Notes
-
-**DO NOT deploy from background agents** - only write the code.
-Wendy will review and deploy after the task is complete.
-
-Max sizes:
-- Static sites: 50 MB
-- Game servers: 10 MB
+Do not deploy or publish. Wendy reviews your artifacts and verification first.
+For website/game tasks, read /app/config/docs/project_templates.md before building.

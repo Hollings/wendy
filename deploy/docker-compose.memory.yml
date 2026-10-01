@@ -1,0 +1,49 @@
+# Add to the existing deployment with -f deploy/docker-compose.memory.yml.
+# Service keys and Claude OAuth live in memory.env; inference credentials in hindsight.env.
+services:
+  wendy:
+    env_file:
+      - /srv/secrets/wendy/memory-bot.env
+    environment:
+      WENDY_MEMORY_ENABLED: "true"
+      WENDY_MEMORY_URL: http://127.0.0.1:8950
+
+  memory:
+    build:
+      context: ..
+      dockerfile: services/memory/Dockerfile
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8950:8950"
+    env_file:
+      - /srv/secrets/wendy/memory.env
+    environment:
+      HINDSIGHT_URL: http://hindsight:8888
+      WENDY_MEMORY_DB: /data/memory/source.db
+      WENDY_MEMORY_MODEL: sonnet
+    volumes:
+      - memory_data:/data/memory
+    networks: [memory]
+    depends_on: [hindsight]
+
+  hindsight:
+    image: ghcr.io/vectorize-io/hindsight:0.10.2
+    init: true
+    restart: unless-stopped
+    shm_size: 1gb
+    env_file:
+      - /srv/secrets/wendy/hindsight.env
+    environment:
+      HINDSIGHT_API_WORKER_ID: wendy-memory
+      HINDSIGHT_API_TENANT_EXTENSION: hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension
+    volumes:
+      - hindsight_data:/home/hindsight/.pg0
+    networks: [memory]
+
+volumes:
+  memory_data:
+  hindsight_data:
+
+networks:
+  memory:

@@ -214,9 +214,9 @@ ORCHESTRATOR_CONCURRENCY globally. No worktrees, checkout resets or automatic de
 of worker output/logs. Restarts hold unfinished work for explicit resume/retry.
 Task briefs and origin threads are captured at submission, not via .current_session.
 
-Fable defaults to `claude-fable-5-1`, with 3 new attempts/day globally, resetting at
+Fable defaults to `claude-fable-5-1`, with 10 new attempts/day globally, resetting at
 midnight America/Los_Angeles. Environment: WENDY_TASK_MODEL_LIMITS (JSON, default
-{"fable":3}), WENDY_TASK_QUOTA_TIMEZONE, WENDY_TASK_DEFAULT_MODEL (default opus).
+{"fable":10}), WENDY_TASK_QUOTA_TIMEZONE, WENDY_TASK_DEFAULT_MODEL (default opus).
 Worker model choices are independent of the conversational WENDY_MODEL_OVERRIDE.
 
 Worker completion requires a structured result. Only success closes BD; other
@@ -432,6 +432,10 @@ docker exec wendy ls -lt /root/.claude/projects/-data-wendy-channels-coding/ | h
 | `WENDY_DEPLOY_TOKEN` | Token for site deploys | — |
 | `WENDY_GAMES_TOKEN` | Token for game deploys | falls back to `WENDY_DEPLOY_TOKEN` |
 | `GEMINI_API_KEY` | Gemini API for file analysis | — |
+| `DEEPSEEK_API_KEY` | Optional isolated memory researcher credential | — |
+| `WENDY_MEMORY_RESEARCHER` | Memory researcher: `gemini`, `deepseek`, or `claude` | `gemini` |
+| `WENDY_MEMORY_DEEPSEEK_MODEL` | DeepSeek memory researcher model | `deepseek-flash` |
+| `WENDY_MEMORY_DEEPSEEK_EFFORT` | DeepSeek thinking effort: `none`, `low`, `high`, `max` | `low` |
 | `MESSAGE_LOGGER_GUILDS` | Guild IDs for full message archival | — |
 | `WENDY_DEV_MODE` | Set to `1` to enable dev mode | — |
 | `WENDY_RECOVERY_BASE_DELAY` | Seconds before the first queue retry after an API outage | `120` |

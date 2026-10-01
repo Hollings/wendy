@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""Manage Wendy background tasks, or report from an authenticated worker."""
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+import uuid
+
+
+def parser():
+    root = argparse.ArgumentParser(description=__doc__)
+    commands = root.add_subparsers(dest='command', required=True)
+    commands.add_parser('models', help='Model IDs, global quotas and reset times')
+    commands.add_parser('list', help='Tasks in this channel queue, including its threads')
+    start = commands.add_parser('start', help='Create work; files stay in the shared channel workspace')
+    start.add_argument('title')
+    start.add_argument('-d', '--description', required=True)
+    start.add_argument('--model')
+    start.add_argument('-p', '--priority', type=int, choices=range(5), default=2)
+    start.add_argument('--after', action='append', default=[], help='Prerequisite task ID (repeatable, recorded atomically at creation)')
+    start.add_argument('--request-id', help='Reuse a submission ID after an uncertain response to avoid duplicate work')
+    for name in ('show', 'result', 'resume', 'retry'):
+        commands.add_parser(name).add_argument('task_id')
+    for name in ('tell', 'stop'):
+        command = commands.add_parser(name)
+        command.add_argument('task_id')
+        command.add_argument('text')
+    model = commands.add_parser('model', help='Change a queued/stopped task model; starts a new attempt if changed')
+    model.add_argument('task_id')
+    model.add_argument('model')
+    commands.add_parser('inbox', help='Worker: receive corrections and stop status')
+    commands.add_parser('ack', help='Worker: acknowledge a received correction').add_argument('message_id', type=int)
+    for name in ('checkpoint', 'ask'):
+        commands.add_parser(name).add_argument('text')
+    finish = commands.add_parser('finish', help='Worker: save a structured result, then exit')
+    finish.add_argument('summary')
+    finish.add_argument('--outcome', choices=('succeeded', 'failed', 'needs_input'), default='succeeded')
+    finish.add_argument('--artifact', action='append', default=[])
+    finish.add_argument('--check', action='append', default=[])
+    finish.add_argument('--remaining', action='append', default=[])
+    return root
+
+
+def request(body):
+    token = os.getenv('WENDY_TASK_TOKEN') or os.getenv('WENDY_API_TOKEN')
+    if not token:
+        raise ValueError('No task/controller capability. Run wtask from a Wendy session or worker.')
+    port = os.getenv('WENDY_PROXY_PORT', '8945')
+    req = urllib.request.Request(f'http://127.0.0.1:{port}/api/tasks', data=json.dumps(body).encode(),
+                                 headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {token}'})
+    with urllib.request.urlopen(req, timeout=60) as response:
+        return json.load(response)
+
+
+def main(argv=None):
+    args = vars(parser().parse_args(argv))
+    if args['command'] == 'start':
+        args['request_id'] = args.get('request_id') or str(uuid.uuid4())
+        print('Submission ID: ' + args['request_id'], file=sys.stderr)
+    if args['command'] == 'finish':
+        args = {'command': 'finish', 'report': {
+            'summary': args['summary'], 'outcome': args['outcome'], 'artifacts': args['artifact'],
+            'verification': args['check'], 'remaining': args['remaining']}}
+    try:
+        print(json.dumps(request(args), indent=2, ensure_ascii=False))
+    except urllib.error.HTTPError as exc:
+        print(exc.read().decode(errors='replace'), file=sys.stderr)
+        return 1
+    except (OSError, ValueError) as exc:
+        print(f'wtask: {exc}. For an uncertain start response, inspect wtask list before resubmitting.', file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

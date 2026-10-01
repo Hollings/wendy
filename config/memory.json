@@ -1,0 +1,9 @@
+{
+  "cross_channel": true,
+  "include_profiles": true,
+  "channels": [],
+  "sync_seconds": 15,
+  "file_scan_seconds": 60,
+  "backfill": false,
+  "backfill_audit": false
+}

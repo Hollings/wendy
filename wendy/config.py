@@ -84,6 +84,9 @@ for _part in _raw_guilds.split(","):
             pass
 
 SENSITIVE_ENV_VARS: set[str] = {
+    "WENDY_MEMORY_SERVICE_TOKEN",
+    "HINDSIGHT_API_KEY",
+    "HINDSIGHT_API_LLM_API_KEY",
     "DISCORD_TOKEN",
     "WEBHOOK_URL",
     "ANTHROPIC_API_KEY",
@@ -94,6 +97,7 @@ SENSITIVE_ENV_VARS: set[str] = {
     "WENDY_DEPLOY_TOKEN",
     "WENDY_GAMES_TOKEN",
     "GEMINI_API_KEY",
+    "DEEPSEEK_API_KEY",
     "CLAUDE_SYNC_KEY",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "GITHUB_PAT",

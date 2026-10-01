@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -163,6 +164,10 @@ def get_permissions_for_channel(channel_config: dict) -> tuple[str, str]:
     )
     disallowed = "Edit(//app/**),Write(//app/**),Skill,TodoWrite,TodoRead"
 
+    from .memory_export import enabled as memory_enabled
+    if memory_enabled():
+        allowed += ',mcp__memory__research_memory,mcp__memory__open_memory_evidence'
+
     if DEV_MODE:
         allowed += ",Edit(//data/wendy/dev-repo/**),Write(//data/wendy/dev-repo/**)"
         disallowed = ""
@@ -203,6 +208,13 @@ def build_cli_command(
     ]
     if effort_args:
         cmd.extend(effort_args)
+
+    from .memory_export import enabled as memory_enabled
+    if memory_enabled():
+        cmd.extend(['--mcp-config', json.dumps({'mcpServers': {'memory': {
+            'command': sys.executable, 'args': ['-m', 'wendy.memory_mcp'],
+            'env': {'PYTHONPATH': str(Path(__file__).resolve().parents[1])},
+        }}})])
 
     if fork_mode:
         cmd.extend(["--resume", session_id, "--fork-session"])

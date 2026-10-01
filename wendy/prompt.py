@@ -7,8 +7,7 @@ Assembly order:
   [1] Base system prompt (config/system_prompt.txt)
   [2] Channel section (common_*.md + {channel_id}_*.md)
   [3] Tool instructions (TOOL_INSTRUCTIONS_TEMPLATE)
-  [4] Journal section (file listing only)
-  [4b] Laurels (posts of hers people loved -- ambient, no action attached)
+  [4] Static memory policy (listing is in the per-turn nudge)
   [5] Thread context (parent channel info if in thread)
   [6] Topics section (behavioral: true topic fragments only)
   [7] Anchors section (anchor_*.md fragments)
@@ -21,7 +20,6 @@ conversation.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 from pathlib import Path
@@ -29,11 +27,9 @@ from pathlib import Path
 from .cli import TOOL_INSTRUCTIONS_TEMPLATE
 from .config import PROXY_PORT, WENDY_BOT_NAME, WENDY_PUBLIC_URL
 from .fragments import get_recent_messages, load_fragments
-from .laurels import get_laurels_section
-from .paths import beads_dir, journal_dir
+from .paths import journal_dir
 
 _LOG = logging.getLogger(__name__)
-
 
 def build_system_prompt(channel_id: int, channel_config: dict) -> str:
     """Build the complete system prompt for a channel."""
@@ -72,12 +68,6 @@ def build_system_prompt(channel_id: int, channel_config: dict) -> str:
     # [4] Journal
     prompt += _get_journal_section(channel_name)
 
-    # [4b] Laurels -- ambient recognition, injected here so it is present for
-    # the whole session but never arrives as a notification (see laurels.py).
-    # Threads also see the parent channel's laurels.
-    laurel_channel_ids = [channel_id] + ([parent_channel_id] if parent_channel_id else [])
-    prompt += get_laurels_section(laurel_channel_ids)
-
     # [5] Thread context
     if is_thread and thread_name and thread_folder and parent_folder:
         prompt += f"""
@@ -91,7 +81,7 @@ Parent channel workspace: /data/wendy/channels/{parent_folder}/ (read-only refer
 ---
 """
 
-    # [6] Topics (behavioral: true only -- others injected as synthetic messages)
+    # [6] Topics (behavioral: true only -- others listed in the per-turn context roster)
     if fragment_context and fragment_context.get("topics"):
         prompt += fragment_context["topics"]
 
@@ -99,6 +89,7 @@ Parent channel workspace: /data/wendy/channels/{parent_folder}/ (read-only refer
     if fragment_context and fragment_context.get("anchors"):
         prompt += fragment_context["anchors"]
 
+    _LOG.info("Prompt channel=%s chars=%d", channel_id, len(prompt))
     return prompt
 
 
@@ -158,16 +149,15 @@ def _get_journal_section(channel_name: str) -> str:
 
 ---
 JOURNAL (your long-term memory):
-Your journal is at {j_path}/
-This is your persistent memory across conversations. Use it strategically:
-- READ existing entries before writing new ones - build on what you already know
-- UPDATE entries when you learn something new about an existing topic
-- CREATE new entries only for genuinely new topics or significant experiences
-- DELETE or consolidate entries that are redundant or no longer useful
-Filenames should include a date and descriptive name, e.g.: 2026-02-05_learned-about-docker-networks.md
-Favor quality over quantity - a few well-maintained entries are better than many shallow ones.
-IMPORTANT: Journal writes are private. Do NOT mention journaling to users in chat
-unless they specifically ask about it. Just quietly write your entries.
+Your journal is at {j_path}/; people profiles are in /data/wendy/claude_fragments/people/.
+Before asking for forgotten context, search these notes. Grep long files rather
+than loading everything. Keep profiles compact: who they are, their current
+situation, and how to interact. Put detailed events and lessons in dated journal
+entries, e.g. 2026-02-05_docker-networks.md.
+Read before updating; add only useful new information and preserve meaningful
+history when consolidating. Don't delete existing notes or manufacture memories
+to satisfy a reminder. If nothing new is worth saving, skip the write.
+Memory maintenance is private; don't announce it unless asked.
 ---
 """
 
@@ -176,11 +166,9 @@ def get_journal_listing_for_nudge(channel_name: str) -> str:
     """Return a compact journal listing for the nudge prompt, or empty string if no entries."""
     j_dir = journal_dir(channel_name)
     try:
-        entries = sorted(
-            f.name
-            for f in j_dir.iterdir()
-            if f.is_file() and not f.name.startswith(".")
-        )
+        files = [f for f in j_dir.iterdir() if f.is_file() and not f.name.startswith(".")]
+        total = len(files)
+        entries = [f.name[:120] for f in sorted(files, key=lambda f: (f.stat().st_mtime, f.name), reverse=True)[:12]]
     except OSError:
         return ""
 
@@ -188,18 +176,33 @@ def get_journal_listing_for_nudge(channel_name: str) -> str:
         return ""
 
     names = ", ".join(entries)
-    return f"Journal entries ({len(entries)} files): {names}"
+    return f"Journal entries ({total} files; up to 12 recent): {names}. Search {j_dir}/ for older notes."
 
 
 def _get_beads_instructions() -> str:
-    """Inject bd task system instructions when beads_enabled."""
+    """Small, always-present command guide for BD-enabled conversations."""
     return """
 ---
-BACKGROUND TASK SYSTEM (bd):
-`bd` is your background agent queue for longer work. ALWAYS give a task both a short title and a full description:
-  bd create "short title" -d "full instructions: goal, exact file paths, constraints, how to verify"
-The agent forks your current session -- it has your conversation context up to the moment of creation but sees NOTHING after it, and `bd comment` does NOT reach it. For big specs, write a spec file first and reference its path in -d.
-You'll get a message when the task starts and when it finishes (with the agent's summary). To cancel a queued or running task: bd close <id> -r "reason".
+BACKGROUND TASKS (wtask):
+wtask start "title" -d "goal, exact paths, constraints, verification" --model opus
+wtask models | wtask list | wtask show ID | wtask result ID
+wtask tell ID "correction"  # queued delivery; show reports explicit acknowledgment
+wtask stop ID "reason"     # stop while preserving files, logs and checkpoints
+wtask resume ID            # continue saved attempt; no additional model slot
+wtask retry ID             # new attempt; counts against its model quota
+wtask model ID fable       # queued/stopped tasks only; changes model explicitly
+Workers receive an immutable conversation excerpt and your brief. For a large
+spec, save it first and reference the path. Use tell for corrections; BD comments
+are historical notes, not worker messages. Questions/results return here
+(the originating thread is preserved). Answer a question with tell, then resume.
+Shared workspace: one worker per channel. While it runs, send edits via tell or
+stop it before editing the same files yourself. Never discard unfinished files.
+Global model quotas are enforced. Check wtask models for current models, limits,
+remaining slots and reset times. A quota-blocked task stays queued; explicitly change models if appropriate.
+Review artifacts/verification in result before announcing success or publishing.
+The bd command is deprecated and only prints a warning. Use wtask for all task
+operations; specify dependencies with wtask start ... --after TASK_ID (repeatable).
+Do not bypass the warning with another BD executable or direct database edits.
 Full reference: /app/config/docs/bd_usage.md
 ---
 """
@@ -235,44 +238,22 @@ def get_context_roster_for_nudge(channel_id: int) -> str:
 
 
 def get_beads_warning_for_nudge(channel_name: str) -> str:
-    """Return a compact beads warning for the nudge prompt, or empty string if none active."""
-    import subprocess
-
-    from .config import CLI_SUBPROCESS_UID, SENSITIVE_ENV_VARS
-    from .paths import channel_dir
+    """Live task and quota feedback; no external BD subprocess on every turn."""
+    from .task_store import TaskStore
 
     try:
-        bd_dir = beads_dir(channel_name)
-        if not (bd_dir / "config.yaml").exists():
-            return ""
-
-        # Run as wendy user -- running bd as root creates root-owned Dolt files
-        # that the CLI subprocess (wendy user) can't access.
-        bd_env = {k: v for k, v in os.environ.items() if k not in SENSITIVE_ENV_VARS}
-        bd_env["BEADS_DIR"] = str(bd_dir)
-        if CLI_SUBPROCESS_UID is not None:
-            bd_env["HOME"] = "/home/wendy"
-        user_kwargs = {"user": CLI_SUBPROCESS_UID} if CLI_SUBPROCESS_UID else {}
-
-        result = subprocess.run(
-            ["bd", "list", "--status", "in_progress", "--json"],
-            capture_output=True, text=True, timeout=5,
-            cwd=str(channel_dir(channel_name)),
-            env=bd_env,
-            **user_kwargs,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            return ""
-
-        active = json.loads(result.stdout)
-        if not active:
-            return ""
-
-        task_parts = ", ".join(
-            f"{t.get('id', '?')} '{t.get('title', 'Untitled')}'" for t in active
-        )
-        return f"[{len(active)} active bead(s): {task_parts}]"
-
-    except Exception as e:
-        _LOG.warning("Failed to check active beads: %s", e)
-        return ""
+        store = TaskStore()
+        all_tasks = store.list(channel_name)
+        active = [t for t in all_tasks if t['phase'] not in ('succeeded', 'failed', 'stopped', 'cancelled')]
+        tasks = active[:8]
+        history_count = len(all_tasks) - len(active)
+        policy = store.models()
+        quotas = [f"{m['name']}: {m['remaining']}/{m['limit']} remaining"
+                  for m in policy['models'] if m['limit'] is not None]
+        rows = [f"{t['bd_id']} {t['phase']}: {t['title'][:120]}" for t in tasks]
+        return ('[Background tasks: ' + ('; '.join(rows) or 'none pending') +
+                f'. {max(0, len(active) - len(tasks))} more active; {history_count} historical (wtask list). Model quotas: ' + ('; '.join(quotas) or 'unlimited') +
+                '; reset ' + policy['resets_at'] + '. Use wtask show/models for details.]')
+    except Exception:
+        _LOG.warning('Task status unavailable', exc_info=True)
+        return '[Task status unavailable; use wtask models/list before starting work.]'

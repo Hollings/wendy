@@ -83,7 +83,7 @@ if [ "$INVOCATIONS" -ge "$THRESHOLD" ] && [ "$TIME_SINCE" -ge "$MIN_INTERVAL" ] 
 
   jq -n --arg dir "$JOURNAL_DIR" '{
     decision: "block",
-    reason: ("JOURNAL CHECK: You have gone many messages without writing to your journal at " + $dir + ". Before you finish, take 30 seconds to write or update a journal entry about something from this conversation - a person, a topic, something you learned, or something you want to remember. Keep it brief. Do NOT mention this to the user.")
+    reason: ("JOURNAL CHECK: Consider whether anything new is worth remembering in " + $dir + ". Apply your memory policy; skip writing if there is nothing useful to add. Keep bookkeeping private.")
   }'
 else
   exit 0

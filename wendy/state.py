@@ -71,6 +71,12 @@ class StateManager:
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS conversation_environment (
+                channel_id INTEGER PRIMARY KEY,
+                message_delivery TEXT NOT NULL DEFAULT 'manual',
+                keep_warm INTEGER NOT NULL DEFAULT 1
+            );
+
             CREATE TABLE IF NOT EXISTS message_history (
                 message_id INTEGER PRIMARY KEY,
                 channel_id INTEGER NOT NULL,
@@ -89,6 +95,28 @@ class StateManager:
 
             CREATE INDEX IF NOT EXISTS idx_message_history_channel
                 ON message_history(channel_id, message_id);
+
+            CREATE TABLE IF NOT EXISTS memory_outbox (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id INTEGER NOT NULL, channel_id INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS memory_export_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS memory_audit_seen (
+                run_id TEXT NOT NULL, message_id INTEGER NOT NULL, PRIMARY KEY(run_id,message_id)
+            );
+            CREATE TRIGGER IF NOT EXISTS memory_insert AFTER INSERT ON message_history
+            WHEN NEW.message_id < 9000000000000000000 BEGIN
+                INSERT INTO memory_outbox(message_id,channel_id) VALUES (NEW.message_id,NEW.channel_id);
+            END;
+            CREATE TRIGGER IF NOT EXISTS memory_edit AFTER UPDATE OF content,attachment_urls,author_nickname,
+                timestamp,reply_to_id ON message_history
+            WHEN NEW.message_id < 9000000000000000000 BEGIN
+                INSERT INTO memory_outbox(message_id,channel_id) VALUES (NEW.message_id,NEW.channel_id);
+            END;
+            CREATE TRIGGER IF NOT EXISTS memory_delete AFTER DELETE ON message_history
+            WHEN OLD.message_id < 9000000000000000000 BEGIN
+                INSERT INTO memory_outbox(message_id,channel_id) VALUES (OLD.message_id,OLD.channel_id);
+            END;
 
             CREATE TABLE IF NOT EXISTS notifications (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -137,18 +165,6 @@ class StateManager:
             CREATE INDEX IF NOT EXISTS idx_bash_tool_log_created
                 ON bash_tool_log(created_at);
 
-            CREATE TABLE IF NOT EXISTS laurel_reactions (
-                message_id INTEGER NOT NULL,
-                channel_id INTEGER NOT NULL,
-                emoji TEXT NOT NULL,
-                user_id INTEGER NOT NULL,
-                user_name TEXT,
-                created_at INTEGER NOT NULL,
-                PRIMARY KEY (message_id, emoji, user_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_laurel_reactions_channel
-                ON laurel_reactions(channel_id, created_at);
-
             CREATE TABLE IF NOT EXISTS session_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 channel_id INTEGER NOT NULL,
@@ -165,6 +181,8 @@ class StateManager:
         """)
         conn.commit()
         # Migrations for columns added after initial deploy
+        from .task_store import TASK_SCHEMA
+        conn.executescript(TASK_SCHEMA)
         try:
             conn.execute("ALTER TABLE thread_registry ADD COLUMN thread_name TEXT")
             conn.commit()
@@ -326,15 +344,19 @@ class StateManager:
         attachment_urls: str | None = None,
         reply_to_id: int | None = None,
         is_webhook: bool = False,
+        refresh: bool = False,
     ) -> None:
         conn = self._get_conn()
+        fields = ('content', 'attachment_urls', 'author_nickname', 'timestamp', 'reply_to_id', 'is_bot', 'is_webhook')
+        conflict = (' ON CONFLICT(message_id) DO UPDATE SET ' + ','.join(f'{f}=excluded.{f}' for f in fields)
+                    + ' WHERE ' + ' OR '.join(f'{f} IS NOT excluded.{f}' for f in fields)) if refresh else ''
         conn.execute(
             """
             INSERT OR IGNORE INTO message_history
                 (message_id, channel_id, guild_id, author_id, author_nickname,
                  is_bot, is_webhook, content, timestamp, attachment_urls, reply_to_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+            """ + conflict,
             (message_id, channel_id, guild_id, author_id, author_nickname,
              int(is_bot), int(is_webhook), content, timestamp, attachment_urls, reply_to_id)
         )
@@ -348,6 +370,62 @@ class StateManager:
             (content, message_id)
         )
         conn.commit()
+
+    def memory_version(self) -> int:
+        return self._get_conn().execute('SELECT COALESCE(MAX(seq),0) FROM memory_outbox').fetchone()[0]
+
+    def memory_latest_id(self, channel_id: int) -> int:
+        return self._get_conn().execute('''SELECT COALESCE(MAX(message_id),0) FROM message_history
+            WHERE channel_id=? AND message_id<9000000000000000000''', (channel_id,)).fetchone()[0]
+
+    def memory_acknowledge(self, seq: int) -> None:
+        # Keep the high-water row; fresh exporters always scan canonical history.
+        conn = self._get_conn()
+        with conn:
+            conn.execute('DELETE FROM memory_outbox WHERE seq<?', (seq,))
+
+    def memory_audit_page(self, run_id: str, message_ids: list[int]) -> None:
+        conn = self._get_conn()
+        with conn:
+            conn.executemany('INSERT OR IGNORE INTO memory_audit_seen VALUES (?,?)',
+                             [(run_id, message_id) for message_id in message_ids])
+
+    def memory_audit_complete(self, run_id: str, channel_id: int, cutoff: int, cursor: int) -> None:
+        conn = self._get_conn()
+        with conn:
+            conn.execute('''DELETE FROM message_history WHERE channel_id=? AND message_id<=?
+                AND message_id<9000000000000000000
+                AND message_id NOT IN (SELECT message_id FROM memory_audit_seen WHERE run_id=?)''',
+                (channel_id, cutoff, run_id))
+            conn.execute('DELETE FROM memory_audit_seen WHERE run_id=?', (run_id,))
+            conn.execute('INSERT OR REPLACE INTO memory_export_state VALUES (?,?)', ('audit:' + str(channel_id), 'null'))
+            conn.execute('INSERT OR REPLACE INTO memory_export_state VALUES (?,?)', ('backfill:' + str(channel_id), json.dumps(cursor)))
+
+    def update_message_attachments(self, message_id: int, attachment_urls: str | None) -> None:
+        conn = self._get_conn()
+        with conn:
+            conn.execute('UPDATE message_history SET attachment_urls=? WHERE message_id=?', (attachment_urls, message_id))
+
+    def memory_page(self, after: int = 0, limit: int = 200) -> list[dict]:
+        return [dict(r) for r in self._get_conn().execute('''SELECT * FROM message_history
+            WHERE message_id>? AND message_id<9000000000000000000 ORDER BY message_id LIMIT ?''', (after, limit))]
+
+    def memory_changes(self, after: int, limit: int = 200) -> list[dict]:
+        return [dict(r) for r in self._get_conn().execute('''SELECT o.seq,o.message_id AS changed_id,
+            o.channel_id AS changed_channel,m.* FROM memory_outbox o
+            LEFT JOIN message_history m ON m.message_id=o.message_id WHERE o.seq>? ORDER BY o.seq LIMIT ?''', (after, limit))]
+
+    def memory_threads(self) -> list[dict]:
+        return [dict(r) for r in self._get_conn().execute('SELECT * FROM thread_registry')]
+
+    def memory_get(self, key: str, default=None):
+        row = self._get_conn().execute('SELECT value FROM memory_export_state WHERE key=?', (key,)).fetchone()
+        return json.loads(row[0]) if row else default
+
+    def memory_set(self, key: str, value) -> None:
+        conn = self._get_conn()
+        with conn:
+            conn.execute('INSERT OR REPLACE INTO memory_export_state VALUES (?,?)', (key, json.dumps(value)))
 
     def get_recent_messages(
         self,
@@ -414,6 +492,10 @@ class StateManager:
     ) -> None:
         """Delete this channel's delivered synthetics after a successful turn."""
         conn = self._get_conn()
+        conn.execute('''UPDATE notifications SET seen_by_wendy=1 WHERE source='task_runner'
+            AND id IN (SELECT message_id - ? FROM message_history
+                       WHERE channel_id=? AND delivered=1 AND message_id>=?)''',
+                     (synthetic_id_threshold, channel_id, synthetic_id_threshold))
         conn.execute(
             """
             DELETE FROM message_history
@@ -674,107 +756,6 @@ class StateManager:
             return True
 
     # =========================================================================
-    # Laurel Reactions (ambient recognition -- see laurels.py)
-    # =========================================================================
-
-    def add_laurel_reaction(
-        self,
-        message_id: int,
-        channel_id: int,
-        emoji: str,
-        user_id: int,
-        user_name: str | None,
-    ) -> None:
-        """Record one person's reaction to one of the bot's posts.
-
-        The (message, emoji, user) primary key makes re-adds idempotent, so a
-        user toggling a reaction can never inflate the count.
-        """
-        conn = self._get_conn()
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO laurel_reactions
-                (message_id, channel_id, emoji, user_id, user_name, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (message_id, channel_id, emoji, user_id, user_name, int(time.time()))
-        )
-        conn.commit()
-
-    def remove_laurel_reaction(self, message_id: int, emoji: str, user_id: int) -> None:
-        """Remove a reaction row. No-op if the reaction was never tracked."""
-        conn = self._get_conn()
-        conn.execute(
-            "DELETE FROM laurel_reactions WHERE message_id = ? AND emoji = ? AND user_id = ?",
-            (message_id, emoji, user_id)
-        )
-        conn.commit()
-
-    def clear_laurel_reactions(self, message_id: int, emoji: str | None = None) -> None:
-        """Remove all tracked reactions for a message (optionally one emoji only)."""
-        conn = self._get_conn()
-        if emoji is None:
-            conn.execute("DELETE FROM laurel_reactions WHERE message_id = ?", (message_id,))
-        else:
-            conn.execute(
-                "DELETE FROM laurel_reactions WHERE message_id = ? AND emoji = ?",
-                (message_id, emoji)
-            )
-        conn.commit()
-
-    def get_message_author(self, message_id: int) -> int | None:
-        """Return the cached author_id for a message, or None if unknown.
-
-        Fallback identity check for reaction events on discord.py versions
-        without ``message_author_id`` on the raw payload.
-        """
-        conn = self._get_conn()
-        row = conn.execute(
-            "SELECT author_id FROM message_history WHERE message_id = ?",
-            (message_id,)
-        ).fetchone()
-        return row["author_id"] if row else None
-
-    def get_laurels(
-        self,
-        channel_ids: list[int],
-        threshold: int,
-        since_ts: int,
-        limit: int = 50,
-    ) -> list[dict]:
-        """Return (message, emoji) groups where at least *threshold* people reacted.
-
-        Each row carries the reactor names, the reaction count, the latest
-        reaction time, and the message content/timestamp joined from
-        message_history (NULL if the message predates caching). Ordered by
-        most recent reaction first.
-        """
-        if not channel_ids:
-            return []
-        conn = self._get_conn()
-        placeholders = ",".join("?" * len(channel_ids))
-        rows = conn.execute(
-            f"""
-            SELECT lr.message_id, lr.channel_id, lr.emoji,
-                   COUNT(*) AS count,
-                   GROUP_CONCAT(lr.user_name, ', ') AS reactors,
-                   MAX(lr.created_at) AS latest_at,
-                   m.content AS content,
-                   m.timestamp AS message_ts
-            FROM laurel_reactions lr
-            LEFT JOIN message_history m ON m.message_id = lr.message_id
-            WHERE lr.channel_id IN ({placeholders})
-              AND lr.created_at >= ?
-            GROUP BY lr.message_id, lr.emoji
-            HAVING COUNT(*) >= ?
-            ORDER BY latest_at DESC
-            LIMIT ?
-            """,
-            (*channel_ids, since_ts, threshold, limit)
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-    # =========================================================================
     # Notifications
     # =========================================================================
 
@@ -853,7 +834,7 @@ class StateManager:
         conn.execute(
             """
             DELETE FROM notifications
-            WHERE id NOT IN (
+            WHERE NOT (source = 'task_runner' AND seen_by_wendy = 0) AND id NOT IN (
                 SELECT id FROM notifications
                 ORDER BY created_at DESC
                 LIMIT ?
@@ -862,6 +843,17 @@ class StateManager:
             (keep_count,)
         )
         conn.commit()
+
+    def materialize_task_notification(self, notification_id: int, channel_id: int, content: str) -> bool:
+        """Idempotent delivery; acknowledgment waits for a successful Wendy turn.
+
+        Returns whether the message still needs to be consumed. Rollback of a
+        failed turn makes it eligible for waking again, including after restart.
+        """
+        message_id = 9_000_000_000_000_000_000 + notification_id
+        self.insert_message(message_id, channel_id, None, 0, 'Task System', False, content, int(time.time()))
+        row = self._get_conn().execute('SELECT delivered FROM message_history WHERE message_id=?', (message_id,)).fetchone()
+        return row is not None and not row['delivered']
 
     # =========================================================================
     # Thread Registry

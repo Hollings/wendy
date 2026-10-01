@@ -1,0 +1,80 @@
+# Project templates
+
+### Static sites (index.html detected):
+```
+project-name/
+├── index.html
+├── style.css
+└── script.js
+```
+
+(Do NOT deploy -- Wendy deploys after reviewing your work.)
+
+### Game servers (server.ts detected):
+```
+game-name/
+├── server.ts          # Deno server using createGameServer helper
+└── public/            # Frontend files (auto-served)
+    ├── index.html
+    └── game.js
+```
+
+(Do NOT deploy -- Wendy deploys after reviewing your work.)
+
+## Game Server Helper Library
+
+For multiplayer games, use the helper library:
+
+```typescript
+import { createGameServer, loadState, saveState } from "/app/lib.ts";
+
+const game = createGameServer({
+  onConnect: (ws, id) => {
+    console.log(`Player ${id} connected`);
+  },
+  onMessage: (ws, id, data) => {
+    // Handle player messages
+  },
+  onDisconnect: (id) => {
+    console.log(`Player ${id} disconnected`);
+  },
+});
+
+// State persists across redeploys in state.json
+const state = await loadState({
+  players: {},
+  gameStarted: false
+});
+
+// Update and save state
+state.players[playerId] = { name: "Alice", score: 0 };
+await saveState(state);
+
+// Messaging
+game.broadcast({ type: "update", data: state });  // To all players
+game.send(playerId, { type: "welcome" });         // To one player
+```
+
+The helper library automatically:
+- Serves files from ./public/
+- Provides WebSocket at wss://wendy.monster/game/<name>/ws
+- Manages player connections and cleanup
+
+Frontend WebSocket connection:
+```javascript
+const ws = new WebSocket(`wss://${location.host}${location.pathname}ws`);
+ws.onmessage = (e) => {
+  const msg = JSON.parse(e.data);
+  // Handle message
+};
+ws.send(JSON.stringify({ type: "action", data: {...} }));
+```
+
+## Deployment Notes
+
+**DO NOT deploy from background agents** - only write the code.
+Wendy will review and deploy after the task is complete.
+
+Max sizes:
+- Static sites: 50 MB
+- Game servers: 10 MB

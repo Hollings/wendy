@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+"""Retired agent-facing BD command; the task controller owns BD operations."""
+import sys
+
+
+def main():
+    print(
+        'bd is deprecated for Wendy and background workers. No command was executed.\n'
+        'Use wtask instead:\n'
+        '  wtask start "title" -d "goal, paths, constraints, verification" --model opus\n'
+        '  wtask list | wtask show TASK_ID | wtask result TASK_ID\n'
+        '  wtask tell TASK_ID "correction" | wtask stop TASK_ID "reason"\n'
+        '  wtask resume TASK_ID | wtask retry TASK_ID | wtask models\n'
+        '  Dependencies: wtask start "title" -d "..." --after PREREQUISITE_ID\n'
+        'Workers: use wtask inbox, ack, checkpoint, ask and finish for your own task.\n'
+        'Do not bypass this warning with another BD executable or edit its database.\n'
+        'BD is an internal storage backend. Guide: /app/config/docs/bd_usage.md',
+        file=sys.stderr,
+    )
+    return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -100,7 +100,7 @@ def test_prompt_template_formats_cleanly():
         workdir="/data/wendy/channels/coding",
     )
     assert "TASK ID: c-abc" in prompt
-    assert "bd done c-abc" in prompt
+    assert "wtask finish" in prompt
     assert "/data/wendy/channels/coding" in prompt
 
 

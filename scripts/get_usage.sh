@@ -18,7 +18,7 @@ if [ -z "$ACCESS_TOKEN" ]; then
 fi
 
 # Call the usage API
-RESPONSE=$(curl -s "https://api.anthropic.com/api/oauth/usage" \
+RESPONSE=$(curl -s --connect-timeout 3 --max-time 8 "https://api.anthropic.com/api/oauth/usage" \
     -H "Accept: application/json" \
     -H "Content-Type: application/json" \
     -H "User-Agent: claude-code/2.1.7" \

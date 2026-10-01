@@ -125,7 +125,7 @@ def main():
     req = urllib.request.Request(
         f"http://localhost:{port}/api/schedule_wake",
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "Authorization": "Bearer " + os.getenv("WENDY_API_TOKEN", "")},
     )
     try:
         resp = urllib.request.urlopen(req)

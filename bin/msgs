@@ -91,7 +91,7 @@ def main():
     query = ("?" + "&".join(params)) if params else ""
     url = f"http://localhost:{port}/api/check_messages/{channel_id}{query}"
 
-    req = urllib.request.Request(url)
+    req = urllib.request.Request(url, headers={"Authorization": "Bearer " + os.getenv("WENDY_API_TOKEN", "")})
     try:
         resp = urllib.request.urlopen(req)
         data = json.loads(resp.read().decode())

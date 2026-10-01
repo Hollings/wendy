@@ -20,18 +20,22 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aiohttp import web
 
 from . import config as _config
+from . import task_auth
+from .beads import BeadsError
 from .config import (
     DISCORD_MAX_MESSAGE_LENGTH,
     MAX_MESSAGE_LIMIT,
     SYNTHETIC_ID_THRESHOLD,
 )
 from .deploy_proxy import handle_deploy_game, handle_deploy_site, handle_game_logs
+from .environment import configure, preferences
 from .gemini_analyzer import handle_analyze_file
 from .paths import SHARED_DIR, WENDY_BASE, find_attachments_for_message
 from .state import state as state_manager
@@ -265,8 +269,8 @@ async def _execute_batch_actions(
                 {"error": f"Action {i}: unknown type '{action_type}'"}, status=400,
             )
 
-    new_messages = check_for_new_messages(channel_id)
-    return web.json_response({"success": True, "results": results, "new_messages": new_messages})
+    return web.json_response({'success': True, 'results': results,
+                              'unread_pending': bool(check_for_new_messages(channel_id))})
 
 
 async def handle_send_message(request: web.Request) -> web.Response:
@@ -290,15 +294,13 @@ async def handle_send_message(request: web.Request) -> web.Response:
     if not body.get("force", False):
         new_messages = check_for_new_messages(channel_id)
         if new_messages:
-            _consume_delivered_messages(channel_id, new_messages)
             return web.json_response({
                 "error": (
                     "Send blocked: new messages arrived since your last check. "
-                    "They are included below in new_messages -- this response is their "
-                    "only delivery, so do NOT run msgs (it will report nothing new). "
-                    "Address them and retry your send."
+                    "No messages were fetched or marked read. Use msgs when you choose "
+                    "to read them, or msg --force to send without reading them."
                 ),
-                "new_messages": new_messages,
+                "unread_pending": True,
                 "guidance": (
                     "Prefer sending ONE message that responds to all users at once, "
                     "rather than one message per person. Edit your reply to address everyone, then retry. "
@@ -326,13 +328,12 @@ async def handle_send_message(request: web.Request) -> web.Response:
 
     sent_msg = await channel.send(**kwargs)
     _save_bot_message(sent_msg, channel_id)
-    new_messages = check_for_new_messages(channel_id)
     resp_body: dict = {
         "success": True,
         "message": "Message sent",
         "message_id": sent_msg.id,
         "content": sent_msg.content or "",
-        "new_messages": new_messages,
+        "unread_pending": bool(check_for_new_messages(channel_id)),
     }
     if sent_msg.attachments:
         resp_body["attachments"] = [
@@ -376,6 +377,12 @@ async def handle_check_messages(request: web.Request) -> web.Response:
         return web.json_response({"error": "limit and count must be integers"}, status=400)
     all_messages = request.query.get("all_messages", "").lower() == "true"
     peek = request.query.get("peek", "").lower() == "true"
+
+    return _read_messages(channel_id, limit, count, all_messages, peek)
+
+
+def _read_messages(channel_id: int, limit: int = 10, count=None, all_messages=False, peek=False):
+    """Shared delivery/consumption semantics for msgs and opt-in observations."""
 
     channel_name = get_channel_name(channel_id)
     messages: list[dict] = []
@@ -532,9 +539,120 @@ async def handle_schedule_wake(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 
+@web.middleware
+async def controller_capability(request: web.Request, handler):
+    protected = ('/api/send_message', '/api/check_messages/', '/api/deploy_site', '/api/deploy_game',
+                 '/api/schedule_wake', '/api/environment', '/api/message_delivery')
+    if any(request.path.startswith(path) for path in protected):
+        scope = task_auth.lookup(request.headers.get('Authorization', '').removeprefix('Bearer '))
+        if not scope or scope.get('role') != 'controller':
+            return web.json_response({'error': 'This endpoint requires a Wendy controller capability; workers cannot message or deploy.'}, status=403)
+        supplied_channel = request.match_info.get('channel_id')
+        if request.content_type == 'application/json':
+            try:
+                body = await request.json()
+                supplied_channel = body.get('channel_id', supplied_channel)
+            except (ValueError, AttributeError):
+                pass
+        if supplied_channel is not None and str(supplied_channel) != str(scope['channel_id']):
+            return web.json_response({'error': 'Capability belongs to another conversation'}, status=403)
+    return await handler(request)
+
+
+async def handle_environment(request: web.Request) -> web.Response:
+    scope = task_auth.lookup(request.headers.get('Authorization', '').removeprefix('Bearer '))
+    channel_id = scope['channel_id']
+    try:
+        body = await request.json()
+        command = body.get('command', 'status')
+        current = (preferences(state_manager, channel_id) if command == 'status' else
+                   configure(state_manager, channel_id, command, body.get('value')))
+    except (ValueError, AttributeError) as exc:
+        return web.json_response({'error': str(exc)}, status=400)
+    return web.json_response({'environment': current, 'scope': 'this conversation only',
+                              'instructions': 'Message delivery changes at the next hook boundary; client changes apply after this turn.'})
+
+
+async def handle_message_delivery(request: web.Request) -> web.Response:
+    scope = task_auth.lookup(request.headers.get('Authorization', '').removeprefix('Bearer '))
+    channel_id = scope['channel_id']
+    if _is_enrichment_active(channel_id):
+        return web.json_response({})
+    body = await request.json()
+    if not isinstance(body, dict):
+        return web.json_response({'error': 'Expected an object'}, status=400)
+    if body.get('ack'):
+        staged = scope.get('automatic_delivery')
+        if not staged or staged['id'] != body['ack']:
+            return web.json_response({'error': 'Unknown delivery'}, status=400)
+        _consume_delivered_messages(channel_id, staged['messages'])
+        scope.pop('automatic_delivery', None)
+        job = getattr(_discord_bot, '_active_generations', {}).get(channel_id)
+        if job is not None:
+            job.new_message_pending = bool(check_for_new_messages(channel_id))
+        return web.json_response({'acknowledged': True})
+    hook = body.get('hook')
+    if hook not in ('UserPromptSubmit', 'PostToolUse', 'Stop'):
+        return web.json_response({'error': 'Unknown delivery boundary'}, status=400)
+    automatic = preferences(state_manager, channel_id)['messages'] == 'auto'
+    if not automatic:
+        scope.pop('automatic_delivery', None)
+    if hook == 'Stop' and not automatic:
+        return web.json_response({})  # Manual mode may deliberately leave messages unread.
+    pending = check_for_new_messages(channel_id)
+    staged = scope.get('automatic_delivery') if automatic else None
+    if staged:
+        return web.json_response({'observation': staged['observation'], 'delivery_id': staged['id']})
+    if automatic and (pending or hook == 'UserPromptSubmit'):
+        response = _read_messages(channel_id, MAX_MESSAGE_LIMIT, peek=True)
+        delivered = json.loads(response.body)
+        if not delivered['messages']:
+            return web.json_response({})
+        observation = 'Automatic message delivery (you enabled this with wenv):\n' + json.dumps(delivered)
+        staged = {'id': str(uuid.uuid4()), 'messages': delivered['messages'], 'observation': observation}
+        scope['automatic_delivery'] = staged
+        return web.json_response({'observation': observation, 'delivery_id': staged['id']})
+    elif pending:
+        revision = tuple(m['message_id'] for m in pending)
+        if scope.get('delivery_notice') == revision:
+            return web.json_response({})
+        scope['delivery_notice'] = revision
+        observation = 'Unread messages are waiting. Use msgs if you choose to read them; no contents have been delivered.'
+    else:
+        return web.json_response({})
+    # This turn has been notified. A genuinely later arrival sets pending again.
+    job = getattr(_discord_bot, '_active_generations', {}).get(channel_id)
+    if job is not None:
+        job.new_message_pending = False
+    return web.json_response({'observation': observation})
+
+
+async def handle_tasks(request: web.Request) -> web.Response:
+    scope = task_auth.lookup(request.headers.get('Authorization', '').removeprefix('Bearer '))
+    if not scope:
+        return web.json_response({'error': 'Missing or expired task capability'}, status=403)
+    runner = getattr(_discord_bot, '_task_runner', None)
+    if runner is None:
+        return web.json_response({'error': 'Task controller unavailable'}, status=503)
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError('Request must be a JSON object')
+        return web.json_response(await runner.command(scope, body))
+    except (ValueError, KeyError, TypeError) as exc:
+        return web.json_response({'error': str(exc)}, status=400)
+    except (BeadsError, TimeoutError, OSError) as exc:
+        return web.json_response({'error': str(exc), 'instruction': 'Inspect wtask list before retrying an uncertain creation.'}, status=503)
+
+
 def create_app() -> web.Application:
     """Build the aiohttp ``Application`` with all API routes registered."""
-    app = web.Application(client_max_size=30 * 1024 * 1024)  # 30 MB for file uploads
+    app = web.Application(client_max_size=30 * 1024 * 1024, middlewares=[controller_capability])
+    from .memory_api import install as install_memory
+    install_memory(app, lambda: state_manager, lambda: _channel_configs)
+    app.router.add_post("/api/tasks", handle_tasks)
+    app.router.add_post('/api/environment', handle_environment)
+    app.router.add_post('/api/message_delivery', handle_message_delivery)
     app.router.add_post("/api/send_message", handle_send_message)
     app.router.add_get("/api/check_messages/{channel_id}", handle_check_messages)
     app.router.add_get("/api/emojis", handle_emojis)

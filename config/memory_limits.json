@@ -1,0 +1,4 @@
+{
+  "standard": {"seconds": 25, "calls": 8, "source_bytes": 48000, "answer_chars": 2800, "citations": 3},
+  "deep": {"seconds": 60, "calls": 16, "source_bytes": 96000, "answer_chars": 4800, "citations": 6}
+}
