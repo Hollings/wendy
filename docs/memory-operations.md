@@ -66,6 +66,8 @@ in Git or the JSON config.
 `/srv/secrets/wendy/memory-bot.env`:
 
 ```dotenv
+WENDY_MEMORY_ENABLED=true
+WENDY_MEMORY_PORT=8950
 WENDY_MEMORY_SERVICE_TOKEN=<random shared secret, at least 32 characters>
 ```
 
@@ -120,11 +122,18 @@ Hindsight can independently use DeepSeek with `HINDSIGHT_API_LLM_PROVIDER=deepse
 From the repository root on the host:
 
 ```sh
-docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.memory.yml build memory wendy
-docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.memory.yml up -d hindsight memory wendy
+sudo docker compose --env-file /srv/secrets/wendy/memory-bot.env -f deploy/docker-compose.yml -f deploy/docker-compose.memory.yml build memory wendy
+sudo docker compose --env-file /srv/secrets/wendy/memory-bot.env -f deploy/docker-compose.yml -f deploy/docker-compose.memory.yml up -d hindsight memory wendy
 ```
 
-Only the memory gateway is published, on host loopback port 8950. Hindsight has no
+`WENDY_MEMORY_PORT` selects the host loopback port; the gateway always listens on
+8950 inside its container. Production uses 18950 because 8950 belongs to the
+existing AI gateway. `deploy.sh` detects the server's memory configuration and
+preserves the feature flag and port during subsequent deployments. When enabled,
+bot deployments also rebuild the memory service. The memory service is capped at
+1 GB RAM/one CPU; Hindsight at 4 GB/two CPUs.
+
+Only the memory gateway is published, on the selected host loopback port. Hindsight has no
 published host port and requires its separate API credential. The service gets no
 bot secret file, Docker socket or source-data volume. The full Hindsight image
 includes local embeddings/reranking and is about 9 GB on AMD64. Its embedded
@@ -136,6 +145,13 @@ Keep **one bot exporter and one memory service instance per source database**.
 The bot synchronizes sources before and after a query and revalidates the result.
 If evidence changes, the query is rejected so Wendy can retry. Warm clients need
 a restart after changing the enabled tool set; policy changes apply per request.
+
+To toggle memory off, set `WENDY_MEMORY_ENABLED=false` in
+`/srv/secrets/wendy/memory-bot.env` and run `./deploy.sh --restart-only`.
+To turn it back on, set it to `true` and run the same command. These restarts
+replace retained Claude clients so their tool lists match the new setting.
+Stopping the supporting services is optional when memory is disabled; preserve
+their volumes. The flag does not change the channel policy or erase indexed data.
 
 Rollback: set `WENDY_MEMORY_ENABLED=false`, restart Wendy, and stop the two memory
 services. Keep volumes for recovery. Rebuilding the source volume causes a fresh

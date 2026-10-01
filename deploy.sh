@@ -52,6 +52,16 @@ remote() { ssh -o ConnectTimeout=15 "$SERVER" "$@"; }
 echo "==> Checking SSH to $SERVER..."
 remote "echo 'OK'" || { echo "ERROR: Cannot reach $SERVER"; exit 1; }
 
+# Preserve the enabled memory stack on later code deploys. Operator settings
+# stay with the server's secrets so packaging cannot reset the feature flag.
+MEMORY_ENV="/srv/secrets/wendy/memory-bot.env"
+if remote "sudo test -f $MEMORY_ENV"; then
+    COMPOSE="sudo docker compose --env-file $MEMORY_ENV -f $REMOTE_DIR/deploy/docker-compose.yml -f $REMOTE_DIR/deploy/docker-compose.memory.yml"
+    if [[ "$TARGET" != "web" ]] && remote "sudo grep -Eq '^WENDY_MEMORY_ENABLED=(true|1|yes)$' $MEMORY_ENV"; then
+        SERVICES="$SERVICES memory"
+    fi
+fi
+
 if $LOGS_ONLY; then
     remote "$COMPOSE logs -f --tail=50 $SERVICES"
     exit 0
@@ -166,7 +176,7 @@ remote "
 
 # --- Build & start ---
 echo "==> Building and restarting $SERVICES..."
-remote "cd $REMOTE_DIR/deploy && sudo docker compose up -d --build $SERVICES"
+remote "$COMPOSE up -d --build $SERVICES"
 
 # --- Verify ---
 echo "==> Verifying..."

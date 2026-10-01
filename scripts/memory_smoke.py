@@ -67,7 +67,7 @@ async def exercise(url: str, repeats=1, extended=False, out=None):
                 assert recall['leads'] and not recall['unavailable'], 'No grounded Hindsight recall'
                 print('Hindsight retain and grounded recall passed', flush=True)
                 cases = [(f'decision-{i + 1}',
-                          'What database did Project Kingfisher finally choose and why? Check Hindsight and original sources.',
+                          'What database did Project Kingfisher finally choose and why? Call recall_memory first, then read original sources to verify the answer.',
                           scope) for i in range(repeats)]
                 if extended:
                     cases.extend([
