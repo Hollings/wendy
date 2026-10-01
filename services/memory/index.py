@@ -72,7 +72,10 @@ class Index:
                     affected.add(old['group_key'])
                 self.db.execute('INSERT OR REPLACE INTO sources VALUES (?,?,?,?,?,?,?)',
                                 (source.id, source.domain, source.kind, source.model_dump_json(), source.revision, epoch, group))
-                self.db.execute('DELETE FROM source_fts WHERE id=?', (source.id,))
+                # FTS5's unindexed ID requires a full scan; new sources have
+                # no previous entry to remove.
+                if old:
+                    self.db.execute('DELETE FROM source_fts WHERE id=?', (source.id,))
                 self.db.execute('INSERT INTO source_fts VALUES (?,?)',
                                 (source.id, f'{source.speaker} {source.location}\n{source.text}'))
             for source_id in deleted:
