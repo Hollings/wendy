@@ -212,7 +212,10 @@ def build_cli_command(
     from .memory_export import enabled as memory_enabled
     if memory_enabled():
         cmd.extend(['--mcp-config', json.dumps({'mcpServers': {'memory': {
-            'command': sys.executable, 'args': ['-m', 'wendy.memory_mcp'],
+            # The controller runs in a writable workspace containing helpers
+            # such as secrets.py. Keep that directory off Python's import path
+            # so those files cannot shadow the MCP server's dependencies.
+            'command': sys.executable, 'args': ['-P', '-m', 'wendy.memory_mcp'],
             'env': {'PYTHONPATH': str(Path(__file__).resolve().parents[1])},
         }}})])
 

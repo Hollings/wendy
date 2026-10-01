@@ -1,7 +1,6 @@
 """Memory boundaries, replay, citations, and the complete MCP-to-source path."""
 import asyncio
 import json
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -261,11 +260,17 @@ async def stack(tmp_path, monkeypatch):
         index.db.close()
 
 
-async def test_real_stdio_mcp_through_bot_researcher_gateway_index(stack, monkeypatch):
+async def test_real_stdio_mcp_through_bot_researcher_gateway_index(stack, monkeypatch, tmp_path):
     state, index, service, bot, token, config = stack
-    params = StdioServerParameters(command=sys.executable, args=['-m', 'wendy.memory_mcp'], env={
-        'WENDY_API_TOKEN': token, 'WENDY_PROXY_PORT': str(bot.server.port),
-        'PYTHONPATH': str(Path(__file__).resolve().parents[1]),
+    # Production's workspace has its own secrets.py helper. Launch with the
+    # actual controller configuration and ensure it cannot shadow stdlib imports.
+    workspace = tmp_path / 'workspace'
+    workspace.mkdir()
+    (workspace / 'secrets.py').write_text('raise RuntimeError("Workspace secrets.py was imported")\n')
+    argv = build_cli_command('claude', 'session', True, '', {'name': 'test'}, 'sonnet')
+    server = json.loads(argv[argv.index('--mcp-config') + 1])['mcpServers']['memory']
+    params = StdioServerParameters(command=server['command'], args=server['args'], cwd=str(workspace), env={
+        **server['env'], 'WENDY_API_TOKEN': token, 'WENDY_PROXY_PORT': str(bot.server.port),
     })
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
         await session.initialize()
