@@ -76,6 +76,19 @@ def test_outbox_is_transactional_and_catches_old_ids_edits_deletes(tmp_path):
     assert state.memory_version() == 4  # Mutation and outbox rollback together.
 
 
+@pytest.mark.parametrize('timestamp,expected', [
+    (None, 0), (1700000000, 1700000000), ('1700000000', 1700000000),
+    ('2023-11-14T22:13:20Z', 1700000000),
+    ('2023-11-14T22:13:20', 1700000000),
+    ('2023-11-14T15:13:20.221000-07:00', 1700000000),
+])
+def test_message_source_accepts_legacy_cache_timestamps(tmp_path, timestamp, expected):
+    state = StateManager(tmp_path / 'bot.db')
+    state.insert_message(101, 7, 1, 42, 'Ada', False, 'Historical message', timestamp)
+    record = memory_export.message_source(state.memory_page()[0], {'7': 'test'})
+    assert record.timestamp == expected
+
+
 def test_scope_search_cutoffs_neighbors_and_whole_episode_provenance(index):
     index.ingest([source(), source('102', 'unread violet elephant'), source('103', 'private Postgres', '8')], [])
     assert [s.id for s in index.search('Postgres', scope())] == ['discord:101']

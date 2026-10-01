@@ -7,6 +7,7 @@ import logging
 import os
 import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import aiohttp
@@ -61,11 +62,19 @@ def message_source(row: dict, channels: dict[str, str]) -> Source | None:
     text = row['content'] or ''
     if row.get('attachment_urls'):
         text += '\nAttachment references (contents not indexed): ' + row['attachment_urls']
+    timestamp = row['timestamp'] or 0
+    if isinstance(timestamp, str):
+        try:
+            timestamp = int(timestamp)
+        except ValueError:
+            # Older cache writers stored ISO timestamps instead of epoch seconds.
+            parsed = datetime.fromisoformat(timestamp)
+            timestamp = int(parsed.replace(tzinfo=parsed.tzinfo or UTC).timestamp())
     return Source(id='discord:' + message, domain='channel:' + channel, kind='chat', text=text,
                   speaker=row['author_nickname'] or ('Bot' if row['is_bot'] else 'Unknown'),
                   speaker_role='webhook' if row.get('is_webhook') else 'bot' if row['is_bot'] else 'human',
                   author_id=str(row['author_id']) if row['author_id'] is not None else None,
-                  timestamp=row['timestamp'] or 0, channel_id=channel, message_id=message,
+                  timestamp=timestamp, channel_id=channel, message_id=message,
                   reply_to_id=str(row['reply_to_id']) if row['reply_to_id'] else None,
                   location=channels[channel], locator=f"https://discord.com/channels/{row['guild_id']}/{channel}/{message}")
 
