@@ -7,10 +7,17 @@ __pycache__
 *.egg-info
 .pytest_cache
 .ruff_cache
+.venv/
+venv/
 .env
 *.env
 node_modules
 **/node_modules
+# Local Brain captures and demo entry points are not production build inputs.
+services/web/brain-ui/*.jsonl
+services/web/brain-ui/dev/
+services/web/brain-ui/src/dev/
+services/web/brain-ui/replay.html
 tests/
 *.md
 !config/docs/*.md

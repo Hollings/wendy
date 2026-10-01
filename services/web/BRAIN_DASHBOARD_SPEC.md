@@ -1,5 +1,11 @@
 # Wendy Brain Dashboard — API & WebSocket Contract
 
+The frontend was rebuilt in September 2026. See `brain-ui/README.md` for the
+current feature inventory, reading behavior, and local validation steps.
+The viewer now uses a flat timeline and explicit detail inspector. The task
+endpoints preserve `phase`, `model`, `_channel`, and `close_reason`; log reads
+accept `log_id` and return bounded chunks with rotation-aware offsets.
+
 The Brain dashboard is a real-time, single-page observability surface for Wendy's Claude Code sessions: it streams every stream-json event Claude emits (thoughts, tool calls, tool results, session results) from every channel and every beads background agent, and overlays live status about the bot (context usage, costs, active channels, bead/task state, weekly API quota). It is authenticated with a shared access code, served at `/` off the `wendy-web` service on port 8910, and built as a React SPA that holds one WebSocket open to `/ws/brain` plus periodic REST polls for slower-moving state.
 
 ---
@@ -23,7 +29,7 @@ Shared-code + long-lived HMAC token, used for both REST and WS.
 
 - **Server config**: requires env vars `BRAIN_ACCESS_CODE` (the shared code users type) and `BRAIN_SECRET` (HMAC signing key). If either is missing, the dashboard refuses to serve.
 - **Token format**: `"{unix_expiry}:{hex_sig}"` where `sig = hmac_sha256(BRAIN_SECRET, f"brain:{expiry}")[:16]`. 30-day lifetime.
-- **Client storage**: frontend stores both `brain_token` and the raw `brain_passphrase` in `localStorage` so it can silently re-auth on token expiry or WS 4001 close.
+- **Client storage**: new sign-ins store only `brain_token`. A code saved by the old viewer may be used once for migration, then removed. Expired tokens return to sign-in when no legacy code is available.
 - **REST auth**: `Authorization: Bearer <token>` header, OR `?token=<token>` query string. `401` on failure, `503` if the server is not configured.
 - **WS auth**: token is passed as `?token=<token>` query string on the connect URL. Server calls `accept()` then `close(4001)` if invalid.
 
@@ -59,7 +65,7 @@ Single long-lived WS per client. This is the firehose — everything real-time a
 3. Server enforces a global cap of `MAX_CLIENTS = 100`. Over the cap: `close(4002, "Server at capacity")`.
 4. On accept, server sends — in order:
    - One `channels_map` envelope.
-   - Up to `MAX_HISTORY = 50` recent stream events read from the tail of `stream.jsonl` (replay, to give new clients immediate context).
+   - Up to `MAX_HISTORY = 300` recent stream events read from the tail of `stream.jsonl` (replay, to give new clients immediate context).
 5. Live mode: server broadcasts each new line appended to `stream.jsonl`, plus bead list updates and bead agent log lines, to every connected client.
 6. Every 60s of no client traffic, server sends `{"type":"ping"}`. Client should reply with the literal string `pong` (plain text, not JSON) to keep the connection healthy.
 7. Any client disconnect or send failure is silently dropped.

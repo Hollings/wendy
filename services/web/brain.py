@@ -650,13 +650,21 @@ def _read_beads_list() -> list[dict]:
         _LOG.debug("Failed to read beads snapshot: %s", e)
         return _last_good_beads
 
+    if not isinstance(raw, list) or any(not isinstance(item, dict) for item in raw):
+        return _last_good_beads
     beads = [
         {
             "id": d.get("id", "?"),
             "title": d.get("title", "Untitled"),
             "status": d.get("status", "open"),
-            "created": d.get("created"),
-            "updated": d.get("updated", d.get("created")),
+            "created": d.get("created", d.get("created_at")),
+            "updated": d.get("updated", d.get("updated_at", d.get("created"))),
+            "phase": d.get("phase"),
+            "model": d.get("model"),
+            "_channel": d.get("_channel"),
+            "close_reason": d.get("close_reason", ""),
+            "priority": d.get("priority", 2),
+            "labels": d.get("labels", []),
         }
         for d in raw
     ]
@@ -669,11 +677,62 @@ def _read_beads_list() -> list[dict]:
 def _extract_task_id(filename: str) -> str | None:
     """Parse task_id from agent_{task_id}_{ts}.log filename."""
     name = filename.removesuffix(".log")
-    parts = name.split("_")
-    # agent_<task_id>_<timestamp>  -> parts[0]="agent", parts[1]=task_id
-    if len(parts) >= 3 and parts[0] == "agent":
-        return parts[1]
+    if name.startswith("agent_") and "_" in name[6:]:
+        return name[6:].rsplit("_", 1)[0]
     return None
+
+
+def read_task_log(task_id: str, offset: int = 0, log_id: str = "") -> dict:
+    """Bounded, rotation-aware task log reads; never consume partial JSON lines."""
+    import re
+
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", task_id):
+        raise ValueError("Invalid task ID")
+    empty = {"task_id": task_id, "log": "", "offset": 0, "log_id": "", "complete": False}
+    try:
+        files = [p for p in ORCHESTRATOR_LOGS_DIR.glob(f"agent_{task_id}_*.log")
+                 if _extract_task_id(p.name) == task_id]
+        if not files:
+            return empty
+        path = max(files, key=lambda p: (p.stat().st_mtime_ns, p.name))
+        size = path.stat().st_size
+        if (log_id and log_id != path.name) or offset < 0 or offset > size:
+            offset = 0
+        max_read = 256 * 1024
+        truncated = offset == 0 and size > max_read
+        with path.open("rb") as handle:
+            if truncated:
+                handle.seek(max(0, size - max_read))
+                handle.readline()
+                offset = handle.tell()
+            else:
+                handle.seek(offset)
+            chunk = handle.read(max_read)
+            end = chunk.rfind(b"\n") + 1
+            if not end and len(chunk) == max_read:
+                # Skip a single oversized record rather than pinning the cursor.
+                while chunk and b"\n" not in chunk:
+                    chunk = handle.read(max_read)
+                newline = chunk.find(b"\n")
+                offset = handle.tell() - len(chunk) + newline + 1 if newline >= 0 else handle.tell()
+                chunk, end, truncated = b"", 0, True
+            content = chunk[:end].decode("utf-8", errors="replace")
+            handle.seek(max(0, size - 8192))
+            tail = handle.read(8192).decode("utf-8", errors="replace")
+        complete = any(marker in tail for marker in ("=== TASK COMPLETE ===", "=== TASK FAILED ==="))
+        for line in tail.splitlines():
+            try:
+                event = json.loads(line)
+                if isinstance(event, dict) and event.get("type") == "result":
+                    complete = True
+            except json.JSONDecodeError:
+                pass
+        return {"task_id": task_id, "log": content, "offset": offset + end,
+                "log_id": path.name, "attempt_id": path.stem.rsplit("_", 1)[-1],
+                "complete": complete, "truncated": truncated,
+                "modified_at": int(path.stat().st_mtime * 1000)}
+    except OSError:
+        return empty
 
 
 async def tail_beads() -> None:
@@ -757,6 +816,7 @@ async def tail_beads() -> None:
                                         "ts": event_data.get("ts", ts),
                                         "bead_id": task_id,
                                         "channel_id": None,
+                                        "attempt_id": path.stem.rsplit("_", 1)[-1],
                                         "event": event_data.get("event", event_data),
                                     }
                                     await broadcast(json.dumps(envelope))

@@ -41,6 +41,11 @@ export function contextWindowFor(model) {
 // ---------------------------------------------------------------------------
 
 export function frameKey(rawString) {
+  try {
+    const raw = JSON.parse(rawString)
+    if (raw?.event?.uuid) return [raw.channel_id || '', raw.bead_id || '', raw.event.uuid].join(':')
+    if (raw?.frame_id) return raw.frame_id
+  } catch { /* Hash malformed or older frames consistently. */ }
   let h = 5381
   for (let i = 0; i < rawString.length; i++) {
     h = ((h * 33) ^ rawString.charCodeAt(i)) >>> 0
@@ -84,6 +89,8 @@ export const KINDS = {
   nudge:        { label: 'nudge',       icon: 'System',  tone: 'nudge' },
   task:         { label: ev => `task ${ev.status}`, icon: 'Task',
                   tone: ev => (ev.status === 'failed' ? 'error' : 'task') },
+  background_tasks: { label: 'background tasks', icon: 'Task', tone: 'system' },
+  permission:   { label: ev => `${ev.tool || 'tool'} denied`, icon: 'Limit', tone: 'error' },
   notification: { label: ev => ev.notifKey || 'notification', icon: 'Bell', tone: 'nudge' },
   rate_limit:   { label: ev => `rate limit · ${ev.limitType || 'window'}`, icon: 'Limit',
                   tone: ev => (ev.status && ev.status !== 'allowed' ? 'error' : 'limit') },
@@ -238,6 +245,23 @@ export function reactionEmoji(name) {
 export function parseMsgsOutput(text) {
   const trimmed = (text ?? '').trim()
   if (!trimmed) return null
+  if (trimmed.startsWith('{')) {
+    try {
+      // Discord snowflakes exceed Number's safe integer range in --raw output.
+      const data = JSON.parse(trimmed.replace(/"(message_id|author_id|channel_id)"\s*:\s*(\d+)/g, '"$1":"$2"'))
+      if (Array.isArray(data.messages) && data.messages.every(message => message && typeof message === 'object')) {
+        return data.messages.map(message => {
+          const msgId = message.message_id == null ? null : String(message.message_id)
+          const ts = Number(message.timestamp) * 1000
+          return { author: String(message.author || '?'), msgId,
+            synthetic: !!(msgId && /^\d+$/.test(msgId) && BigInt(msgId) >= 9000000000000000000n),
+            time: Number.isFinite(ts) && ts > 0 ? new Date(ts).toLocaleString() : 'Time not recorded',
+            text: String(message.content || ''),
+            attachments: (Array.isArray(message.attachments) ? message.attachments : []).map(value => typeof value === 'string' ? value : JSON.stringify(value)) }
+        })
+      }
+    } catch { /* Preserve unrecognized output verbatim in the inspector. */ }
+  }
   if (/^\(no new messages/.test(trimmed)) return []
   const header = /^\[(\d{2}:\d{2} [A-Z]{2,5})\] (.+?) (?:\((system)\)|\(id:(\d+)\))(?: \[replying to [^\]]*\])?: (.*)$/
   if (!header.test(trimmed.split('\n', 1)[0])) return null
@@ -280,7 +304,8 @@ export function parseFrame(raw, key) {
   // Partial-message deltas duplicate the assistant frame that follows them.
   if (event.type === 'stream_event') return []
 
-  const base = (i) => ({ id: `${key}-${i}`, ts: toMs(ts), channel_id, bead_id })
+  const base = (i) => ({ id: `${key}-${i}`, ts: toMs(ts), channel_id, bead_id, session_id: event.session_id || null, attempt_id: raw.attempt_id || null, timestampEstimated: !!raw.timestamp_estimated,
+    model: event.message?.model || event.model || null, parentToolUseId: event.parent_tool_use_id || null, sourceFrame: raw })
 
   switch (event.type) {
     case 'assistant': return parseAssistant(event, base)
@@ -427,11 +452,24 @@ const SYSTEM_PARSERS = {
     ...base, kind: 'task', status: e.status ?? 'update',
     taskId: e.task_id ?? null, taskType: null, text: e.summary ?? '',
   }),
+  task_updated: (e, base) => ({
+    ...base, kind: 'task', status: e.patch?.status || 'updated',
+    taskId: e.task_id || null, text: JSON.stringify(e.patch || {}),
+  }),
+  background_tasks_changed: (e, base) => ({
+    ...base, kind: 'background_tasks', tasks: e.tasks || [],
+    text: e.tasks?.length ? e.tasks.map(task => [task.task_id, task.task_type, task.description].filter(Boolean).join(' · ')).join('\n') : 'No background tasks',
+  }),
+  permission_denied: (e, base) => ({
+    ...base, kind: 'permission', tool: e.tool_name || null, toolUseId: e.tool_use_id || null,
+    isError: true, text: e.message || e.decision_reason || 'Permission denied',
+    reason: e.decision_reason_type || null,
+  }),
   notification: (e, base) => ({
     ...base, kind: 'notification',
     text: e.text ?? '', notifKey: e.key ?? null, priority: e.priority ?? null,
   }),
-  status: (e, base) => ({ ...base, kind: 'status', status: e.status ?? 'unknown' }),
+  status: (e, base) => ({ ...base, kind: 'status', status: e.status ?? 'idle', text: e.status || 'Status cleared' }),
   compact_boundary: (e, base) => {
     const meta = e.compact_metadata ?? {}
     return {
@@ -495,7 +533,7 @@ function appendOne(list, ev) {
 /** Index of the last event sharing this event's channel/bead, or -1. */
 function lastIndexFromSource(list, ev) {
   for (let i = list.length - 1; i >= 0; i--) {
-    if (list[i].channel_id === ev.channel_id && list[i].bead_id === ev.bead_id) return i
+    if (list[i].channel_id === ev.channel_id && list[i].bead_id === ev.bead_id && list[i].session_id === ev.session_id && list[i].attempt_id === ev.attempt_id) return i
   }
   return -1
 }
@@ -520,11 +558,12 @@ export function frameUsage(raw) {
   if (raw.event?.type !== 'assistant') return null
   const usage = raw.event.message?.usage
   if (!usage) return null
-  return (usage.cache_read_input_tokens ?? 0) + (usage.input_tokens ?? 0)
+  return (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.input_tokens ?? 0)
 }
 
 /** Model ID from an assistant frame, or null. Used to size the context window. */
 export function frameModel(raw) {
+  if (raw.event?.type === 'system' && raw.event.subtype === 'init') return raw.event.model ?? null
   if (raw.event?.type !== 'assistant') return null
   return raw.event.message?.model ?? null
 }
@@ -539,6 +578,8 @@ export function frameModel(raw) {
  */
 export function bodyText(ev) {
   switch (ev.kind) {
+    case 'compact':
+      return compactLabel(ev)
     case 'thinking': {
       if (ev.text) return ev.text
       const tokens = `${formatTokens(ev.tokens)} tokens`

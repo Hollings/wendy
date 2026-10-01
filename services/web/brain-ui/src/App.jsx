@@ -20,7 +20,7 @@ export default function App() {
     check()
   }, [])
 
-  if (checking) return null
+  if (checking) return <div className="app-loading" role="status">Opening Wendy’s brain…</div>
 
   return authed
     ? <Dashboard onLogout={() => setAuthed(false)} />

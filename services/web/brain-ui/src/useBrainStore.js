@@ -1,195 +1,109 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
-import { getToken, tryReauth, authHeaders } from './auth'
-import { parseFrame, frameKey, frameUsage, frameModel, eventSnippet, appendEvents } from './events'
-
-// Turn containers collapse old history to one line per turn, so a deeper
-// buffer costs little screen space and gives the collapsed timeline reach.
-const MAX_EVENTS = 600
-const MAX_SEEN = 4000
-const CHANNELS_POLL_MS = 30_000
-const STATS_POLL_MS = 60_000
-const RECONNECT_MS = 3000
-
-/**
- * Single source of truth for the dashboard.
- *
- * Owns the /ws/brain connection plus the REST polls, and exposes one plain
- * state object. Components render from this and nothing else.
- *
- *   events       parsed display events, capped at MAX_EVENTS
- *   channelsMap  {channel_id: display_name}
- *   channelStats {channel_id: {tokens, lastTs, count}} derived from the stream
- *   beads        bead list (REST on connect, WS beads_list pushes after)
- *   beadSnippets {bead_id: {text, ts}} most recent activity per bead
- *   wsStatus     connecting | connected | disconnected | full | auth_error
- *   viewers      connected dashboard count (from /api/brain/stats)
- */
+import { useEffect, useRef, useState } from 'react'
+import { clearAuth, fetchBrain, getToken, tryReauth } from './auth'
+import { appendEvents, frameKey, frameModel, frameUsage, parseFrame } from './events'
+const MAX_EVENTS = 1200
+const INITIAL = { events: [], channelsMap: {}, channelStats: {}, beads: [], wsStatus: 'connecting', viewers: null, syncError: '', received: 0 }
 export function useBrainStore({ onAuthError }) {
-  const [events, setEvents] = useState([])
-  const [channelsMap, setChannelsMap] = useState({})
-  const [channelStats, setChannelStats] = useState({})
-  const [beads, setBeads] = useState([])
-  const [beadSnippets, setBeadSnippets] = useState({})
-  const [wsStatus, setWsStatus] = useState('connecting')
-  const [viewers, setViewers] = useState(null)
-
+  const [state, setState] = useState(INITIAL)
+  const [retry, setRetry] = useState(0)
+  const authError = useRef(onAuthError)
   const seenRef = useRef(new Set())
-  const knownChannelsRef = useRef(new Set())
-  const onAuthErrorRef = useRef(onAuthError)
-  onAuthErrorRef.current = onAuthError
-
-  // ---- REST fetchers ------------------------------------------------------
-
-  const fetchJson = useCallback(async (url) => {
-    try {
-      const res = await fetch(url, { headers: authHeaders() })
-      return res.ok ? await res.json() : null
-    } catch {
-      return null
-    }
-  }, [])
-
-  const refreshChannels = useCallback(async () => {
-    const data = await fetchJson('/api/brain/channels')
-    if (data?.channels) setChannelsMap(data.channels)
-  }, [fetchJson])
-
-  const refreshStats = useCallback(async () => {
-    const data = await fetchJson('/api/brain/stats')
-    if (data?.viewers != null) setViewers(data.viewers)
-  }, [fetchJson])
-
-  const refreshBeads = useCallback(async () => {
-    const data = await fetchJson('/api/brain/beads')
-    if (data?.beads) setBeads(data.beads)
-  }, [fetchJson])
-
-  // ---- Stream frame handling ----------------------------------------------
-
-  const handleFrame = useCallback((rawString, raw) => {
-    const key = frameKey(rawString)
-    if (seenRef.current.has(key)) return
-    seenRef.current.add(key)
-    if (seenRef.current.size > MAX_SEEN) {
-      seenRef.current = new Set([...seenRef.current].slice(-MAX_SEEN / 2))
-    }
-
-    const parsed = parseFrame(raw, key)
-    if (parsed.length === 0 && frameUsage(raw) == null) return
-
-    // Per-channel stats (context tokens, last activity, event count)
-    if (raw.channel_id) {
-      const id = raw.channel_id
-      const tokens = frameUsage(raw)
-      const model = frameModel(raw)
-      const lastTs = parsed[0]?.ts ?? Date.now()
-      setChannelStats(prev => {
-        const cur = prev[id] ?? { tokens: 0, lastTs: 0, count: 0, model: null }
-        return {
-          ...prev,
-          [id]: {
-            tokens: tokens ?? cur.tokens,
-            model: model ?? cur.model,
-            lastTs: Math.max(cur.lastTs, lastTs),
-            count: cur.count + parsed.length,
-          },
-        }
-      })
-      if (!knownChannelsRef.current.has(id)) {
-        knownChannelsRef.current.add(id)
-        refreshChannels()
-      }
-    }
-
-    if (parsed.length === 0) return
-
-    // Bead activity snippet
-    if (raw.bead_id) {
-      const last = parsed[parsed.length - 1]
-      const text = eventSnippet(last)
-      if (text) {
-        setBeadSnippets(prev => ({ ...prev, [raw.bead_id]: { text, ts: last.ts } }))
-      }
-    }
-
-    setEvents(prev => {
-      const next = appendEvents(prev, parsed)
-      return next.length > MAX_EVENTS ? next.slice(-MAX_EVENTS) : next
-    })
-  }, [refreshChannels])
-
-  const handleFrameRef = useRef(handleFrame)
-  handleFrameRef.current = handleFrame
-
-  // ---- WebSocket lifecycle -------------------------------------------------
-
+  authError.current = onAuthError
   useEffect(() => {
-    let closed = false
-    let ws = null
-    let timer = null
-
+    let disposed = false, socket = null, reconnectTimer = null, attempts = 0, pollTimer = null
+    let batch = [], flushTimer = null
+    const seen = seenRef.current
+    const abort = new AbortController()
+    const failAuth = () => { if (!disposed) { clearAuth(); authError.current?.() } }
+    function flush() {
+      flushTimer = null
+      const frames = batch
+      batch = []
+      if (disposed || !frames.length) return
+      setState(previous => {
+        let events = previous.events, received = previous.received
+        const stats = { ...previous.channelStats }
+        for (const [raw, key] of frames) {
+          const parsed = parseFrame(raw, key)
+          events = appendEvents(events, parsed)
+          received += parsed.length
+          if (raw.channel_id && !raw.bead_id) {
+            const id = String(raw.channel_id)
+            const current = stats[id] || { count: 0, tokens: null, model: null, lastTs: 0 }
+            const ts = parsed[0]?.ts || current.lastTs
+            stats[id] = { ...current, count: current.count + parsed.length, lastTs: Math.max(current.lastTs, ts),
+              ...(ts >= current.lastTs ? { tokens: frameUsage(raw) ?? current.tokens, model: frameModel(raw) ?? current.model } : {}) }
+          }
+        }
+        return { ...previous, events: events.slice(-MAX_EVENTS), channelStats: stats, received }
+      })
+    }
+    async function poll() {
+      const results = await Promise.allSettled(['/api/brain/channels', '/api/brain/beads', '/api/brain/stats'].map(path => fetchBrain(path, { signal: abort.signal })))
+      if (disposed) return
+      if (results.some(result => result.status === 'rejected' && result.reason.status === 401)) { failAuth(); return }
+      setState(previous => {
+        const next = { ...previous, syncError: results.some(result => result.status === 'rejected') ? 'Some status data is unavailable. Last known values are shown.' : '' }
+        if (results[0].status === 'fulfilled') next.channelsMap = results[0].value.channels || {}
+        if (results[1].status === 'fulfilled') next.beads = results[1].value.beads || []
+        if (results[2].status === 'fulfilled') next.viewers = results[2].value.viewers ?? null
+        return next
+      })
+      pollTimer = setTimeout(poll, 30_000)
+    }
+    function schedule(status) {
+      if (disposed) return
+      setState(previous => ({ ...previous, wsStatus: status }))
+      reconnectTimer = setTimeout(connect, Math.min(30_000, 1500 * 2 ** Math.min(attempts++, 5)))
+    }
     async function connect() {
-      if (closed) return
-      const token = getToken()
-      if (!token) {
-        setWsStatus('auth_error')
-        onAuthErrorRef.current?.()
-        return
+      if (disposed) return
+      if (!getToken()) { failAuth(); return }
+      setState(previous => ({ ...previous, wsStatus: 'connecting' }))
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const current = new WebSocket(protocol + '//' + location.host + '/ws/brain?token=' + encodeURIComponent(getToken()))
+      socket = current
+      current.onopen = () => {
+        if (disposed) { current.close(); return }
+        setState(previous => ({ ...previous, wsStatus: 'connected' }))
       }
-
-      setWsStatus('connecting')
-      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-      ws = new WebSocket(`${proto}//${location.host}/ws/brain?token=${encodeURIComponent(token)}`)
-
-      ws.onopen = () => {
-        setWsStatus('connected')
-        refreshBeads()
-        refreshStats()
+      current.onmessage = ({ data }) => {
+        if (disposed) return
+        let raw
+        try { raw = JSON.parse(data) } catch { return }
+        if (!raw || typeof raw !== 'object') return
+        attempts = 0 // A real frame, not merely an accepted then capacity-closed socket.
+        if (raw.type === 'ping') { if (current.readyState === WebSocket.OPEN) current.send('pong'); return }
+        if (raw.type === 'channels_map') { setState(previous => ({ ...previous, channelsMap: raw.channels || {} })); return }
+        if (raw.type === 'beads_list') { setState(previous => ({ ...previous, beads: raw.beads || [] })); return }
+        const key = frameKey(data)
+        if (seen.has(key)) return
+        seen.add(key)
+        if (seen.size > 8000) for (const value of [...seen].slice(0, 4000)) seen.delete(value)
+        batch.push([raw, key])
+        if (!flushTimer) flushTimer = setTimeout(flush, 75)
       }
-
-      ws.onmessage = ({ data }) => {
-        let msg
-        try { msg = JSON.parse(data) } catch { return }
-        if (msg.type === 'ping') { ws.send('pong'); return }
-        if (msg.type === 'beads_list') { setBeads(msg.beads ?? []); return }
-        if (msg.type === 'channels_map') { setChannelsMap(msg.channels ?? {}); return }
-        handleFrameRef.current(data, msg)
-      }
-
-      ws.onclose = async ({ code }) => {
-        ws = null
-        if (closed) return
+      current.onclose = async ({ code }) => {
+        if (disposed) return
+        flush()
         if ([4001, 4003, 1008, 3000].includes(code)) {
-          setWsStatus('connecting')
-          if (await tryReauth()) { connect(); return }
-          setWsStatus('auth_error')
-          onAuthErrorRef.current?.()
+          if (await tryReauth()) { if (!disposed) connect() } else failAuth()
           return
         }
-        if (code === 4002) { setWsStatus('full'); return }
-        setWsStatus('disconnected')
-        timer = setTimeout(connect, RECONNECT_MS)
+        schedule(code === 4002 ? 'full' : 'disconnected')
       }
-
-      ws.onerror = () => {}
+      current.onerror = () => {}
     }
-
+    poll()
     connect()
     return () => {
-      closed = true
-      clearTimeout(timer)
-      ws?.close(1000)
+      disposed = true
+      abort.abort()
+      clearTimeout(pollTimer)
+      clearTimeout(reconnectTimer)
+      clearTimeout(flushTimer)
+      socket?.close(1000)
     }
-  }, [refreshBeads, refreshStats])
-
-  // ---- Background polls ----------------------------------------------------
-
-  useEffect(() => {
-    refreshChannels()
-    const a = setInterval(refreshChannels, CHANNELS_POLL_MS)
-    const b = setInterval(refreshStats, STATS_POLL_MS)
-    return () => { clearInterval(a); clearInterval(b) }
-  }, [refreshChannels, refreshStats])
-
-  return { events, channelsMap, channelStats, beads, beadSnippets, wsStatus, viewers }
+  }, [retry])
+  return { ...state, reconnect: () => setRetry(value => value + 1) }
 }

@@ -91,7 +91,7 @@ function WebDetail({ ev }) {
   return (
     <div>
       {query && <div className="kv"><span className="k">query</span><span className="v">{query}</span></div>}
-      {url && (
+      {url && /^https?:\/\//i.test(url) && (
         <div className="kv">
           <span className="k">url</span>
           <a className="v" href={url} target="_blank" rel="noopener noreferrer">{url}</a>

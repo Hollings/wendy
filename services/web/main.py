@@ -655,73 +655,18 @@ async def brain_agent_events(
 
 @app.get("/api/brain/beads")
 async def brain_beads(_auth: None = Depends(_require_brain_auth)) -> dict:
-    if not brain.BEADS_SNAPSHOT.exists():
-        return {"beads": []}
-
-    try:
-        raw = json.loads(brain.BEADS_SNAPSHOT.read_text())
-    except (json.JSONDecodeError, OSError):
-        return {"beads": []}
-
-    beads = [
-        {
-            "id": d.get("id", "?"),
-            "title": d.get("title", "Untitled"),
-            "status": d.get("status", "open"),
-            "priority": d.get("priority", 2),
-            "created": d.get("created"),
-            "updated": d.get("updated", d.get("created")),
-            "labels": d.get("labels", []),
-        }
-        for d in raw
-    ]
-
-    status_order = {"in_progress": 0, "open": 1, "closed": 2, "tombstone": 3}
-    active = [b for b in beads if b["status"] in ("in_progress", "open")]
-    closed = sorted([b for b in beads if b["status"] == "closed"],
-                    key=lambda b: b.get("updated") or "", reverse=True)
-    tombstone = sorted([b for b in beads if b["status"] == "tombstone"],
-                       key=lambda b: b.get("updated") or "", reverse=True)
-    active.sort(key=lambda b: (status_order.get(b["status"], 4), b.get("priority", 2)))
-
-    return {"beads": active + closed[:10] + tombstone[:5]}
+    # Keep REST and WebSocket task metadata consistent.
+    return {"beads": brain._read_beads_list()}
 
 
 @app.get("/api/brain/beads/{task_id}/log")
 async def brain_task_log(
-    task_id: str, offset: int = 0, _auth: None = Depends(_require_brain_auth),
+    task_id: str, offset: int = 0, log_id: str = "",
+    _auth: None = Depends(_require_brain_auth),
 ) -> dict:
-    # Validate task_id before using it in a glob pattern -- glob metacharacters
-    # like * or ? would enumerate unintended files; ../ would path-traverse.
     if not re.fullmatch(r"[a-zA-Z0-9_-]+", task_id):
         raise HTTPException(status_code=400, detail="Invalid task ID")
-    logs_dir = Path("/data/wendy/orchestrator_logs")
-    if not logs_dir.exists():
-        return {"task_id": task_id, "log": "", "offset": 0, "complete": False}
-    log_files = list(logs_dir.glob(f"agent_{task_id}_*.log"))
-    if not log_files:
-        return {"task_id": task_id, "log": "", "offset": 0, "complete": False}
-    log_file = max(log_files, key=lambda f: f.stat().st_mtime)
-    try:
-        with open(log_file, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            if offset < 0 or offset > size:
-                offset = 0  # file was rotated/truncated
-            f.seek(offset)
-            new_content = f.read().decode("utf-8", errors="replace")
-            # The completion marker may sit before `offset`, so check the
-            # file tail rather than only the newly read chunk.
-            f.seek(max(0, size - 4096))
-            tail = f.read().decode("utf-8", errors="replace")
-        complete = any(
-            marker in chunk
-            for marker in ("=== TASK COMPLETE ===", "=== TASK FAILED ===")
-            for chunk in (new_content, tail)
-        )
-        return {"task_id": task_id, "log": new_content, "offset": size, "complete": complete}
-    except OSError:
-        return {"task_id": task_id, "log": "", "offset": 0, "complete": False}
+    return brain.read_task_log(task_id, offset, log_id)
 
 
 # =============================================================================

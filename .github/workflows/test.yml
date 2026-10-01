@@ -7,6 +7,25 @@ on:
     branches: [main]
 
 jobs:
+  brain-viewer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: services/web/brain-ui/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+        working-directory: services/web/brain-ui
+      - run: npm test && npm run build
+        working-directory: services/web/brain-ui
+      - run: pip install pytest -r services/web/requirements.txt
+      - run: python -m pytest services/web/tests/ -q
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -24,7 +43,7 @@ jobs:
         run: ruff check .
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -37,7 +56,20 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest pytest-asyncio
-          pip install discord.py
+          pip install -r requirements.txt
 
       - name: Run tests
         run: pytest tests/ -v --tb=short
+
+      - name: Install pinned BD for isolated contract test
+        env:
+          CI: "" # The pinned npm installer skips its binary download when CI is set.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libicu74
+          npm install -g @beads/bd@0.63.3
+
+      - name: Verify BD contract in a temporary database
+        env:
+          WENDY_TEST_BD: bd
+        run: pytest tests/test_beads_contract.py -v --tb=short

@@ -5,8 +5,20 @@ export default function Icon({ name, size = 14 }) {
     width: size, height: size, viewBox: '0 0 16 16',
     fill: 'none', stroke: 'currentColor', strokeWidth: 1.2,
     strokeLinecap: 'round', strokeLinejoin: 'round',
+    'aria-hidden': true,
   }
   switch (name) {
+    case 'Menu': return <svg {...common}><path d="M2 4h12M2 8h12M2 12h12" /></svg>
+    case 'Close': return <svg {...common}><path d="M4 4l8 8M12 4l-8 8" /></svg>
+    case 'ArrowRight': return <svg {...common}><path d="M3 8h10M9 4l4 4-4 4" /></svg>
+    case 'Pause': return <svg {...common}><path d="M5 3v10M11 3v10" /></svg>
+    case 'Play': return <svg {...common}><path d="M5 3l8 5-8 5z" /></svg>
+    case 'Copy': return <svg {...common}><rect x="5" y="5" width="8" height="9" rx="1"/><path d="M10 3V2H2v9h1" /></svg>
+    case 'Grid': return <svg {...common}><rect x="2" y="2" width="4" height="4" rx="1"/><rect x="10" y="2" width="4" height="4" rx="1"/><rect x="2" y="10" width="4" height="4" rx="1"/><rect x="10" y="10" width="4" height="4" rx="1"/></svg>
+    case 'Panel': return <svg {...common}><rect x="2" y="2" width="12" height="12" rx="2"/><path d="M9 2v12" /></svg>
+    case 'Refresh': return <svg {...common}><path d="M13 6a5 5 0 1 0 0 5M13 2v4H9" /></svg>
+    case 'Theme': return <svg {...common}><path d="M13 10A5.5 5.5 0 0 1 6 3a5.5 5.5 0 1 0 7 7z" /></svg>
+    case 'Info': return <svg {...common}><circle cx="8" cy="8" r="6"/><path d="M8 7v4M8 4.5v.2" /></svg>
     case 'Read':
       return <svg {...common}><path d="M3 3h6l3 3v7H3z"/><path d="M9 3v3h3"/><path d="M5 8h5M5 10.5h4"/></svg>
     case 'Write':
